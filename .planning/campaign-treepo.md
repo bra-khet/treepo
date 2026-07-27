@@ -14,13 +14,18 @@ These apply to **every** phase. A phase is not complete if any of them regress.
 - `cargo xtask dep-guard` passes — no crate in the generative set (`treepo-det`,
   `treepo-model`, `treepo-vcs`, `treepo-id`, `treepo-store`, `treepo-gen`, `treepo-grow`,
   `treepo-export`) depends on `bevy`. This is how `N6` is enforced.
-- `cargo deny check` passes — no network-capable dependency enters the graph (`N2`).
+- `cargo deny check` passes — no network-capable dependency enters the **default** feature
+  graph (`N2`). The optional `brp` feature on `treepo-app` is **never** enabled for deny checks,
+  CI release builds, or storefront packages (architecture D10).
 - From Phase 1 onward: `cargo xtask readonly-audit` reports zero writes to any fixture working
   tree (`N1`, `AC-MAN-2`).
 - From Phase 3 onward: `cargo xtask determinism` is green across three runs on three platforms
   (`N3`, `AC-DET-1/2/3`).
 - From Phase 5 onward: `cargo xtask id-coverage` reports zero colored pixels without an element
   ID (`P1`, `N7`).
+- From Phase 5 onward: agents may run `cargo run -p treepo-app --features brp` for live Bevy
+  Remote Protocol control via host MCP server `bevy_brp` (`bevy_brp_mcp`, port 15702). Product
+  and default builds must not register BRP.
 
 ## Execution Order
 
@@ -119,9 +124,16 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
 - **Files**: `crates/treepo-render/**`,
   `crates/treepo-app/src/{main,phase,snapshot_sync,window}.rs`,
   `crates/treepo-app/src/ui/{mod,theme,onboarding,progress}.rs`,
-  `crates/treepo-app/src/interact/**`, `assets/shaders/**`, `assets/textures/tiles/**`,
+  `crates/treepo-app/src/interact/**`,
+  `crates/treepo-app/src/debug/{mod,brp}.rs` (D10 BRP, feature-gated),
+  `crates/treepo-app/Cargo.toml` (optional feature `brp` → `bevy/bevy_remote` + `bevy_brp_extras`),
+  `assets/shaders/**`, `assets/textures/tiles/**`,
   `assets/fonts/ui.ttf`, `xtask/src/id_coverage.rs`
 - **⚠ Watch**: RISK-B — measure T3 baked-layer + ID-buffer memory against `NFR-3` (4 GB) early.
+- **Agent tooling (D10)**: when scaffolding `treepo-app`, wire
+  `bevy_brp_extras::BrpExtrasPlugin` under `#[cfg(feature = "brp")]` only. Host MCP server
+  `bevy_brp` (`bevy_brp_mcp`) is already expected on the developer machine; default BRP port
+  15702. Do **not** enable `brp` by default. Sketch in architecture D10.
 - **End Conditions**:
   - [ ] T2 legible at far, medium, near zoom; known top-level directory findable by eye within 30 s — **recorded user test, ≥3 participants** (`AC-NAV-1`)
   - [ ] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`)
@@ -130,6 +142,8 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   - [ ] T3 resident memory under 4 GB (`NFR-3`)
   - [ ] `readonly-audit` green across association → extraction → session, wired into CI (`AC-MAN-2`)
   - [ ] Cold launch on a cached T2 repository under 5 s (`NFR-4`)
+  - [ ] **D10**: `--features brp` run listens on localhost:15702; default build has no BRP;
+        `cargo deny check` (default features) still green; release never ships with `brp`
 
 ## Phase 6 — Grow simulation
 - **Goal**: Compute the deterministic transition between two world states.
@@ -233,8 +247,10 @@ Not a gating phase — a failed deploy does not fail the campaign.
 - **Method**: per-platform `cargo` release builds in CI; Windows and macOS code signing plus
   notarization; storefront depot upload. Linux ships a self-contained archive and an optional
   Flatpak manifest.
-- **Environment variables**: none at runtime. `TREEPO_DATA_DIR` (test only),
-  `TREEPO_DEBUG_UI=1` (dev builds only). No key, endpoint, or credential exists — `N2` leaves
-  nothing to configure.
-- **Pre-deploy checks**: `determinism`, `readonly-audit`, `id-coverage`, `deny check`, and
-  `budget` all green; clean-machine walkthrough passed.
+- **Environment variables**: none at product runtime. `TREEPO_DATA_DIR` (test only),
+  `TREEPO_DEBUG_UI=1` (dev builds only), `BRP_EXTRAS_PORT` (dev/agent only with `--features brp`,
+  default 15702 — D10). No product key, endpoint, or credential exists — `N2` leaves nothing to
+  configure for shipped builds.
+- **Pre-deploy checks**: `determinism`, `readonly-audit`, `id-coverage`, `deny check` (**default
+  features only**), and `budget` all green; clean-machine walkthrough passed; release artifact
+  has BRP disabled.

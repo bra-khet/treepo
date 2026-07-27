@@ -2,7 +2,7 @@
 
 **Version:** 1.1  
 **Status:** Approved. Architecture produced — see `.planning/architecture-treepo.md`.  
-**Last updated:** 2026-07-27 *(amendments E1 `AC-GROW-2`, E2 `F-MAN-2`/`F-MAN-6`, from architecture review)*
+**Last updated:** 2026-07-27 *(amendments E1 `AC-GROW-2`, E2 `F-MAN-2`/`F-MAN-6`; NFR-8 clarified for dev-only BRP / D10)*
 
 Companion to [`CONSTITUTION.md`](CONSTITUTION.md), which governs intent and holds the
 non-negotiable constraints `N1`–`N9`, principles `P1`–`P10`, and ratified decisions `R1`–`R6`.
@@ -772,7 +772,10 @@ of one core on recommended hardware in widget mode.
 ### Platform
 
 **NFR-7** (P0) — Windows, macOS, Linux (`N8`).
-**NFR-8** (P0) — Fully functional offline; no network dependency in any core path (`N2`).
+**NFR-8** (P0) — Fully functional offline; no network dependency in any **product** path (`N2`).
+  Localhost-only developer tooling that is never enabled in release builds (Bevy Remote Protocol
+  under Cargo feature `brp`; architecture D10) does not count as a product network path and must
+  not appear in default-feature or storefront dependency graphs.
 **NFR-9** (P1) — Storefront requirements — packaging, launch options, controller-optional input,
 storefront asset dimensions — are M3 work, not release-week work (`R1`).
 

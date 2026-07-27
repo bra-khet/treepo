@@ -1,8 +1,8 @@
 # Engine Architecture: Grow vs Thrive
 **Design Document — Supplemental Living Section**  
-**Version:** 0.1  
+**Version:** 0.2  
 **Status:** Active draft  
-**Last updated:** 2026-07-26  
+**Last updated:** 2026-07-27  
 **Project name:** treepo *(locked 2026-07-27 — [`../CONSTITUTION.md`](../CONSTITUTION.md) §10 R5)*  
 
 This document expands and supersedes the high-level description in [`design-outline.md`](design-outline.md) §4. It is the authoritative reference for the dual-phase engine while we implement in Bevy (Rust ECS).
@@ -251,6 +251,32 @@ Repository (filesystem + git)
 - Events (`GrowStarted`, `GrowProgress`, `GrowFinished`, `StateSyncRequested`, etc.) keep the UI and recording systems decoupled.
 - Hierarchical seeds and the Feature System configuration are pure data that both phases read.
 
+### 8.1 Agent live control — Bevy Remote Protocol (BRP)
+
+Coding agents inspect and drive a **running** Bevy shell via BRP. This is **developer/agent
+tooling**, not a product surface. Full decision: architecture **D10**
+([`.planning/architecture-treepo.md`](../../.planning/architecture-treepo.md)).
+
+| Piece | Role |
+|-------|------|
+| Cargo feature `brp` on `treepo-app` | Opt-in only; never default; never release |
+| `bevy` feature `bevy_remote` | Core BRP methods (entities, components, resources, query) |
+| `bevy_brp_extras::BrpExtrasPlugin` | Adds `RemotePlugin` + HTTP if missing; screenshots, input, shutdown, diagnostics |
+| Default port | **15702** (`BRP_EXTRAS_PORT` to override) |
+| Host MCP | Globally installed `bevy_brp_mcp`, registered as MCP server `bevy_brp` |
+
+**Registration (Phase 5 scaffolding):** under `#[cfg(feature = "brp")]` only, call
+`app.add_plugins(BrpExtrasPlugin::default())` from `treepo-app` (see
+`crates/treepo-app/src/debug/brp.rs` in the architecture file tree). Do not add BRP plugins
+unconditionally.
+
+**`N2` note:** BRP uses HTTP on **localhost** only when the `brp` feature is enabled. Product
+paths remain fully offline (`NFR-8`). CI `cargo deny check` and storefront builds use default
+features so network clients never enter the shipped dependency graph.
+
+**Agent run recipe:** `cargo run -p treepo-app --features brp`, then use `bevy_brp` MCP tools
+against port 15702.
+
 ---
 
 ## 9. Open Questions & Next Decisions
@@ -275,4 +301,4 @@ This document will be updated as implementation decisions solidify. All new dura
 
 ---
 
-*End of document — Engine Architecture: Grow vs Thrive v0.1*
+*End of document — Engine Architecture: Grow vs Thrive v0.2*

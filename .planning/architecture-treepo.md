@@ -1,5 +1,6 @@
 # Architecture: treepo
-> PRD: `docs/PRD.md` v1.0 | Constitution: `docs/CONSTITUTION.md` v1.3 | Mode: greenfield | Date: 2026-07-27
+> PRD: `docs/PRD.md` v1.1 | Constitution: `docs/CONSTITUTION.md` v1.3 | Mode: greenfield | Date: 2026-07-27
+> D10 (agent BRP, dev-only) recorded 2026-07-27 — no Bevy app code yet; lands in Phase 5.
 
 Rust / Bevy desktop application. Two runtime phases — **Grow** (rare, expensive, cinematic)
 and **Thrive** (continuous, cheap, interactive) — with the boundary between them enforced by
@@ -22,7 +23,7 @@ architecture's spine; every decision below serves it.
 | Constraint | Mechanism | Verified by |
 |---|---|---|
 | `N1` repo read-only | `treepo-vcs` uses `gix` (pure Rust, no subprocess) and opens repositories read-only. No hook, filter, or fsmonitor execution path exists. | `xtask readonly-audit` traces all filesystem writes during a full session; `tests/readonly.rs` |
-| `N2` data stays local | No HTTP client in the dependency graph at all. `cargo-deny` denies `reqwest`, `hyper`, `ureq`, `tokio-net`. | `deny.toml`; dependency audit in CI |
+| `N2` data stays local | **Product / default feature graph:** no network-capable client in the dependency graph. `cargo-deny` denies `reqwest`, `hyper`, `ureq`, `tokio-net` (and peers) under default features. **Dev-only exception (D10):** the optional Cargo feature `brp` on `treepo-app` may pull Bevy's `bevy_remote` HTTP stack for **localhost loopback only** so agents can inspect a running app. Release builds, CI `cargo deny check`, and storefront packages never enable `brp`. BRP does not send repository data off-machine; it is agent tooling on `127.0.0.1`, not a product network path. | `deny.toml` on default features; CI builds without `--features brp`; release packaging audit |
 | `N3` determinism | `treepo-det` is the only source of randomness and trig. Generative crates forbid `std::time`, `rand::thread_rng`, and `HashMap` iteration by lint. | `xtask determinism` — triple-run + tri-platform hash compare |
 | `N4` never rank people | No type in `treepo-model` exposes an ordered contributor collection. `AuthorShare` is unordered and carries no public accessor returning a percentage or rank. | `tests/privacy.rs` asserts no UI string formats a share as a figure |
 | `N5` coherent structure | `treepo-grow` migration passes operate on a connectivity-checked graph; a cleanup pass runs after every flow pass. | Connectivity assertion in `treepo-grow`; `tests/degenerate.rs` |
@@ -204,9 +205,9 @@ treepo/
 │   │       └── scrub.rs                    # F-EXP-6 / F-ID-8 metadata stripping
 │   │
 │   └── treepo-app/                         # the Bevy application
-│       ├── Cargo.toml
+│       ├── Cargo.toml                      # optional feature `brp` (D10) — never default
 │       └── src/
-│           ├── main.rs
+│           ├── main.rs                     # wires plugins; #[cfg(feature = "brp")] BrpExtrasPlugin
 │           ├── phase.rs                    # ★ phase boundary — states, events, transitions
 │           ├── grow_task.rs                # off-thread Grow driver
 │           ├── snapshot_sync.rs            # snapshot → ECS reconciliation
@@ -242,6 +243,7 @@ treepo/
 │           ├── window.rs                   # F-WIN-1/2/3
 │           └── debug/
 │               ├── mod.rs                  # egui debug surface, dev builds only
+│               ├── brp.rs                  # D10 — optional BRP registration (feature = "brp")
 │               └── intensity.rs            # F-THR-8
 │
 ├── tools/
@@ -335,6 +337,16 @@ treepo/
 - **Files**: `crates/treepo-app/src/{main,window,ui/**}.rs`
 - **Dependencies**: everything
 - **Complexity**: medium — raised by `R1`'s polish bar, not by logic
+
+### Feature: Agent live control via BRP (`D10`, dev-only)
+- **Files**: `crates/treepo-app/Cargo.toml` (`brp` feature), `crates/treepo-app/src/main.rs`,
+  `crates/treepo-app/src/debug/brp.rs`
+- **Dependencies**: optional `bevy_brp_extras` (pulls Bevy `bevy_remote` + localhost HTTP); **never**
+  a dependency of generative crates; **never** enabled by default
+- **Complexity**: low — feature-gated plugin registration only
+- **External tooling**: host-installed `bevy_brp_mcp` (MCP server for coding agents). Not a workspace
+  crate. Registered in the agent host's MCP config (e.g. Grok `~/.grok/config.toml` as
+  `mcp_servers.bevy_brp`). Default BRP port **15702**.
 
 ---
 
@@ -522,6 +534,65 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 - **Rejected**: *SQLite* — good queries and incremental writes, but adds a C dependency, and
   nothing in v1 queries the manifest relationally; it is loaded whole.
 
+### D10 — Agent live control: Bevy Remote Protocol (BRP), dev-only
+- **Chosen**: From Phase 5 (first Bevy shell) onward, `treepo-app` exposes an **optional Cargo
+  feature `brp`** that enables Bevy Remote Protocol on **localhost** for coding agents.
+  Implementation:
+  1. **`treepo-app` Cargo feature `brp`** (not in `default`): enables Bevy's `bevy_remote`
+     feature and the optional dependency `bevy_brp_extras` (version-locked to the chosen Bevy
+     line; currently `bevy_brp_*` 0.22.x tracks Bevy 0.19).
+  2. **`debug/brp.rs` + `main.rs`**: under `#[cfg(feature = "brp")]`, register
+     `bevy_brp_extras::BrpExtrasPlugin::default()`. That plugin adds `RemotePlugin` and the
+     HTTP transport if missing, and registers extras (screenshot, keyboard/mouse input,
+     shutdown, diagnostics, type/format discovery). Default port **15702**, overridable via
+     `BRP_EXTRAS_PORT` or `BrpExtrasPlugin::with_port`.
+  3. **Agent host**: globally installed `bevy_brp_mcp` binary (`cargo install bevy_brp_mcp`),
+     registered as MCP server **`bevy_brp`** in the agent config (Grok: `~/.grok/config.toml`
+     → `[mcp_servers.bevy_brp]`). Agents launch or attach to the app and use BRP tools over
+     the local port.
+  4. **`N2` boundary**: product builds never enable `brp`. `cargo deny check`, release CI, and
+     storefront packages use default features only. BRP is loopback-only tooling; it is not a
+     product network path and does not export repository data off-machine. Generative crates
+     still cannot depend on Bevy or HTTP (`N6`, dep-guard).
+  Reasoning: live ECS inspect/mutate, screenshots, and input injection materially speed Bevy
+  iteration for agents; egui debug alone is human-facing. Feature-gating keeps the shipped
+  graph free of HTTP clients so `N2`'s enforcement mechanism stays honest.
+- **Rejected**: *Always-on BRP in release* — would put an HTTP listener and remote-control
+  surface in a consumer product without user consent, and would force network crates into the
+  default dependency graph against the N2 mechanism.
+- **Rejected**: *RemotePlugin only, no bevy_brp_extras* — sufficient for basic entity/component
+  ops, but agents lose screenshots, input, graceful shutdown, and format discovery that make
+  BRP useful for visual QA.
+- **Rejected**: *Separate debug binary crate* — doubles Bevy app wiring; a feature flag on
+  `treepo-app` is enough and keeps one main entrypoint.
+- **How to run (agents / developers)**:
+  ```text
+  cargo run -p treepo-app --features brp
+  # then use MCP tools from bevy_brp_mcp against port 15702
+  ```
+  Canonical registration sketch (lands in Phase 5 with the shell):
+  ```rust
+  // crates/treepo-app/src/debug/brp.rs  (only compiled with feature = "brp")
+  use bevy::prelude::*;
+  use bevy_brp_extras::BrpExtrasPlugin;
+
+  pub fn register_brp(app: &mut App) {
+      // BrpExtrasPlugin adds RemotePlugin + HTTP transport if not already present.
+      app.add_plugins(BrpExtrasPlugin::default()); // port 15702 / BRP_EXTRAS_PORT
+  }
+  ```
+  ```toml
+  # crates/treepo-app/Cargo.toml (excerpt)
+  [features]
+  default = []
+  brp = ["bevy/bevy_remote", "dep:bevy_brp_extras"]
+
+  [dependencies]
+  bevy_brp_extras = { version = "0.22", optional = true }
+  # bevy = { ..., features include bevy_remote only via the brp feature }
+  ```
+- **Adopted 2026-07-27** (planning; code lands with Phase 5 — no Bevy app exists yet).
+
 ---
 
 ## Build Phases
@@ -608,8 +679,9 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 - **Goal**: A still, zoomable, clickable tree at consumer quality.
 - **Files**: `crates/treepo-render/**`, `crates/treepo-app/src/{main,phase,snapshot_sync,
   window}.rs`, `crates/treepo-app/src/ui/{mod,theme,onboarding,progress}.rs`,
-  `crates/treepo-app/src/interact/**`, `assets/shaders/**`, `assets/textures/tiles/**`,
-  `assets/fonts/ui.ttf`, `xtask/src/id_coverage.rs`
+  `crates/treepo-app/src/interact/**`, `crates/treepo-app/src/debug/{mod,brp}.rs` (D10),
+  `crates/treepo-app/Cargo.toml` (`brp` feature), `assets/shaders/**`,
+  `assets/textures/tiles/**`, `assets/fonts/ui.ttf`, `xtask/src/id_coverage.rs`
 - **Dependencies**: Phase 2, Phase 4
 - **End Conditions**:
   - [ ] A T2 repository is legible at far, medium and near zoom; a known top-level directory is
@@ -621,6 +693,9 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
   - [ ] `readonly-audit` passes across a full association → extraction → session run and is
         wired into CI from this phase onward (`AC-MAN-2`)
   - [ ] Cold launch on a cached T2 repository under 5 s (`NFR-4`)
+  - [ ] **D10 BRP**: `cargo run -p treepo-app --features brp` listens on localhost:15702;
+        default (no feature) build does not register BRP; `cargo deny check` on default
+        features still passes; release profile docs/CI never pass `--features brp`
 
 ### Phase 6: Grow simulation
 - **Goal**: Compute the deterministic transition between two world states.
@@ -808,6 +883,10 @@ the store out of the repository. Implemented per D9; gated in Phase 2.
 8. **RISK-6 (PRD) — M3 scope.** **Mitigation:** Phases 11 and 12 carry the designated cut lines
    (`F-GROW-7`, `F-WIN-3`); Phase 10 is the last phase whose omission would be user-visible as
    a missing capability rather than missing polish.
+9. **RISK-D — Accidental ship of BRP.** *(new, D10)* Enabling Cargo feature `brp` in a release
+   profile would put a localhost remote-control HTTP listener and network crates into a consumer
+   binary. **Mitigation:** `brp` is never in `default`; Phase 5 and Phase 12 end conditions
+   assert release packages do not enable it; `cargo deny check` runs on default features only.
 
 ---
 
@@ -817,16 +896,20 @@ the store out of the repository. Implemented per D9; gated in Phase 2.
 - **Method**: `cargo` release builds per platform in CI; code signing on Windows and macOS
   (notarization required); storefront depot upload as the release step. Linux ships as a
   self-contained archive plus an optional Flatpak manifest.
-- **Environment variables**: none required at runtime. `TREEPO_DATA_DIR` overrides the app-data
-  root for testing only; `TREEPO_DEBUG_UI=1` enables the egui debug surface in dev builds.
-  No key, endpoint, or credential exists — `N2` leaves nothing to configure.
+- **Environment variables**: none required at **product** runtime. `TREEPO_DATA_DIR` overrides
+  the app-data root for testing only; `TREEPO_DEBUG_UI=1` enables the egui debug surface in
+  dev builds. **Dev/agent only (D10):** `BRP_EXTRAS_PORT` overrides the BRP HTTP port when
+  building with `--features brp` (default **15702**). No product key, endpoint, or credential
+  exists — `N2` leaves nothing to configure for shipped builds.
 - **Pre-deploy checks**:
   - [ ] `cargo xtask determinism` green on all three platforms
   - [ ] `cargo xtask readonly-audit` green (`AC-MAN-2`)
   - [ ] `cargo xtask id-coverage` green (`P1`, `N7`)
-  - [ ] `cargo deny check` green (`N2` — no network-capable dependency)
+  - [ ] `cargo deny check` green (`N2` — no network-capable dependency under **default**
+        features; `brp` must not be enabled for this check or for the release artifact)
   - [ ] `cargo xtask budget` green on minimum spec across T0–T3
   - [ ] Clean-machine walkthrough: install → open repository → watch Grow → export, with no
         terminal and no git installed (`R1`, D3)
+  - [ ] Release package binary has BRP disabled (no listener on 15702; no `brp` feature)
 
 Deployment is Phase 12's final step. A failed deploy does not fail the campaign.

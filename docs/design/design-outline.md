@@ -69,7 +69,7 @@ Age and churn are major drivers of both appearance and behavior. Fresh / high-re
 
 ### 4. Engine Architecture: Grow vs Thrive
 
-A dual-phase system keeps expensive analysis rare and the living feel constant. Detailed contracts, triggers, cinematic behavior, and Bevy implementation notes live in [`engine-architecture.md`](engine-architecture.md) (v0.1). High-level summary:
+A dual-phase system keeps expensive analysis rare and the living feel constant. Detailed contracts, triggers, cinematic behavior, and Bevy implementation notes live in [`engine-architecture.md`](engine-architecture.md) (v0.2). High-level summary:
 
 **Grow Phase (long tick / structural + cinematic update)**  
 Owns complete topology rebuilds and diff-driven transitions. Performs full or incremental repository scan, primitive extraction, L-system regeneration, enrichment placement, and constrained cellular material passes on changed regions. Classification threshold crossings are rendered as explicit, dramatic transformations. Grow is event-driven, off the main thread, and designed to be watched (cinematic, exportable). First-time association of a repository plays the entire history as one continuous Grow sequence.
@@ -147,6 +147,12 @@ Target platforms: desktop (Windows / macOS / Linux). Current implementation dire
 
 *Updated 2026-07-27 — storefront distribution is no longer a "longer-term goal." Per [`../CONSTITUTION.md`](../CONSTITUTION.md) §10 R1, treepo is positioned and built as a consumer desktop product distributed through a games storefront. This does not change build order (the tree must feel alive before it is packaged), but it does raise the polish bar, make first-run experience a primary design surface rather than a finishing task, and forbid requiring a terminal for any essential interaction.*
 
+**Agent live debugging (dev only).** When the Bevy shell exists (campaign Phase 5+), agents may
+control a running instance over the Bevy Remote Protocol on localhost via the optional Cargo
+feature `brp` and host MCP server `bevy_brp` (`bevy_brp_mcp`). This is not a product feature and
+never ships in release builds. See [`engine-architecture.md`](engine-architecture.md) §8.1 and
+architecture decision **D10**.
+
 ---
 
 ### 9. Metadata & Agent Path
@@ -203,7 +209,7 @@ Will evolve with concrete visual design. Governing principle is already set: sim
 ### 12. Relationship to Other Living Documents
 
 - [`feature-system.md`](feature-system.md) — authoritative catalog of primitives and the full Interaction Physics / rules layer (including age/churn gradients, material flow, and phase-aware behavior).
-- [`engine-architecture.md`](engine-architecture.md) — authoritative dual-phase contracts, triggers, cinematic Grow behavior, State Sync, and Bevy notes.
+- [`engine-architecture.md`](engine-architecture.md) — authoritative dual-phase contracts, triggers, cinematic Grow behavior, State Sync, Bevy notes, and agent BRP live-control (dev-only, §8.1 / D10).
 - [`visual-construction.md`](visual-construction.md) — hybrid trunk decision, layered generative architecture, and L-system foundation details.
 - [`l-system-parameterization.md`](l-system-parameterization.md) — authoritative parameter set, primitive→parameter mapping guidelines, and the decision menu for the structural skeleton.
 

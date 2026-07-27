@@ -15,6 +15,7 @@ which document answers which kind of question.
 | **Enduring intent** | [`CONSTITUTION.md`](CONSTITUTION.md) — *ratified 2026-07-27* | Why this exists, what it must always be, what it must never become | Rarely, and deliberately |
 | **Tactical intent** | [`PRD.md`](PRD.md) — *draft, under review* | What we build, in what order, and how we know it works | Every planning cycle |
 | **Design** | [`design/`](design/) | How the thing actually works | Continuously, revised in place |
+| **Build plan** | [`.planning/`](../.planning/) | Crate layout, decisions (incl. **D10** BRP), phased campaign | When architecture or sequence changes |
 
 The Constitution and the PRD are complements, not substitutes. The Constitution holds
 principles and boundaries; the PRD holds capabilities, acceptance criteria, and sequencing.
@@ -38,7 +39,8 @@ All five are living documents, each authoritative for its own area.
 - [`design/visual-construction.md`](design/visual-construction.md) — the hybrid trunk
   decision and the four-layer generative stack (Skeleton → Semantics → Enrichment → Thrive).
 - [`design/engine-architecture.md`](design/engine-architecture.md) — the Grow / Thrive
-  dual-phase contracts, triggers, cinematic diff behavior, State Sync, and Bevy notes.
+  dual-phase contracts, triggers, cinematic diff behavior, State Sync, Bevy notes, and
+  **dev-only agent BRP** live control (§8.1; architecture D10).
 - [`design/l-system-parameterization.md`](design/l-system-parameterization.md) — the
   structural skeleton's parameters, primitive→parameter mapping guidelines, and the
   decision menu for the first coherent parameter set.
@@ -65,3 +67,19 @@ All five are living documents, each authoritative for its own area.
   what was decided and why is more valuable than a clean document.
 - [`workspace/`](workspace/) is the staging area for raw material that has not yet been
   consolidated. Nothing there is authoritative.
+
+## Agent tooling (when the Bevy app exists)
+
+From **campaign Phase 5** onward, coding agents can drive a running `treepo-app` over the
+Bevy Remote Protocol:
+
+| Item | Value |
+|------|--------|
+| Cargo feature | `brp` on `treepo-app` (**not** default; never release) |
+| Plugins | `bevy_brp_extras::BrpExtrasPlugin` (adds Bevy `RemotePlugin` + HTTP if needed) |
+| Port | **15702** (`BRP_EXTRAS_PORT` override) |
+| Host MCP server | `bevy_brp` → binary `bevy_brp_mcp` (user-level Grok config: `~/.grok/config.toml`) |
+| Run | `cargo run -p treepo-app --features brp` |
+
+Authoritative decision: architecture **D10**. Design note: [`design/engine-architecture.md`](design/engine-architecture.md) §8.1.
+**Do not** enable BRP in product builds; `N2` / `NFR-8` remain absolute for shipped paths.
