@@ -1,0 +1,32 @@
+# treepo
+
+treepo grows a single living world-tree from a repository's real structure, size, age,
+churn, ownership, and activity. The goal is perceptual: to let a developer *recognize* their
+codebase by looking at it.
+
+A consumer desktop application (Rust / Bevy). Not a dashboard with tree decorations — the
+tree is grown from real repository measurements.
+
+## Status
+
+Design and planning are complete. **No implementation exists yet** (no Cargo workspace, no
+crates). This directory is ready for `git init` and campaign **Phase 0** (workspace &
+determinism foundation).
+
+| Layer | State |
+|-------|--------|
+| Constitution | Ratified — [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) |
+| PRD | Approved v1.1 — [`docs/PRD.md`](docs/PRD.md) |
+| Design | Living set — [`docs/design/`](docs/design/) |
+| Architecture | [`.planning/architecture-treepo.md`](.planning/architecture-treepo.md) |
+| Campaign | [`.planning/campaign-treepo.md`](.planning/campaign-treepo.md) — 13 phases, Phase 0 next |
+
+## Documentation
+
+- [`docs/README.md`](docs/README.md) — documentation map and reading order
+- [`docs/CONSTITUTION.md`](docs/CONSTITUTION.md) — enduring vision, principles, and
+  non-negotiable constraints
+- [`docs/PRD.md`](docs/PRD.md) — capabilities, acceptance criteria, and sequencing
+- [`docs/design/`](docs/design/) — living design documents (start with
+  [`design-outline.md`](docs/design/design-outline.md))
+- [`.planning/`](.planning/) — architecture and phased build campaign
