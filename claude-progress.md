@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-27 · **Phase 0 complete** (one end condition pending CI, below)
+**Last updated:** 2026-07-27 · **Phase 0 complete and closed** · **Phase 1 in progress**
 
 ---
 
@@ -183,10 +183,70 @@ bevy is light on file count, which is exactly the axis the tree diff scales on.
 
 ---
 
+## Phase 1 — model & repository extraction
+
+Spike gate cleared, so extraction is being written on `gix` directly.
+
+| Deliverable | Status |
+|---|---|
+| `crates/treepo-model/**` | **done** — 63 tests + 2 `compile_fail` doctests |
+| `crates/treepo-vcs/**` | not started |
+| `assets/filters/default-exclusions.ron` | not started |
+| `assets/params/folder-signals.ron` | not started |
+| `tools/corpus/**` | not started |
+| `tests/readonly.rs`, `tests/degenerate.rs` | not started |
+
+### `treepo-model` — decisions worth finding again
+
+Three of these are deviations or sharpenings, not restatements of the architecture.
+
+- **`N4` is enforced by the type system.** `AuthorShare` implements neither `Ord` nor
+  `PartialOrd`, so `sort_by_key`, `max_by_key`, `BinaryHeap`, and `>` on a contribution share
+  do not compile. Two `compile_fail` doctests fail CI if someone opens that door; both were
+  verified by temporarily deriving `Ord` and watching them fail, so they are testing the
+  constraint rather than a typo. No accessor returns a percentage, and `Debug` renders a
+  bucket (`major`, `minor`) rather than a figure — a manifest dump is not a scoreboard
+  either. The one place contributors are ordered by volume is inside
+  `OwnershipPrimitives::from_line_counts`, which exists to answer "who is dominant" and "how
+  many make 80%"; neither answer leaves as an ordering.
+- **Ages are not stored — only absolute timestamps.** `design/feature-system.md` names
+  `first_commit_age`, and an age is a duration from *now*. Storing one would make the
+  manifest a function of the clock and lose `AC-MAN-1` (regenerate to identical bytes) and
+  `AC-DET-1` (same repository, same tree, any time) together. `Manifest::reference_time` is
+  the newest commit timestamp in the repository — a property *of the repository* — and ages
+  derive against it. **The visible consequence:** a repository nobody has committed to does
+  not age; its tree is identical to the one it produced a year ago. That is correct, and it
+  will look like a bug to someone.
+- **Seeds derive, they are not stored.** The architecture's `PathRecord` field list has
+  `seed: u64`; `PathRecord::seed(&root)` derives it instead. A stored seed is a cached copy
+  of a value computed from the path, and a cached copy can disagree with its input. Deriving
+  also protects `AC-GROW-4`: because the seed is a function of the path alone, adding a file
+  cannot reseed its siblings, which is what keeps a Grow confined to one limb.
+- **`RepoPath` is bytes, `/`-separated, ordered byte-wise.** Each is a determinism property
+  rather than a portability one — `std::path::Path` would give Windows different path bytes,
+  different path hashes, and therefore a different tree. Non-UTF8 paths keep their bytes and
+  gain a lossy display name (PRD §6, `F-INSP-4`). Case-colliding paths stay distinct but
+  expose `case_fold_key` so the walk can detect the collision without either path vanishing.
+- **Language names are interned, ids assigned on first sight.** Sorted-index ids would
+  renumber every existing record when a new language appears, rewriting a whole manifest on
+  the incremental re-extraction `AC-EXT-2` requires touch only affected paths. The cost is
+  that ids inherit their determinism from the sorted walk (`AC-DET-3`) rather than owning it.
+- **`no_std`, like `treepo-det`.** Beyond making `HashMap` and `Instant` unreachable, it
+  means this crate *cannot* accept a `std::path::Path` — which pushes the platform-specific
+  path mess into `treepo-vcs`, where the differences are already in view.
+
+Skeleton and material types (`segment.rs`, `material.rs`, `snapshot.rs`, `enrichment.rs`,
+`aggregate.rs` in the architecture's tree) are deliberately absent. They arrive with the
+phases that produce them; defining them now would be guessing at Phase 3.
+
+---
+
 ## Next
 
-**Phase 1 — model & repository extraction.** Depends only on Phase 0. The spike gate above is
-cleared, so extraction can be written on `gix` directly.
+**`treepo-vcs`** — `discover`, `walk`, `filter`, `log_pass`, `mailmap`, `lang`, `status`.
+`log_pass` is written from `tools/spike-numstat/`, which is deleted once it is.
 
-`cargo xtask dep-guard` already lists `treepo-model` and `treepo-vcs` as absent, so it starts
-checking them the moment they exist.
+Two things Phase 1 still owes, both recorded above and neither started: the corpus fixtures
+(`tools/corpus/**`), which are also what re-validates the spike's extrapolated ~37 s T2
+figure against a real fixture; and `tests/degenerate.rs`, which needs one passing test per
+PRD §6 row.
