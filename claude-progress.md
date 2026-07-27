@@ -200,9 +200,12 @@ and it now is.
 | `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | **done** — plus `F-EXT-8` rule 4 and `F-EXT-6` |
 | `assets/languages/languages.ron` | **done** |
 | `crates/treepo-vcs/signals.rs` + `assets/params/folder-signals.ron` (`F-EXT-5`) | **done** |
-| `xtask readonly-audit` (`AC-MAN-2`, `AC-EXT-4`) | **done** — 15 fixtures, 0 writes, wired into CI on all three platforms |
-| `crates/treepo-vcs/status.rs` (`F-THR-4`) | not started |
+| `xtask readonly-audit` (`AC-MAN-2`, `AC-EXT-4`) | **done** — 16 fixtures, 0 writes, wired into CI on all three platforms |
+| `crates/treepo-vcs/status.rs` (`F-THR-4`) | **done** — all five states, overlay-only by construction |
 | T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
+
+**Phase 1's module list is complete.** One end condition remains: the T2/T3 pinned
+repositories and the `AC-EXT-1` budget measured on them.
 
 The three deliberately-`None` fields are now filled: `BalanceScore::kind`,
 `TemporalPrimitives::stability`, and `DerivedSignals`. The `Option` stays in every case —
@@ -380,6 +383,64 @@ Windows and `non-utf8` anywhere but Linux, pointing at directories that had neve
 `degenerate.rs` never saw it because those tests are platform-gated and ask for fixtures by
 name. The audit walks the list, so it hit it immediately.
 
+### `status.rs` — how `F-EXT-7` is enforced, and what the audit caught
+
+`F-EXT-7` says the working tree is not a second skeleton. That is a compile-time fact rather
+than a rule someone follows:
+
+- **`Dirtiness` is defined in `treepo-vcs`, and `treepo-model` does not depend on it.** No
+  manifest field can hold a dirtiness value because `treepo-model` cannot name the type. A
+  paired `compile_fail` doctest asserts `PathRecord` has no such field, verified by pointing
+  it at a field that *does* exist and watching it fail with "compiled successfully, but it's
+  marked `compile_fail`".
+- **No signature in the module takes a `&mut PathRecord`.** `signals::apply` and
+  `log_pass::apply` do, because they are extraction. `status()` takes no structure at all and
+  `overlay()` borrows it immutably.
+
+**The overlay attaches, it does not add.** Most dirty paths are absent from the skeleton — an
+untracked file is by definition not in HEAD. A path with no record of its own attaches to the
+nearest present ancestor as `beneath` rather than `here`, so a folder can say "something new
+is under me" without the file growing a limb. That is "the next Grow resolves them" expressed
+in data.
+
+**Five flags, not one enum.** Git's states genuinely overlap; staging a change and then
+editing the file again is both. `dominant()` collapses them for a renderer that wants one
+marker, and is documented as a default that Phase 8 may override — choosing a marker is a
+rendering decision, and the flags are the measurement.
+
+**`gix`'s status offers to write the index and is never allowed to.** It computes a stat-cache
+refresh as a side effect, exposed as `Outcome::write_changes`. Not calling it is one absent
+line of code — exactly the kind of thing someone "fixes" after reading gix's own note that
+writing it back makes subsequent reads faster. `readonly-audit` now runs `status` over every
+fixture; calling `write_changes` once, deliberately, made it fail with `.git/index` 615 → 647
+bytes. The restraint is load-bearing and now has a witness.
+
+**`NeedsUpdate` is not a modification.** gix reports it for unchanged files whose cached stat
+is stale, which is most of a repository right after a checkout. Reading it as a change would
+light up the whole tree on first run — the single most plausible way to make this feature look
+broken while every unit test still passed. `an_untouched_file_is_not_dirty` reads the fixture
+twice and requires the two to agree, because the first read is the one with the cold cache.
+
+**Attachment climbs the path rather than scanning back.** The obvious implementation takes the
+insertion point for a dirty path and scans backwards for a prefix. It is correct and
+quadratic: ancestors sort before all of their descendants, so an untracked file under a
+directory with fifty thousand entries scans past every one. Binary-searching each parent in
+turn is `O(depth · log n)`, and depth is what PRD §6 treats as bounded.
+
+**One measurement worth keeping.** A status read costs ~15 ms; eleven concurrent ones cost
+twenty seconds, because gix spawns worker threads and polls a channel and a test harness
+oversubscribes the machine. Not a product property — `F-THR-6` reads one repository
+infrequently — but it was being paid on three platforms per push, so the tests that can share
+a read do. `AC-THR-2`'s real budget belongs with the T2 repositories, not a synthetic fixture.
+
+**New fixture: `dirty-worktree`**, in all five states at once including a live merge conflict.
+Born dirty rather than dirtied by a test — a test that wrote to a fixture in order to read it
+would be indistinguishable from the defect `readonly-audit` exists to catch. `Builder::try_git`
+is new, and exists only so the merge that is *supposed* to fail can.
+
+**Dependency change:** gix gains the `status` feature, which adds `gix-dir` and `gix-status`
+(129 → 131 packages). `cargo deny` and `dep-guard` both still clean; no network crate.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -399,16 +460,14 @@ cargo xtask readonly-audit
 
 ## Next
 
-**`status.rs` (`F-THR-4`)** — the working-tree overlay. The last Phase 1 module, and the only
-one that reads the working directory at all; `F-EXT-7` keeps it strictly an overlay rather
-than a second skeleton, so it must not be able to change the extracted structure. It is now
-the interesting case for `readonly-audit`, which until this point has been auditing passes
-that never open the working tree — the audit will be watching before the pass that could
-break it exists, which was the point of building it first.
+**T2/T3 pinned repositories and `AC-EXT-1`** — the last Phase 1 end condition, and the only
+one left. The spike's ~37 s T2 figure is still an extrapolation from bevy, which is light on
+file count, the axis the tree diff scales on. PRD §3 specifies real public repositories pinned
+by commit SHA rather than synthetic ones, so this needs a pinning-and-caching mechanism, not
+another generator.
 
-Then the last Phase 1 end condition:
-
-- **T2/T3 pinned repositories and `AC-EXT-1`** — the spike's ~37 s T2 figure is still an
-  extrapolation from bevy, which is light on file count, the axis the tree diff scales on.
-  PRD §3 specifies real public repositories pinned by commit SHA rather than synthetic ones,
-  so this needs a pinning-and-caching mechanism, not another generator.
+Two things now depend on it that did not before. `AC-EXT-1`'s 60 s T2 budget has to cover the
+content scan and folder signals as well as the log pass, and neither existed when the spike
+ran. And `AC-THR-2`'s two seconds for the dirtiness overlay is unmeasured — a synthetic
+eight-file fixture says nothing about it, and `StatusOptions::max_paths` is currently a
+defensible guess rather than a number anything measured.

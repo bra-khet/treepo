@@ -168,9 +168,10 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         let verdict = if found.is_empty() { "clean" } else { "WRITES" };
         let summary = match &outcome {
             Ok(report) => format!(
-                "extracted {}, {}",
+                "extracted {}, {}, {} dirty",
                 count(u64::try_from(report.records).unwrap_or(u64::MAX), "path"),
-                count(u64::from(report.commits), "commit")
+                count(u64::from(report.commits), "commit"),
+                report.dirty
             ),
             Err(reason) => format!("no extraction — {reason}"),
         };
@@ -244,6 +245,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 struct Extraction {
     records: usize,
     commits: u32,
+    dirty: usize,
 }
 
 /// Runs the whole Phase 1 pipeline over one repository.
@@ -256,7 +258,7 @@ struct Extraction {
 /// refusal answers as well as a success does.
 fn extract(root: &Path) -> Result<Extraction, String> {
     use treepo_vcs::lang::{Catalogue, ContentOptions, apply_history_signals};
-    use treepo_vcs::{FilterSet, HistoryOptions, SignalDictionary, WalkOptions};
+    use treepo_vcs::{FilterSet, HistoryOptions, SignalDictionary, StatusOptions, WalkOptions};
 
     let target = treepo_vcs::discover(root).map_err(|e| format!("discover: {e}"))?;
     let filter = FilterSet::built_in();
@@ -286,9 +288,20 @@ fn extract(root: &Path) -> Result<Extraction, String> {
     treepo_vcs::log_pass::apply(&mut structure.records, &history);
     apply_history_signals(&mut structure.records);
 
+    // The reason this command was built before `status` was. Every pass above reads the HEAD
+    // tree and could not write to the working directory if it tried; this one opens the
+    // working directory, and `gix` computes an index stat-cache refresh while it does —
+    // offered through `Outcome::write_changes`, which `treepo_vcs::status` never calls. That
+    // restraint is a line of code, and a line of code is exactly the kind of thing that gets
+    // "fixed" by someone chasing the performance note in gix's own documentation. The census
+    // around this call is what would notice.
+    let dirty = treepo_vcs::status(&target, &filter, &StatusOptions::bounded())
+        .map_err(|e| format!("status: {e}"))?;
+
     Ok(Extraction {
         records: structure.records.len(),
         commits: history.commit_count,
+        dirty: dirty.paths.len(),
     })
 }
 

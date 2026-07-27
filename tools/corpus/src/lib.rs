@@ -105,6 +105,15 @@ impl From<std::io::Error> for BuildError {
     }
 }
 
+/// What a tolerated git command did.
+#[derive(Debug, Clone)]
+pub struct GitOutcome {
+    /// Whether it exited zero.
+    pub success: bool,
+    /// What it printed.
+    pub stdout: String,
+}
+
 /// A repository under construction.
 ///
 /// Every method is deliberately small and explicit; a fixture reads as a list of what the
@@ -261,6 +270,30 @@ impl Builder {
     /// [`BuildError`] if git is missing or the command fails.
     pub fn git(&self, args: &[&str]) -> Result<String, BuildError> {
         self.git_env(args, &[])
+    }
+
+    /// Runs a git command that is *expected* to fail, and reports whether it did.
+    ///
+    /// For the one fixture whose point is a command failing: an unresolved merge conflict is
+    /// built by running a merge that conflicts. Separate from [`git`](Self::git) so that a
+    /// tolerated failure is always a deliberate one — every other call still turns a failing
+    /// git command into a build error.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError::GitMissing`] if git is not on `PATH`. A non-zero exit is not an error
+    /// here; it is the return value.
+    pub fn try_git(&self, args: &[&str]) -> Result<GitOutcome, BuildError> {
+        let mut command = Command::new("git");
+        command.arg("-C").arg(&self.root).args(args);
+        command.env("GIT_CONFIG_NOSYSTEM", "1");
+        command.env("HOME", &self.root);
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        let output = command.output().map_err(BuildError::GitMissing)?;
+        Ok(GitOutcome {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        })
     }
 
     /// Runs a git command with extra environment.

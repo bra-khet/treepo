@@ -163,6 +163,12 @@ pub fn all_shapes() -> &'static [Shape] {
             build: build_multi_remote,
         },
         Shape {
+            name: "dirty-worktree",
+            covers: "F-THR-4 all five dirtiness states; F-EXT-7",
+            platforms: Platforms::All,
+            build: build_dirty_worktree,
+        },
+        Shape {
             name: "symlinks",
             covers: "PRD §6 Symlinks",
             platforms: Platforms::UnixOnly,
@@ -354,6 +360,53 @@ fn build_excluded_content(root: &Path, name: &str) -> Result<(), BuildError> {
     builder.write("legacy.log", b"tracked despite the pattern\n")?;
     builder.git(&["add", "--force", "legacy.log"])?;
     builder.commit("track a file the ignore file also matches")?;
+    Ok(())
+}
+
+/// A repository left deliberately dirty, in all five `F-THR-4` states at once.
+///
+/// The only fixture whose working tree disagrees with HEAD on purpose. Every other shape is
+/// committed and clean, which is fine for extraction — it reads the HEAD tree — but leaves
+/// `treepo-vcs::status` with nothing to find.
+///
+/// It is dirty *as built*, rather than dirtied by a test. That matters for
+/// `cargo xtask readonly-audit`: the audit proves extraction changes nothing, so a test that
+/// dirtied a fixture in order to read it would be indistinguishable from the defect the audit
+/// exists to catch. Born dirty, it stays byte-identical across a status read.
+fn build_dirty_worktree(root: &Path, name: &str) -> Result<(), BuildError> {
+    let mut builder = Builder::init(root.to_path_buf(), name)?;
+    builder.write(".gitignore", b"/build/\n")?;
+    builder.write_source("src/modified.rs", 30)?;
+    builder.write_source("src/deleted.rs", 20)?;
+    builder.write_source("src/staged.rs", 25)?;
+    builder.write_source("src/clean.rs", 15)?;
+    builder.write("conflict.txt", b"original line\n")?;
+    builder.commit("a clean starting point")?;
+
+    // A merge conflict, left unresolved. Two branches change the same line, and the merge is
+    // expected to fail — that failure *is* the fixture.
+    builder.git(&["checkout", "--quiet", "-b", "side"])?;
+    builder.write("conflict.txt", b"the side's line\n")?;
+    builder.commit("change it on the side branch")?;
+    builder.git(&["checkout", "--quiet", "main"])?;
+    builder.write("conflict.txt", b"main's line\n")?;
+    builder.commit("change it on main")?;
+    let merge = builder.try_git(&["merge", "--no-edit", "side"])?;
+    assert!(
+        !merge.success,
+        "the `side` merge is supposed to conflict; if it stopped conflicting this fixture \
+         no longer covers F-THR-4's conflicted state"
+    );
+
+    // The other four states, on top of the conflict.
+    builder.write_source("src/modified.rs", 45)?; // tracked, edited      -> modified
+    builder.write_source("src/staged.rs", 60)?;
+    builder.git(&["add", "src/staged.rs"])?; //                           -> staged
+    builder.git(&["rm", "--quiet", "src/deleted.rs"])?; //                -> pending delete
+    builder.write("src/untracked.rs", b"fn brand_new() {}\n")?; //        -> untracked
+    builder.write("newdir/inside.rs", b"fn nested() {}\n")?; //           -> untracked, collapsed
+    // Ignored, and therefore not dirtiness at all — F-EXT-8 must drop it.
+    builder.write("build/artifact.o", b"not news\n")?;
     Ok(())
 }
 

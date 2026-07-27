@@ -25,6 +25,7 @@ gix = { version = "0.86", default-features = false, features = [
   "revision",             # commit graph traversal
   "mailmap",              # F-EXT-9
   "attributes",           # F-EXT-8 item 4 — .gitattributes linguist-* markers
+  "status",               # F-THR-4 working-tree dirtiness — the only pass that reads it
   "sha1",                 # object hashing — gix does not build without a hash backend
   "max-performance-safe", # perf without a C dependency
   "parallel",

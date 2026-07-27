@@ -30,6 +30,9 @@
 //!   above already measured. Reads no blob and stats no path.
 //! * [`mailmap`] — `F-EXT-9`. One human is one contributor.
 //! * [`log_pass`] — `F-EXT-2`. Every temporal and ownership primitive, from one traversal.
+//! * [`status`] — `F-THR-4`. Working-tree dirtiness, as an overlay over the finished
+//!   structure. The only pass that reads the working directory, and the only one that is not
+//!   extraction: nothing it produces reaches the manifest.
 //!
 //! Two ordering constraints, and they are the only ones in the crate. [`signals::apply`]
 //! needs [`lang::scan`] to have run, or every folder reads as having no matching content and
@@ -37,7 +40,9 @@
 //! pass and a history pass, because `stability` divides churn in lines by a line count and
 //! `doc_staleness_days` compares commit times selected by content category.
 //!
-//! Still to come in Phase 1: `status` (`F-THR-4`).
+//! [`status`] is outside that ordering entirely. It reads a different source, answers a
+//! different question, and runs on a different schedule (`F-THR-6`) — the passes above run
+//! once per Grow, and this one runs whenever a user saves a file.
 //!
 //! # `git blame` is not reachable from here
 //!
@@ -79,6 +84,7 @@ pub mod lang;
 pub mod log_pass;
 pub mod mailmap;
 pub mod signals;
+pub mod status;
 pub mod walk;
 
 pub use discover::{DiscoverError, Notice, RepoTarget, Target, discover};
@@ -89,4 +95,8 @@ pub use lang::{
 pub use log_pass::{History, HistoryError, HistoryOptions, PathHistory, log_pass};
 pub use mailmap::Identities;
 pub use signals::{SignalDictionary, SignalEntry};
+pub use status::{
+    Dirtiness, DirtyPath, DirtyState, Overlay, StatusError, StatusOptions, WorkingTreeStatus,
+    status,
+};
 pub use walk::{Structure, StructureSource, WalkError, WalkOptions, walk};
