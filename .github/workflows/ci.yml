@@ -51,6 +51,13 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # On all three platforms rather than in a job of its own, because what it audits is
+      # filesystem behaviour: Windows is where a stray handle is most likely to leave
+      # something behind, and the symlink and non-UTF-8 shapes only exist on unix and Linux.
+      # The corpus is already built by the step above, so this costs seconds.
+      - name: Assert extraction writes nothing (AC-MAN-2, AC-EXT-4)
+        run: cargo xtask readonly-audit
+
   lint:
     name: fmt & clippy
     runs-on: ubuntu-latest

@@ -7,16 +7,18 @@
 //! ```text
 //! cargo xtask determinism     # AC-DET-1/2/3 — triple-run digests, compared across platforms
 //! cargo xtask dep-guard       # N6 — no generative crate may depend on bevy
+//! cargo xtask readonly-audit  # AC-MAN-2, AC-EXT-4 — extraction writes nothing
 //! ```
 //!
-//! Commands land with the phase that needs them: `readonly-audit` in Phase 1,
-//! `id-coverage` in Phase 5, `budget` in Phase 12 (architecture, xtask file tree).
+//! Commands land with the phase that needs them: `id-coverage` in Phase 5 and `budget` in
+//! Phase 12 (architecture, xtask file tree).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod dep_guard;
 mod determinism;
+mod readonly_audit;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -26,12 +28,12 @@ fn main() -> ExitCode {
     let outcome = match command {
         Some("determinism") => determinism::run(rest),
         Some("dep-guard") => dep_guard::run(rest),
+        Some("readonly-audit") => readonly_audit::run(rest),
 
         // Listed rather than left to fall through as "unknown command", because the
         // campaign document tells a reader these exist before the phase that builds them.
-        Some(pending @ ("readonly-audit" | "id-coverage" | "budget")) => Err(format!(
-            "`{pending}` lands with a later phase: readonly-audit in Phase 1, \
-             id-coverage in Phase 5, budget in Phase 12"
+        Some(pending @ ("id-coverage" | "budget")) => Err(format!(
+            "`{pending}` lands with a later phase: id-coverage in Phase 5, budget in Phase 12"
         )),
 
         Some("help" | "--help" | "-h") | None => {
@@ -68,7 +70,12 @@ fn print_usage() {
          \x20                      --check <path>  compare against an existing report\n\
          \n\
          \x20   dep-guard        Assert no crate in the generative set depends on bevy, and\n\
-         \x20                    that treepo-det depends on nothing at all (N6).\n"
+         \x20                    that treepo-det depends on nothing at all (N6).\n\
+         \n\
+         \x20   readonly-audit   Run every extraction pass over every corpus fixture and\n\
+         \x20                    prove nothing was written to it (AC-MAN-2, AC-EXT-4).\n\
+         \x20                      --fixture <name>  audit one shape\n\
+         \x20                      --self-test       only prove the detector detects\n"
     );
 }
 

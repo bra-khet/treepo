@@ -1595,7 +1595,10 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "corpus",
  "treepo-det",
+ "treepo-model",
+ "treepo-vcs",
 ]
 
 [[package]]

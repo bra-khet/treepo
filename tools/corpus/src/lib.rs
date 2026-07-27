@@ -347,6 +347,9 @@ pub fn build(root: &Path, shape: Shape) -> Result<Fixture, BuildError> {
 /// Tests call this rather than [`build_all`] so a run does not pay to rebuild fixtures that
 /// have not changed. The stamp file records the shape list, so adding a shape rebuilds.
 ///
+/// Shapes this platform cannot build are absent from the result, exactly as they are from
+/// [`build_all`] — every returned [`Fixture`] names a directory that exists.
+///
 /// # Errors
 ///
 /// [`BuildError`] if the corpus needs building and cannot be built.
@@ -361,6 +364,13 @@ pub fn ensure(root: &Path) -> Result<Vec<Fixture>, BuildError> {
     if std::fs::read_to_string(&stamp).is_ok_and(|found| found == expected) {
         return Ok(all_shapes()
             .iter()
+            // BUG FIX: ensure() listed fixtures it had never built
+            // Fix: the cache-hit path returned every shape, while build_all skips shapes this
+            //      platform cannot build — so a second call handed back `symlinks` on Windows
+            //      and `non-utf8` anywhere but Linux, pointing at directories that do not
+            //      exist. Filtered here so both paths agree on what "the corpus" is.
+            // Sync: build_all(), which applies the same filter when building.
+            .filter(|shape| shape.platforms.available())
             .map(|shape| Fixture {
                 name: shape.name,
                 path: root.join(shape.name),

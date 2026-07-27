@@ -200,8 +200,8 @@ and it now is.
 | `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | **done** — plus `F-EXT-8` rule 4 and `F-EXT-6` |
 | `assets/languages/languages.ron` | **done** |
 | `crates/treepo-vcs/signals.rs` + `assets/params/folder-signals.ron` (`F-EXT-5`) | **done** |
+| `xtask readonly-audit` (`AC-MAN-2`, `AC-EXT-4`) | **done** — 15 fixtures, 0 writes, wired into CI on all three platforms |
 | `crates/treepo-vcs/status.rs` (`F-THR-4`) | not started |
-| `xtask readonly-audit` (`AC-MAN-2`) | not started |
 | T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
 
 The three deliberately-`None` fields are now filled: `BalanceScore::kind`,
@@ -331,6 +331,55 @@ refuses any future `TestLike` rule on an entry whose names overlap the catalogue
 directories. Verified the way the `compile_fail` gates were: the bad rule was reinstated, the
 test failed with the right message, and it was reverted.
 
+### `readonly-audit` — the observer problem, and what it found
+
+`cargo xtask readonly-audit` censuses every corpus fixture, runs every Phase 1 pass over it,
+censuses it again, and compares. **15 fixtures, 14 extracted, 0 writes.** It is a step in the
+existing three-platform test job rather than a job of its own — what it audits is filesystem
+behaviour, so Windows is the interesting runner, and the symlink and non-UTF-8 shapes only
+exist on unix and Linux.
+
+**The observer must not share code with the observed.** The census uses `std::fs` and
+`treepo_det::Sha256` and nothing else — no `gix`, no reuse of `treepo-vcs`'s walk. An auditor
+built from the thing it audits cannot see a defect the two have in common, which is the same
+argument `tools/corpus` already makes for building fixtures with `git` and reading them with
+`gix`. For the same reason the audit calls each extraction pass by name rather than through a
+pipeline helper: a helper is somewhere a pass could quietly stop being called while the audit
+stayed green.
+
+**`git status` is kept as a second oracle**, because `AC-MAN-2` names it and because it can
+see an index whose stat cache no longer matches the tree — dirty without any byte changing.
+Two hazards, both real: it must run with `GIT_OPTIONAL_LOCKS=0` or the oracle writes the index
+refresh it was brought in to detect, and it must be skipped where the fixture has no `.git`,
+because git searches *upward* and the corpus lives under `target/` inside treepo's own working
+tree. Un-skipped, `no-git` and `bare` would have been answered about treepo. An oracle pointed
+at the wrong repository agrees with itself perfectly and means nothing. The count it covered
+(13 of 15) is printed, so an oracle that quietly stopped being asked is visible.
+
+**`N3` bans `std::time::SystemTime` and this is the one place in the workspace outside what
+the ban protects.** The exception is a single type alias with the reasoning attached, not a
+per-use allow. What stays banned is the part that matters: `SystemTime::now` is a disallowed
+*method*, and the audit never reaches it — so it still cannot depend on when it runs.
+
+**The detector is tested on every run.** After a clean report the command mutates a throwaway
+directory four ways — added, removed, content changed *at the same length*, and modification
+time moved with the bytes untouched — and confirms all four are caught with the right cause
+named. The last two are the pair that matters: a write that restores the length and content
+still moves the mtime, and a write that restores the mtime still changes the content, so
+between them no shape of write is invisible. It is also a `cargo test` case, so breaking the
+detector fails the suite rather than waiting for someone to run the audit.
+
+The whole audit was then verified the way the `compile_fail` gates and the signals dictionary
+were: a write was injected into the extraction path, and the run failed naming four separate
+findings — a created file and a moved directory mtime under `[repository]`, a resized file
+under `[working tree]`, and the `git status` disagreement — before being reverted.
+
+**One real bug found, in `corpus::ensure`.** Its cache-hit path returned every shape while
+`build_all` skips shapes the platform cannot build, so a second call handed back `symlinks` on
+Windows and `non-utf8` anywhere but Linux, pointing at directories that had never been created.
+`degenerate.rs` never saw it because those tests are platform-gated and ask for fixtures by
+name. The audit walks the list, so it hit it immediately.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -345,21 +394,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo xtask determinism && cargo xtask dep-guard && cargo deny check
+cargo xtask readonly-audit
 ```
 
 ## Next
 
 **`status.rs` (`F-THR-4`)** — the working-tree overlay. The last Phase 1 module, and the only
 one that reads the working directory at all; `F-EXT-7` keeps it strictly an overlay rather
-than a second skeleton, so it must not be able to change the extracted structure. Worth
-building after `readonly-audit` exists, so the audit is already watching when the one pass
-that touches the working tree arrives.
+than a second skeleton, so it must not be able to change the extracted structure. It is now
+the interesting case for `readonly-audit`, which until this point has been auditing passes
+that never open the working tree — the audit will be watching before the pass that could
+break it exists, which was the point of building it first.
 
-Then the two Phase 1 end conditions still open:
+Then the last Phase 1 end condition:
 
-- **`cargo xtask readonly-audit`** (`AC-MAN-2`, `AC-EXT-4`) — assert zero writes to any
-  fixture working tree. The corpus gives it something to audit; the HEAD-tree walk should
-  make it trivially green, which is the point of having built it that way.
 - **T2/T3 pinned repositories and `AC-EXT-1`** — the spike's ~37 s T2 figure is still an
   extrapolation from bevy, which is light on file count, the axis the tree diff scales on.
   PRD §3 specifies real public repositories pinned by commit SHA rather than synthetic ones,

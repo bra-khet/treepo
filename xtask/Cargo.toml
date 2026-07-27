@@ -7,10 +7,22 @@ rust-version.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-# No external dependencies, deliberately. This binary is what CI runs to decide whether a
+# No *external* dependencies, deliberately. This binary is what CI runs to decide whether a
 # constraint holds; anything it depends on is something that could change the answer.
+#
+# The workspace crates below are here because `readonly-audit` has to run the real extraction
+# passes — auditing a reimplementation would prove nothing about the product. The audit's
+# observing half is held to the original rule and uses `std::fs` and `treepo-det` only, so the
+# thing doing the measuring shares no code with the thing being measured; see the module docs
+# in src/readonly_audit.rs.
 [dependencies]
 treepo-det = { workspace = true }
+treepo-model = { workspace = true }
+treepo-vcs = { workspace = true }
+
+# The fixtures to audit. Dev-time only, exactly as in treepo-vcs's dev-dependencies: it shells
+# out to `git`, which the product never does (R1, architecture D3).
+corpus = { path = "../tools/corpus" }
 
 [lints]
 workspace = true
