@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "treepo-det"
 version = "0.1.0"
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "treepo-det",
+]

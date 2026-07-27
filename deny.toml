@@ -38,6 +38,11 @@ allow = [
 ]
 confidence-threshold = 0.93
 exceptions = []
+# The allow-list is written for the dependency set the product will have, not the one it
+# has today. Until those crates arrive, every entry is "unused" and warning about each one
+# would bury a real finding in noise. This silences only "you allowed a license nothing
+# uses" — never "this license is not allowed".
+unused-allowed-license = "allow"
 
 [licenses.private]
 ignore = true
