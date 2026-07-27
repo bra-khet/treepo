@@ -184,6 +184,18 @@ pub fn log_pass(
     let repo = &repo_target.repo;
     let identities = Identities::load(repo);
 
+    // Commits at a shallow clone's boundary record a parent whose object was never fetched.
+    // Git grafts those to parentless and shows the boundary commit as introducing
+    // everything; matching that keeps a shallow clone an ordinary path (PRD §6) instead of
+    // an extraction that dies on a missing object. Resolved once here so `diff_chunk` stays
+    // strict — a missing object anywhere else is real corruption and should still be loud.
+    let boundary: std::collections::BTreeSet<gix::ObjectId> = repo
+        .shallow_commits()
+        .ok()
+        .flatten()
+        .map(|commits| commits.iter().copied().collect())
+        .unwrap_or_default();
+
     // ---- phase one: the graph -------------------------------------------------------
     let mut jobs: Vec<Job> = Vec::new();
     let mut authors: BTreeMap<AuthorKey, AuthorEntry> = BTreeMap::new();
@@ -228,9 +240,14 @@ pub fn log_pass(
         if parents.len() > 1 {
             merge_count = merge_count.saturating_add(1);
         } else {
+            let parent = if boundary.contains(&info.id) {
+                None
+            } else {
+                parents.first().copied()
+            };
             jobs.push(Job {
                 commit: info.id,
-                parent: parents.first().copied(),
+                parent,
                 time,
                 author,
             });

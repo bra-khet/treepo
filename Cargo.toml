@@ -5,6 +5,7 @@ members = [
   "crates/treepo-model",
   "crates/treepo-vcs",
   "xtask",
+  "tools/corpus",
   "tools/spike-numstat",
 ]
 

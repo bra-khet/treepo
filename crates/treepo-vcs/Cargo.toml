@@ -36,5 +36,11 @@ gix = { version = "0.86", default-features = false, features = [
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 
+# Fixture builder for `tests/degenerate.rs`. Dev-only: it shells out to `git`, which the
+# product never does (R1, architecture D3), and building fixtures with a different tool than
+# the one under test is what keeps those tests from being circular.
+[dev-dependencies]
+corpus = { path = "../../tools/corpus" }
+
 [lints]
 workspace = true

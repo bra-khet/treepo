@@ -1,0 +1,20 @@
+[package]
+name = "corpus"
+description = "Builds the deterministic repository fixtures the PRD §3 corpus and §6 edge cases are tested against."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Lives in tools/ rather than crates/ deliberately: `cargo xtask dep-guard` polices the
+# generative set under crates/, and a fixture builder has no business being in it.
+#
+# `treepo-det` only, for the seeded RNG that makes generated file content reproducible. This
+# crate deliberately does **not** depend on `gix` — see the module docs in src/lib.rs for why
+# fixtures are built by `git` itself rather than by the library under test.
+[dependencies]
+treepo-det = { workspace = true }
+
+[lints]
+workspace = true
