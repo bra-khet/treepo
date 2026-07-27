@@ -26,13 +26,16 @@
 //! * [`filter`] — `F-EXT-8`. What counts as the repository's structure.
 //! * [`walk`] — `F-EXT-1`. Structural and size primitives from the HEAD tree.
 //! * [`lang`] — `F-EXT-4`. Language, LOC, and content categories, from one read per file.
+//! * [`signals`] — `F-EXT-5`. Folder conventions as structured records, from what the passes
+//!   above already measured. Reads no blob and stats no path.
 //! * [`mailmap`] — `F-EXT-9`. One human is one contributor.
 //! * [`log_pass`] — `F-EXT-2`. Every temporal and ownership primitive, from one traversal.
 //!
-//! Two of them have an ordering constraint, and it is the only one in the crate:
-//! [`lang::apply_history_signals`] needs both a content pass and a history pass to have run,
-//! because `stability` divides churn in lines by a line count and `doc_staleness_days`
-//! compares commit times selected by content category. Everything else composes in any order.
+//! Two ordering constraints, and they are the only ones in the crate. [`signals::apply`]
+//! needs [`lang::scan`] to have run, or every folder reads as having no matching content and
+//! every weight is modulated downward. [`lang::apply_history_signals`] needs both a content
+//! pass and a history pass, because `stability` divides churn in lines by a line count and
+//! `doc_staleness_days` compares commit times selected by content category.
 //!
 //! Still to come in Phase 1: `status` (`F-THR-4`).
 //!
@@ -75,6 +78,7 @@ pub mod filter;
 pub mod lang;
 pub mod log_pass;
 pub mod mailmap;
+pub mod signals;
 pub mod walk;
 
 pub use discover::{DiscoverError, Notice, RepoTarget, Target, discover};
@@ -84,4 +88,5 @@ pub use lang::{
 };
 pub use log_pass::{History, HistoryError, HistoryOptions, PathHistory, log_pass};
 pub use mailmap::Identities;
+pub use signals::{SignalDictionary, SignalEntry};
 pub use walk::{Structure, StructureSource, WalkError, WalkOptions, walk};

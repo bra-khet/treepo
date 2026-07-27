@@ -71,6 +71,13 @@ fn extract_content(
     )
     .expect("content scan");
 
+    let catalogue = Catalogue::built_in();
+    treepo_vcs::signals::apply(
+        &mut structure.records,
+        &treepo_vcs::SignalDictionary::built_in(),
+        &catalogue,
+    );
+
     let history = log_pass(&target, &filter, HistoryOptions::default()).expect("history");
     treepo_vcs::log_pass::apply(&mut structure.records, &history);
     // Last, because it needs both of the passes above (see `treepo_vcs::lang`).
@@ -474,6 +481,38 @@ fn a_plain_directory_still_gets_its_content_counted() {
     let root = &structure.records[0];
     assert!(root.size.lines.total > 0);
     assert!(root.derived.comment_density.is_some());
+}
+
+/// `F-EXT-5` against a fixture git built: a `vendor` marked `linguist-vendored`, holding a
+/// `src` that belongs to somebody else.
+#[test]
+fn a_vendored_folder_is_signalled_and_encloses_what_it_contains() {
+    let (_, structure, _, _, _) = extract_content("excluded-content");
+    let by_path = treepo_vcs::walk::by_path(&structure.records);
+
+    let vendor = by_path[&path("vendor")]
+        .folder_signal
+        .as_ref()
+        .expect("vendor carries a signal");
+    assert_eq!(&*vendor.signal_name, "vendor");
+    // Somebody else's code is weighted well below the project's own.
+    assert!(vendor.effective_weight < treepo_det::Fx::from_ratio(1, 2));
+    assert!(!vendor.is_nested());
+
+    // `src` is a signal wherever it is, and the record says whose src it is.
+    let theirs = by_path[&path("src")]
+        .folder_signal
+        .as_ref()
+        .expect("src carries a signal");
+    assert!(!theirs.position_in_hierarchy.is_within("vendor"));
+
+    // The marked subtree reads as generated, which is what modulates the weight.
+    assert!(
+        by_path[&path("vendor")]
+            .size
+            .category_bytes
+            .contains_key(&ContentCategory::Generated)
+    );
 }
 
 /// Every shape must be reachable, so a fixture cannot rot unnoticed.

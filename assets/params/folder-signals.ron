@@ -1,0 +1,254 @@
+// The folder-convention dictionary — `F-EXT-5`, `design/feature-system.md` §3.1.
+//
+// > A folder named `public`, `src`, `lib`, `internal`, `vendor`, `assets`, `docs`, `scripts`,
+// > `test(s)`, `examples`, `pkg`, `cmd`, `crates`, etc. receives a structured signal.
+//
+// Read by `treepo-vcs::signals`. The point of the section is that these are *never* booleans:
+// a `public` full of static assets means something different from a `public` full of binaries
+// or a `public` that is really a package root. So an entry declares a conventional weight,
+// and then declares what evidence would confirm or contradict it.
+//
+// # Weights are per mille, not floats
+//
+// `N3` keeps floats out of everything that reaches generated output, so a weight is an
+// integer in `0..=1000` and `1000` means `1.0`. Per mille rather than the parts-per-million
+// used for author shares: this file is hand-tuned, and `950` reads as "0.95" where `950000`
+// does not. `adjust` is signed per mille on the same scale.
+//
+// # What a weight means
+//
+// How structurally central the folder is to the project *as its own work*. `src` is high
+// because it is the thing the repository is; `vendor` is low because it is somebody else's
+// code living in this tree. It is not importance-to-the-user and it is not size.
+//
+// # How evidence applies
+//
+// Every rule whose bounds all hold contributes its `adjust`; the sum is added to `weight`
+// and clamped to `0..=1000`. Rules are independent by design — each one is a sentence a
+// reader can check against the folder in front of them, which a single tuned formula is not.
+//
+// Ratios available to a rule, each a proportion of the subtree in `0..=1000`:
+//
+// * `Code` `Asset` `Config` `Docs` `Generated` `Binary` `Unknown` — share of bytes in that
+//   content category (`F-EXT-4`).
+// * `TestLike` — share of bytes in files whose name or path reads as a test. Note the
+//   circularity hazard: test-likeness is decided partly by *directory name*, so a `TestLike`
+//   rule on a signal whose own names are test-directory names always fires and never
+//   contradicts. `treepo-vcs::signals` has a test that refuses such a rule outright.
+// * `LanguageConcentration` — the dominant language's share of the subtree's typed bytes.
+//   `1000` is a single-language folder.
+// * `SizeShare` — the subtree's bytes as a proportion of the whole repository's.
+//
+// `implicit_some` lets a bound be written `above: 600` rather than `above: Some(600)`. The
+// bounds are optional because most rules need only one of them, and spelling `Some` twenty
+// times in a file whose whole purpose is to be legible is a poor trade.
+#![enable(implicit_some)]
+(
+    version: 1,
+    signals: [
+        // ---- the project's own source ----
+        (
+            name: "src",
+            weight: 950,
+            names: ["src", "source", "sources"],
+            meaning: "the project's own source root",
+            evidence: [
+                (ratio: Code, above: 600, adjust: 50),
+                // A `src` with hardly any code in it is a container someone named `src`.
+                (ratio: Code, below: 250, adjust: -400),
+                // Six languages under one `src` reads as a monorepo container rather than a
+                // source root. `design/feature-system.md` §3.1 names this case.
+                (ratio: LanguageConcentration, below: 300, adjust: -100),
+                // Not circular: `src` is not a test-directory name, so this only fires for a
+                // `src` that really is mostly a test tree.
+                (ratio: TestLike, above: 700, adjust: -150),
+            ],
+        ),
+        (
+            name: "lib",
+            weight: 900,
+            names: ["lib", "libs", "library", "libraries"],
+            meaning: "library code, meant to be depended on",
+            evidence: [(ratio: Code, below: 250, adjust: -350)],
+        ),
+        (
+            name: "crates",
+            weight: 900,
+            names: ["crates", "packages", "modules", "apps", "services"],
+            meaning: "a workspace of separately-buildable units",
+            evidence: [(ratio: Code, below: 200, adjust: -300)],
+        ),
+        (
+            name: "internal",
+            weight: 850,
+            names: ["internal", "private"],
+            meaning: "code deliberately not part of the public surface",
+            evidence: [(ratio: Code, below: 250, adjust: -350)],
+        ),
+        (
+            name: "cmd",
+            weight: 850,
+            names: ["cmd", "cli", "bin", "binaries"],
+            meaning: "entry points and executables",
+            evidence: [
+                (ratio: Code, below: 250, adjust: -300),
+                // A `bin` full of compiled output is build product, not source.
+                (ratio: Binary, above: 600, adjust: -400),
+            ],
+        ),
+        (
+            name: "pkg",
+            weight: 800,
+            names: ["pkg"],
+            meaning: "packaged, importable code",
+            evidence: [(ratio: Code, below: 250, adjust: -300)],
+        ),
+        (
+            name: "api",
+            weight: 800,
+            names: ["api", "apis", "schema", "schemas", "proto"],
+            meaning: "the interface this project offers",
+            evidence: [(ratio: Code, below: 200, adjust: -250)],
+        ),
+        (
+            name: "include",
+            weight: 750,
+            names: ["include", "includes", "headers"],
+            meaning: "declarations for consumers to compile against",
+            evidence: [(ratio: Code, above: 700, adjust: 50)],
+        ),
+
+        // ---- verification ----
+        (
+            name: "tests",
+            weight: 800,
+            names: ["test", "tests", "spec", "specs", "__tests__", "testing", "e2e"],
+            meaning: "tests, which are the project's own work",
+            // Deliberately not `TestLike`: everything under a folder named `tests` is
+            // test-like *because* it is under a folder named `tests`, so such a rule would
+            // confirm itself. Code share is the independent evidence — a `tests` holding
+            // nothing but prose is a directory that lost its tests.
+            evidence: [
+                (ratio: Code, above: 500, adjust: 50),
+                (ratio: Code, below: 200, adjust: -350),
+            ],
+        ),
+        (
+            name: "benchmarks",
+            weight: 600,
+            names: ["bench", "benches", "benchmark", "benchmarks", "perf"],
+            meaning: "performance measurement",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+        (
+            name: "fixtures",
+            weight: 450,
+            names: ["fixture", "fixtures", "testdata", "golden", "snapshots", "__snapshots__"],
+            meaning: "recorded inputs and expected outputs, not authored logic",
+            evidence: [
+                (ratio: Code, above: 700, adjust: 150),
+                (ratio: Binary, above: 700, adjust: -100),
+            ],
+        ),
+
+        // ---- explanation ----
+        (
+            name: "docs",
+            weight: 700,
+            names: ["doc", "docs", "documentation", "guide", "guides", "manual"],
+            meaning: "documentation written for people",
+            evidence: [
+                (ratio: Docs, above: 500, adjust: 100),
+                // A `docs` with no documents is a directory that outlived its contents.
+                (ratio: Docs, below: 150, adjust: -400),
+                (ratio: Binary, above: 700, adjust: -250),
+            ],
+        ),
+        (
+            name: "examples",
+            weight: 550,
+            names: ["example", "examples", "sample", "samples", "demo", "demos"],
+            meaning: "runnable demonstrations, not the project itself",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+
+        // ---- presentation and static content ----
+        (
+            name: "public",
+            weight: 700,
+            names: ["public", "www", "htdocs", "wwwroot"],
+            meaning: "content served as-is to the outside",
+            evidence: [
+                (ratio: Asset, above: 600, adjust: 100),
+                // The three readings §3.1 distinguishes: assets, binaries, package root.
+                (ratio: Binary, above: 700, adjust: -350),
+                (ratio: Code, above: 600, adjust: -200),
+            ],
+        ),
+        (
+            name: "assets",
+            weight: 650,
+            names: ["asset", "assets", "static", "media", "images", "resources", "res"],
+            meaning: "non-code material the project ships",
+            evidence: [
+                (ratio: Asset, above: 500, adjust: 100),
+                (ratio: Code, above: 700, adjust: -300),
+            ],
+        ),
+        (
+            name: "templates",
+            weight: 550,
+            names: ["template", "templates", "views", "layouts", "partials"],
+            meaning: "markup filled in at run time",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+        (
+            name: "styles",
+            weight: 500,
+            names: ["style", "styles", "stylesheets", "css", "scss", "sass"],
+            meaning: "presentation rules",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+
+        // ---- supporting material ----
+        (
+            name: "scripts",
+            weight: 550,
+            names: ["script", "scripts", "tools", "tooling", "utils", "utilities"],
+            meaning: "supporting programs that are not the product",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+        (
+            name: "config",
+            weight: 600,
+            names: ["config", "configs", "conf", "settings", "etc"],
+            meaning: "how the project is configured",
+            evidence: [
+                (ratio: Config, above: 500, adjust: 100),
+                (ratio: Config, below: 200, adjust: -300),
+            ],
+        ),
+        (
+            name: "migrations",
+            weight: 600,
+            names: ["migration", "migrations", "migrate"],
+            meaning: "an append-only history of schema change",
+            evidence: [(ratio: Code, above: 500, adjust: 50)],
+        ),
+
+        // ---- somebody else's work ----
+        (
+            name: "vendor",
+            weight: 250,
+            names: ["vendor", "vendored", "third_party", "thirdparty", "3rdparty", "external", "externals"],
+            meaning: "code from elsewhere, living in this tree",
+            evidence: [
+                // Marked generated or vendored by the repository itself: it agrees.
+                (ratio: Generated, above: 500, adjust: -50),
+                // A `vendor` that is mostly this project's own languages, and small, is more
+                // likely a namespace than a dependency drop.
+                (ratio: SizeShare, below: 20, adjust: 100),
+            ],
+        ),
+    ],
+)

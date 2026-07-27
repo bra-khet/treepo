@@ -201,6 +201,53 @@ fn almost_nothing_in_this_repository_is_unrecognized() {
     );
 }
 
+/// `F-EXT-5` against a real tree: the conventions this repository actually uses.
+#[test]
+fn folder_signals_describe_this_repositorys_own_conventions() {
+    let (mut structure, _, _) = scan_self();
+    let recorded = treepo_vcs::signals::apply(
+        &mut structure.records,
+        &treepo_vcs::SignalDictionary::built_in(),
+        &Catalogue::built_in(),
+    );
+    assert!(recorded >= 4, "crates, docs, assets, src, tests");
+
+    let by_path = treepo_vcs::walk::by_path(&structure.records);
+    let signal_of = |p: &str| {
+        by_path[&path(p)]
+            .folder_signal
+            .as_ref()
+            .unwrap_or_else(|| panic!("{p} should carry a signal"))
+    };
+
+    // A `src` full of Rust is the case the convention was written for.
+    let src = signal_of("crates/treepo-det/src");
+    assert_eq!(&*src.signal_name, "src");
+    assert!(src.modulation_delta() > treepo_det::Fx::ZERO);
+    assert_eq!(
+        src.content_modulation.language_concentration,
+        treepo_det::Fx::ONE,
+        "one language under this src"
+    );
+
+    // `docs` holds documents, and sits at the root rather than inside anything.
+    let docs = signal_of("docs");
+    assert_eq!(&*docs.signal_name, "docs");
+    assert!(docs.modulation_delta() > treepo_det::Fx::ZERO);
+    assert!(!docs.is_nested());
+
+    // `crates/treepo-det/src` is inside a signalled `crates`, and says so.
+    assert!(src.is_nested());
+    assert!(src.position_in_hierarchy.is_within("crates"));
+
+    // Nothing unnamed picks up a signal by accident.
+    assert!(by_path[&RepoPath::root()].folder_signal.is_none());
+    assert!(
+        by_path[&path("crates/treepo-det")].folder_signal.is_none(),
+        "a crate directory is not a convention"
+    );
+}
+
 /// `AC-DET-2`: the same repository must produce the same content twice, including the
 /// language ids, which are minted in walk order and would drift if the walk did.
 #[test]

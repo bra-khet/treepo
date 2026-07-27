@@ -262,6 +262,16 @@ impl Catalogue {
         &self.languages
     }
 
+    /// Directory names that make everything beneath them test-like.
+    ///
+    /// Exposed so [`signals`](crate::signals) can refuse a folder-signal rule that would
+    /// confirm itself: a `TestLike` condition on a signal whose own name is one of these
+    /// always holds, because the name is what made the contents test-like.
+    #[must_use]
+    pub fn test_directories(&self) -> &[String] {
+        &self.test_directories
+    }
+
     /// What `path` is, given any `.gitattributes` marker that applies to it.
     ///
     /// Precedence, highest first: an explicit `linguist-*` marker, a generated-file naming

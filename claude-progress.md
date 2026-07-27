@@ -196,10 +196,10 @@ and it now is.
 | `crates/treepo-vcs/{log_pass,mailmap}.rs` | **done** — `F-EXT-2`, `F-EXT-9` |
 | `assets/filters/default-exclusions.ron` | **done** |
 | `tools/corpus/**` | **done** — 16 shapes, T0/T1 and the §6 rows |
-| `tests/degenerate.rs` | **done** — 18 rows covered |
+| `tests/degenerate.rs` | **done** — 19 rows covered |
 | `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | **done** — plus `F-EXT-8` rule 4 and `F-EXT-6` |
 | `assets/languages/languages.ron` | **done** |
-| `assets/params/folder-signals.ron` (`F-EXT-5`) | not started |
+| `crates/treepo-vcs/signals.rs` + `assets/params/folder-signals.ron` (`F-EXT-5`) | **done** |
 | `crates/treepo-vcs/status.rs` (`F-THR-4`) | not started |
 | `xtask readonly-audit` (`AC-MAN-2`) | not started |
 | T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
@@ -306,6 +306,31 @@ phases that produce them; defining them now would be guessing at Phase 3.
 
 ---
 
+### `signals.rs` — the two decisions, and the bug the dictionary had
+
+**Evidence rules, not a tuned formula.** Each dictionary entry declares conditions on the
+content ratios and a signed per-mille adjustment; the sum moves the conventional weight.
+Independent rules were chosen over one formula because each is a sentence a reader can check
+against the folder in front of them — "a `docs` with almost no documents in it loses 0.4" is
+auditable in a way that a weighting function's coefficients are not. Weights are per-mille
+integers, not floats, for `N3`: `950` also reads better than `950000` in a file that exists
+to be hand-tuned.
+
+**Nesting is carried, not applied.** `HierarchyPosition::ancestor_signals` records that a
+`docs` sits inside a `vendor`, and that does *not* reach `effective_weight`. Damping a nested
+signal by its ancestor's weight is tempting and no design document asks for it: `F-MAT-5` is
+where nesting is meant to be interpreted, and a compounding rule invented here would bake one
+guess into the manifest where a later phase could make a better one from the same data.
+
+**The first draft of the dictionary had a self-confirming rule.** The `tests` entry was
+modulated by `TestLike` share — but test-likeness is decided partly by *directory name*, so
+everything under a folder named `tests` is test-like *because* it is under a folder named
+`tests`. The rule meant to catch "a `tests` folder with no tests in it" could never fire. It
+now uses code share, which is independent evidence, and `no_signal_tests_a_ratio_its_own_name_determines`
+refuses any future `TestLike` rule on an entry whose names overlap the catalogue's test
+directories. Verified the way the `compile_fail` gates were: the bad rule was reinstated, the
+test failed with the right message, and it was reverted.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -324,12 +349,11 @@ cargo xtask determinism && cargo xtask dep-guard && cargo deny check
 
 ## Next
 
-**`F-EXT-5` folder signals** — `assets/params/folder-signals.ron` plus the structured records
-of `design/feature-system.md` §3.1: `signal_name`, `default_semantic_weight`,
-`content_modulation`, `effective_weight`, `position_in_hierarchy`. `lang.rs` already produces
-most of what the modulation needs (`language_distribution`, `size_ratio`, `binary_ratio` via
-`category_ratio`, and `test_like_ratio` via `Classification::is_test`), so this sprint is
-mostly the dictionary and the weighting, not new extraction.
+**`status.rs` (`F-THR-4`)** — the working-tree overlay. The last Phase 1 module, and the only
+one that reads the working directory at all; `F-EXT-7` keeps it strictly an overlay rather
+than a second skeleton, so it must not be able to change the extracted structure. Worth
+building after `readonly-audit` exists, so the audit is already watching when the one pass
+that touches the working tree arrives.
 
 Then the two Phase 1 end conditions still open:
 
