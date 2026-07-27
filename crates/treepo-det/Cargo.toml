@@ -1,0 +1,18 @@
+[package]
+name = "treepo-det"
+description = "Determinism primitives: fixed-point, table trig, seeded RNG, stable hashing, ordered collections."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Intentionally empty, permanently. This crate is the root of the dependency graph
+# (architecture, Component Breakdown) and depends on nothing but `core` and `alloc`.
+# `no_std` is not portability theatre here — it is what makes `std::time` and
+# `std::collections::HashMap` unreachable from the one crate every generated value flows
+# through.
+[dependencies]
+
+[lints]
+workspace = true

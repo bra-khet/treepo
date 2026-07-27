@@ -1,0 +1,8 @@
+# `cargo xtask <command>` — the project's task runner (xtask/src/main.rs).
+[alias]
+xtask = "run --package xtask --release --"
+
+# Deliberately absent: `target-cpu=native` and any codegen flag that varies with the build
+# machine. The generative pipeline is integer-only so it would not change results today,
+# but a machine-dependent build flag is exactly the kind of thing that makes AC-DET-2 fail
+# on one developer's laptop and nowhere else. Do not add one.

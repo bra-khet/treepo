@@ -1,0 +1,14 @@
+# Pinned toolchain — a determinism input (architecture D2), not a convenience.
+#
+# The generative pipeline is integer-only, so codegen differences cannot move a result.
+# The toolchain is pinned anyway because two things it controls are unspecified across
+# versions and would silently change output:
+#
+#   * `sort_unstable_by` ordering of equal elements
+#   * `#[derive(Hash)]` / DefaultHasher output
+#
+# Bump this deliberately, and re-run `cargo xtask determinism` before and after.
+[toolchain]
+channel = "1.96.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,132 @@
+# cargo-deny — the N2 enforcement mechanism.
+#
+# Requires cargo-deny 0.16 or newer (the `crate = "name"` ban spec).
+#
+# N2 says repository data never leaves the machine and the product is fully functional
+# offline. The mechanism is not a policy document: **there is no network-capable crate in
+# the product dependency graph**, so there is no code path that could send anything
+# anywhere. Adding a transport crate does not get code-reviewed — it fails the build.
+#
+# Run this check on DEFAULT FEATURES ONLY:
+#
+#     cargo deny check
+#
+# Never `--all-features`. The `brp` feature on treepo-app (architecture D10) deliberately
+# pulls Bevy's localhost remote-protocol stack for agent tooling; it is never enabled in a
+# default build, a release build, or a storefront package (RISK-D). The BRP crates are in
+# the ban list below precisely so that making `brp` a default feature fails here.
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+# treepo's own crates are `publish = false` and skipped via `private.ignore`.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "BSL-1.0",
+  "CC0-1.0",
+  "Unlicense",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Every entry below is a crate that can open a connection, terminate TLS, resolve a name,
+# or ship data off the machine. A build failure here is N2 working, not N2 obstructing —
+# if one of these becomes genuinely necessary, that is a constitutional conversation
+# (Constitution §9), not a deny.toml edit.
+deny = [
+  # -- HTTP clients ------------------------------------------------------------------
+  { crate = "reqwest", reason = "N2: HTTP client — no network path exists in the product" },
+  { crate = "ureq", reason = "N2: HTTP client" },
+  { crate = "isahc", reason = "N2: HTTP client" },
+  { crate = "attohttpc", reason = "N2: HTTP client" },
+  { crate = "minreq", reason = "N2: HTTP client" },
+  { crate = "surf", reason = "N2: HTTP client" },
+  { crate = "curl", reason = "N2: HTTP client" },
+  { crate = "curl-sys", reason = "N2: HTTP client" },
+
+  # -- HTTP protocol / servers -------------------------------------------------------
+  { crate = "hyper", reason = "N2: HTTP implementation" },
+  { crate = "hyper-util", reason = "N2: HTTP implementation" },
+  { crate = "h2", reason = "N2: HTTP/2 implementation" },
+  { crate = "h3", reason = "N2: HTTP/3 implementation" },
+  { crate = "axum", reason = "N2: HTTP server" },
+  { crate = "actix-web", reason = "N2: HTTP server" },
+  { crate = "warp", reason = "N2: HTTP server" },
+  { crate = "tide", reason = "N2: HTTP server" },
+  { crate = "rouille", reason = "N2: HTTP server" },
+  { crate = "tiny_http", reason = "N2: HTTP server" },
+  { crate = "tonic", reason = "N2: gRPC" },
+
+  # -- TLS ---------------------------------------------------------------------------
+  # Nothing in a product with no transport has anything to encrypt in transit.
+  { crate = "rustls", reason = "N2: TLS — implies a network transport" },
+  { crate = "tokio-rustls", reason = "N2: TLS" },
+  { crate = "hyper-rustls", reason = "N2: TLS" },
+  { crate = "native-tls", reason = "N2: TLS" },
+  { crate = "hyper-tls", reason = "N2: TLS" },
+  { crate = "openssl", reason = "N2: TLS" },
+  { crate = "openssl-sys", reason = "N2: TLS" },
+  { crate = "webpki", reason = "N2: TLS certificate verification" },
+  { crate = "webpki-roots", reason = "N2: TLS root store" },
+
+  # -- Async runtimes with network I/O -----------------------------------------------
+  # Bevy's task pool is `async-executor`; nothing in the product needs a network reactor.
+  # `mio` is deliberately absent — Bevy's asset file-watcher uses it for inotify, which is
+  # local filesystem I/O.
+  { crate = "tokio", reason = "N2: network-capable runtime — Bevy uses async-executor" },
+  { crate = "async-std", reason = "N2: network-capable runtime" },
+  { crate = "async-net", reason = "N2: async TCP/UDP" },
+  { crate = "socket2", reason = "N2: raw socket API" },
+
+  # -- WebSockets --------------------------------------------------------------------
+  { crate = "tungstenite", reason = "N2: WebSocket" },
+  { crate = "tokio-tungstenite", reason = "N2: WebSocket" },
+  { crate = "websocket", reason = "N2: WebSocket" },
+
+  # -- Name resolution ---------------------------------------------------------------
+  { crate = "hickory-resolver", reason = "N2: DNS" },
+  { crate = "hickory-proto", reason = "N2: DNS" },
+  { crate = "trust-dns-resolver", reason = "N2: DNS" },
+  { crate = "trust-dns-proto", reason = "N2: DNS" },
+
+  # -- Telemetry, crash reporting, analytics -----------------------------------------
+  # N2 second clause: no telemetry containing repository data, and storefront/platform
+  # integrations are never a channel for it. The product carries no reporter at all.
+  { crate = "sentry", reason = "N2: crash reporting is not a channel for repository data" },
+  { crate = "sentry-core", reason = "N2: crash reporting" },
+  { crate = "opentelemetry", reason = "N2: telemetry export" },
+  { crate = "tracing-opentelemetry", reason = "N2: telemetry export" },
+
+  # -- Bevy Remote Protocol (D10) ----------------------------------------------------
+  # Dev-only agent tooling behind treepo-app's non-default `brp` feature. Present here so
+  # that promoting `brp` to a default feature fails this check (RISK-D).
+  { crate = "bevy_remote", reason = "D10: dev-only agent tooling; never in a default or release build" },
+  { crate = "bevy_brp_extras", reason = "D10: dev-only agent tooling; never in a default or release build" },
+]
+
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

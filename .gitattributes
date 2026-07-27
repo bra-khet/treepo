@@ -1,0 +1,22 @@
+# Line endings are a determinism input (N3, AC-DET-2).
+#
+# From Phase 3 onward the generative pipeline reads `assets/params/*.ron` and friends. A
+# file checked out with CRLF on Windows and LF on Linux is a *different file*, so any hash
+# of its bytes — and therefore any tree generated from it — differs by platform, for no
+# reason a user could ever discover. Every file the build or the pipeline reads is pinned
+# to LF here.
+#
+# Markdown is deliberately absent: the ratified documents in `docs/` are already committed
+# with CRLF, nothing hashes them, and renormalizing them would churn the record for no gain.
+
+*.rs      text eol=lf
+*.toml    text eol=lf
+*.ron     text eol=lf
+*.wgsl    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+*.png binary
+*.ttf binary

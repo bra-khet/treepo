@@ -6,3 +6,9 @@ dist/
 build/
 coverage/
 .claude/settings.local.json
+
+# Rust
+/target/
+
+# Cargo.lock is deliberately NOT ignored. treepo is an application, and the exact
+# dependency set is a determinism input (N3, AC-DET-2) as much as rust-toolchain.toml is.

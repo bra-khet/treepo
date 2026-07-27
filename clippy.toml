@@ -1,0 +1,23 @@
+# N3 enforcement at the type and method level (architecture D2).
+#
+# The three classic Rust determinism leaks are HashMap iteration order, unsorted directory
+# reads, and platform libm trig. Two of the three are closed here; the third is closed by
+# `treepo-det::trig` existing at all, plus `clippy::float_arithmetic` denied inside the
+# generative crates.
+#
+# Directory-read ordering has no lint that can catch it — `treepo-vcs::walk` sorts
+# explicitly and Phase 1 tests assert it (AC-DET-3).
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "N3: iteration order is nondeterministic — use treepo_det::OrderedMap" },
+  { path = "std::collections::HashSet", reason = "N3: iteration order is nondeterministic — use treepo_det::OrderedSet" },
+  { path = "std::collections::hash_map::RandomState", reason = "N3: randomly seeded per process" },
+  { path = "std::collections::hash_map::DefaultHasher", reason = "N3: output is not stable across Rust versions — use treepo_det::hash" },
+  { path = "std::time::Instant", reason = "N3: no wall-clock input to the generative pipeline" },
+  { path = "std::time::SystemTime", reason = "N3: no wall-clock input to the generative pipeline" },
+]
+
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "N3: no wall-clock input to the generative pipeline" },
+  { path = "std::time::SystemTime::now", reason = "N3: no wall-clock input to the generative pipeline" },
+]

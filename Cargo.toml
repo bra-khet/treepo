@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/treepo-det"]
+
+# Crates are added here as their phase lands (architecture §File Tree). Phase 0 ships the
+# determinism foundation and the task runner that gates every later phase.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+repository = "https://github.com/bra-khet/treepo"
+publish = false
+
+[workspace.dependencies]
+treepo-det = { path = "crates/treepo-det" }
+
+# Lint policy applies to every member via `[lints] workspace = true`.
+#
+# Crate-specific determinism rules that cannot be expressed workspace-wide — notably
+# `clippy::float_arithmetic`, which the render layer will legitimately need — live as
+# inner attributes in the crate that is bound by them.
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+# N3 — the disallowed lists in clippy.toml are the enforcement; these raise them to errors.
+disallowed_types = "deny"
+disallowed_methods = "deny"
+
+# Dependencies are optimized even in dev builds. Bevy's recommended profile from Phase 5
+# onward; a no-op while the workspace has no external dependencies.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
