@@ -291,6 +291,9 @@ fn excluded_content_is_filtered_but_tracked_files_are_kept() {
 /// and they have already drifted apart once — macOS is Unix but rejects non-UTF-8 names, so
 /// a `cfg(unix)` test outlived the fixture it needed. Checking here means the next drift is
 /// a failure rather than a test that quietly stops existing.
+///
+/// `cfg(unix)` because both callers are Unix-gated; on Windows it would be dead code.
+#[cfg(unix)]
 fn assert_shape_available(name: &str) {
     let shape = corpus::all_shapes()
         .iter()
