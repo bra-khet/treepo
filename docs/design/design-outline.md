@@ -3,7 +3,7 @@
 **Project name:** treepo  
 *Locked 2026-07-27 — see [`../CONSTITUTION.md`](../CONSTITUTION.md) §10 R5. The name is final and no longer provisional in any document. Earlier candidate names (Worldtree, Repo Arbor, The Living Manifest, Grove of the Code, “the Tree”, srcerer) are retained only as historical reference.*
 
-**Last updated:** 2026-07-26  
+**Last updated:** 2026-07-27  
 **Status:** Active living summary. Detailed supplemental documents exist for the Feature System, Engine Architecture (Grow vs Thrive), and Core Visual Construction. This outline is the high-level single source of truth and is kept consistent with those documents.
 
 ---
@@ -69,13 +69,19 @@ Age and churn are major drivers of both appearance and behavior. Fresh / high-re
 
 ### 4. Engine Architecture: Grow vs Thrive
 
-A dual-phase system keeps expensive analysis rare and the living feel constant. Detailed contracts, triggers, cinematic behavior, and Bevy implementation notes live in [`engine-architecture.md`](engine-architecture.md) (v0.2). High-level summary:
+A dual-phase system keeps expensive analysis rare and the living feel constant. Detailed contracts, staging, triggers, cinematic behavior, first-run flow, and Bevy implementation notes live in [`engine-architecture.md`](engine-architecture.md) (v0.3). High-level summary:
 
 **Grow Phase (long tick / structural + cinematic update)**  
-Owns complete topology rebuilds and diff-driven transitions. Performs full or incremental repository scan, primitive extraction, L-system regeneration, enrichment placement, and constrained cellular material passes on changed regions. Classification threshold crossings are rendered as explicit, dramatic transformations. Grow is event-driven, off the main thread, and designed to be watched (cinematic, exportable). First-time association of a repository plays the entire history as one continuous Grow sequence.
+Owns complete topology rebuilds and diff-driven transitions. Performs full or incremental repository scan, primitive extraction, L-system regeneration, enrichment placement, and constrained cellular material passes on changed regions. Classification threshold crossings are rendered as explicit, dramatic transformations. Grow computation is event-driven and off the main thread; results are **staged** rather than forced into interruptive playback. The user chooses when to watch and when to **commit** staged changes into the live world. Playback is cinematic and exportable.
+
+**Staging stack & playback surface**  
+Threshold-meeting changes become ordered, discrete, replayable stages (path-hash deterministic). A dedicated carved-wood / organic panel (VS Code–style stage tree) supports step, continuous play, forward/reverse, jump-to-stage, play-all-remaining, and collapse-to-final. Thrive shows dirtiness and lightweight previews; only a user Grow commit promotes stages. Dual-phase ownership is unchanged — staging defers the atomic commit.
+
+**First-time association**  
+Background computation of staged history starts immediately. An onboarding modal teaches Grow vs Thrive, staging, and dirtiness, with thematic progress art. Always available: **Watch the birth** (recommended front door) or **Skip to present** (load final committed state into Thrive). Never an unavoidable long wait.
 
 **Thrive Phase (short tick / main loop)**  
-Keeps the world alive. Continuous ambient animation, worker behaviors, dirtiness visualization, lightweight local particles/CA on dirty rectangles only, all player interaction, and reactions to non-structural signals. Structure is frozen between Grows. A narrowly scoped State Sync may run inside Thrive for lightweight status (ahead/behind, open issues, etc.) without triggering topology change.
+Keeps the world alive. Continuous ambient animation, worker behaviors, dirtiness visualization, lightweight local particles/CA on dirty rectangles only, all player interaction (including the stage panel), and reactions to non-structural signals. Structure is frozen between committed Grows. A narrowly scoped State Sync may run inside Thrive for lightweight status (ahead/behind, open issues, etc.) without triggering topology change and **never** produces staged Grow entries.
 
 **Performance separation is strict.** Full topology and heavy CA belong exclusively to Grow. Thrive stays cheap enough to hold a smooth interactive frame rate with chunking, dirty rectangles, and static-vs-dynamic separation. Authoritative budgets live in [`../PRD.md`](../PRD.md) §7 — 30 fps floor, designed to sit comfortably above it, with 60 fps explicitly *not* a hard requirement (PRD §11 Q5, decided 2026-07-27).
 
@@ -209,7 +215,7 @@ Will evolve with concrete visual design. Governing principle is already set: sim
 ### 12. Relationship to Other Living Documents
 
 - [`feature-system.md`](feature-system.md) — authoritative catalog of primitives and the full Interaction Physics / rules layer (including age/churn gradients, material flow, and phase-aware behavior).
-- [`engine-architecture.md`](engine-architecture.md) — authoritative dual-phase contracts, triggers, cinematic Grow behavior, State Sync, Bevy notes, and agent BRP live-control (dev-only, §8.1 / D10).
+- [`engine-architecture.md`](engine-architecture.md) — authoritative dual-phase contracts, **Grow staging stack**, playback surface, first-run Watch/Skip path, triggers, cinematic Grow behavior, State Sync, Bevy notes, and agent BRP live-control (dev-only, §8.1 / D10).
 - [`visual-construction.md`](visual-construction.md) — hybrid trunk decision, layered generative architecture, and L-system foundation details.
 - [`l-system-parameterization.md`](l-system-parameterization.md) — authoritative parameter set, primitive→parameter mapping guidelines, and the decision menu for the structural skeleton.
 
@@ -219,4 +225,4 @@ This outline is revised in place. When a decision hardens, it is reflected here 
 
 ---
 
-*End of living outline v0.3. Next concrete work continues in the Feature System mapping tables, L-system parameter derivation, and first Bevy experiments with the hybrid skeleton.*
+*End of living outline v0.3 (updated 2026-07-27 — Grow staging / first-run agency folded into §4). Next concrete work continues in the Feature System mapping tables, L-system parameter derivation, and first Bevy experiments with the hybrid skeleton.*

@@ -1,6 +1,7 @@
 # Architecture: treepo
-> PRD: `docs/PRD.md` v1.1 | Constitution: `docs/CONSTITUTION.md` v1.3 | Mode: greenfield | Date: 2026-07-27
+> PRD: `docs/PRD.md` v1.2 | Constitution: `docs/CONSTITUTION.md` v1.3 | Mode: greenfield | Date: 2026-07-27
 > D10 (agent BRP, dev-only) recorded 2026-07-27 — no Bevy app code yet; lands in Phase 5.
+> D11 (Grow stage stack + user-controlled playback / first-run Watch·Skip) recorded 2026-07-27 — product direction in `docs/design/engine-architecture.md` v0.3; lands mainly in Phases 6–7 and 12.
 
 Rust / Bevy desktop application. Two runtime phases — **Grow** (rare, expensive, cinematic)
 and **Thrive** (continuous, cheap, interactive) — with the boundary between them enforced by
@@ -178,7 +179,8 @@ treepo/
 │   │       ├── migration.rs                # constrained CA material flow
 │   │       ├── connectivity.rs             # N5 cleanup pass
 │   │       ├── transform.rs                # F-GROW-8 threshold sequences
-│   │       ├── checkpoints.rs              # F-GROW-7 staged replay
+│   │       ├── stage.rs                    # F-GROW-11 staged unit type + stack ops
+│   │       ├── checkpoints.rs              # F-GROW-7 multi-checkpoint history → stages
 │   │       └── budget.rs                   # cancellation + progress reporting
 │   │
 │   ├── treepo-render/                      # bevy render layer
@@ -209,17 +211,18 @@ treepo/
 │       └── src/
 │           ├── main.rs                     # wires plugins; #[cfg(feature = "brp")] BrpExtrasPlugin
 │           ├── phase.rs                    # ★ phase boundary — states, events, transitions
-│           ├── grow_task.rs                # off-thread Grow driver
-│           ├── snapshot_sync.rs            # snapshot → ECS reconciliation
-│           ├── triggers.rs                 # F-GROW-2 trigger watcher
+│           ├── grow_task.rs                # off-thread Grow compute → stage stack (D11)
+│           ├── snapshot_sync.rs            # committed snapshot → ECS reconciliation
+│           ├── triggers.rs                 # F-GROW-2 → stage, never forced play (D11)
+│           ├── stage_stack.rs              # F-GROW-11 app-side stack resource + promote
 │           ├── thrive/
 │           │   ├── mod.rs
 │           │   ├── ambient.rs              # F-THR-1
 │           │   ├── heat.rs                 # F-THR-2
 │           │   ├── dirtiness.rs            # F-THR-4
 │           │   ├── workers.rs              # F-THR-5
-│           │   └── state_sync.rs           # F-THR-6
-│           ├── playback.rs                 # F-GROW-4/10 cinema playback
+│           │   └── state_sync.rs           # F-THR-6 — never creates Grow stages
+│           ├── playback.rs                 # F-GROW-4/10/13 cinema + Grow commit
 │           ├── interact/
 │           │   ├── mod.rs
 │           │   ├── pick.rs                 # F-INSP-1/2 via ID buffer
@@ -228,8 +231,9 @@ treepo/
 │           ├── ui/
 │           │   ├── mod.rs
 │           │   ├── theme.rs
-│           │   ├── onboarding.rs           # F-ASSOC-1/2/3/6
-│           │   ├── progress.rs
+│           │   ├── onboarding.rs           # F-ASSOC-1/2/3/6 Watch birth / Skip present
+│           │   ├── progress.rs             # thematic first-run / compute progress
+│           │   ├── stage_panel.rs          # F-GROW-12 carved-wood stage tree
 │           │   ├── inspector.rs            # F-INSP-1
 │           │   ├── export_dialog.rs        # F-EXP-*
 │           │   └── settings/
@@ -312,10 +316,12 @@ treepo/
 - **Dependencies**: `treepo-gen` skeleton, `treepo-id`
 - **Complexity**: high
 
-### Feature: Grow simulation (`F-GROW-1`…`F-GROW-10`)
-- **Files**: `crates/treepo-grow/**`, `crates/treepo-app/src/{grow_task,playback,triggers}.rs`
+### Feature: Grow simulation & staging (`F-GROW-1`…`F-GROW-13`)
+- **Files**: `crates/treepo-grow/**`,
+  `crates/treepo-app/src/{grow_task,playback,triggers,stage_stack}.rs`,
+  `crates/treepo-app/src/ui/stage_panel.rs`
 - **Dependencies**: `treepo-gen`, `treepo-model`
-- **Complexity**: high — diff-driven CA migration is the most intricate subsystem
+- **Complexity**: high — diff-driven CA migration plus ordered stage stack and user promote
 
 ### Feature: Thrive world (`F-THR-1`…`F-THR-8`)
 - **Files**: `crates/treepo-app/src/thrive/**`, `crates/treepo-render/**`
@@ -394,6 +400,20 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 - **Relationships**: derived from a snapshot pair; deterministic (`AC-GROW-2`, per D6 scope)
 - **Persisted**: `cache/timeline-<from>-<to>.bin` — evictable
 
+### StagedGrowChange *(pending structural unit — D11)*
+- **Fields**: `stage_id: u64`, `from_snapshot: Option<u64>`, `to_snapshot: u64` (or inline
+  target state), `timeline: GrowTimeline` (or handle to pre-rendered frame recipe),
+  `metadata: StageMeta` (source commits / range, change size, classification crossings)
+- **Relationships**: ordered entries on `GrowStageStack`; produced by compute, consumed by
+  playback / commit; never applied until user promote (`F-GROW-13`)
+- **Persisted**: `cache/stages/` — evictable; whether stack survives restart is open (engine §9)
+
+### GrowStageStack
+- **Fields**: `stages: VecDeque<StagedGrowChange>`, `cursor: Option<usize>` (playback position)
+- **Relationships**: single source of pending structural history per repository session
+  (`F-GROW-11`). Thrive reads for UI only; State Sync never mutates it.
+- **Persisted**: optional — product default TBD (engine open notes)
+
 ### Settings
 - **Global**: `settings.json` — display, performance, default triggers
 - **Per-repository**: `config.json` — identity policy level (`F-ID-6`), filter overrides
@@ -405,10 +425,11 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 
 ### D1 — Phase boundary: Grow is a pipeline, not a Bevy state
 - **Chosen**: Grow is a pure, off-thread pipeline in crates that **do not depend on `bevy`**
-  (`treepo-gen`, `treepo-grow`). It consumes a `Manifest` and produces an
-  `Arc<WorldSnapshot>` + `GrowTimeline`. Thrive is the only ECS-resident phase. `treepo-app`
-  owns a small `PhaseState` (`Idle | Growing | Playing`) driving playback UI and system run
-  conditions — but the *work* never enters the World.
+  (`treepo-gen`, `treepo-grow`). It consumes a `Manifest` and produces staged units —
+  `StagedGrowChange` (timeline + target snapshot material) — not an immediate live-world
+  mutation. Thrive is the only ECS-resident phase and always reads the last **committed**
+  `Arc<WorldSnapshot>`. `treepo-app` owns `PhaseState` (`Idle | Computing | Playing | …`) and
+  the stage stack resource — the *work* never enters the World as a structural rebuild.
   Reasoning: `N6` says structural work must never enter the continuous loop. If Grow is a
   Bevy state mutating the same `World`, nothing prevents a future contributor from adding a
   scan to a system that happens to run in that state — the constraint survives only as
@@ -501,13 +522,15 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 - **Chosen**: A rasterization worker renders timeline frames into a bounded ring buffer ahead
   of playback; the playback system consumes at a fixed rate (24 fps, `NFR-10`); export drains
   the same buffer. Playback starts once lead exceeds a threshold; the worker applies
-  backpressure when the ring is full.
+  backpressure when the ring is full. Stages prefer **eager** recipe generation so user-started
+  play is instant when material is ready (D11).
   Reasoning: this is `F-GROW-10` as specified, and it makes `F-EXP-4`'s "same frames" property
   structural — the watched sequence and the exported artifact are literally one buffer.
 - **Rejected**: *Render at playback rate, drop frames when slow* — simplest, and produces
   exactly the stutter `AC-GROW-5` forbids.
-- **Rejected**: *Fully pre-render, then play* — smoothest, but adds the entire render time to
-  time-to-first-pixel, which `AC-ASSOC-1` (10 s to first visible growth) cannot absorb at T2.
+- **Rejected**: *Fully pre-render the entire first-run history before any UI choice* — smoothest
+  cinema, but blocks Skip-to-present and fights `AC-ASSOC-1`; final-state-only path must stay
+  cheap (D11).
 
 ### D8 — UI: Bevy UI for product surfaces, egui for the debug surface only
 - **Chosen**: Shipped UI (onboarding, inspector, settings, export) in Bevy UI with a bespoke
@@ -592,6 +615,25 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
   # bevy = { ..., features include bevy_remote only via the brp feature }
   ```
 - **Adopted 2026-07-27** (planning; code lands with Phase 5 — no Bevy app exists yet).
+
+### D11 — Grow is staged: compute in background, user plays and commits
+- **Chosen**: Triggers enqueue **staged Grow changes** onto an ordered stack (`F-GROW-11`).
+  Computation is background and non-seizing. A dedicated stage panel (`F-GROW-12`) exposes step,
+  continuous play, jump, reverse (when available), play-remaining, and collapse-to-final.
+  **Grow commit** (`F-GROW-13`) atomically publishes the selected stage target into the
+  committed `WorldSnapshot` (D4). First association always offers **Watch the birth** and
+  **Skip to present** (`F-ASSOC-6`): Skip loads final committed state without requiring full
+  cinematic pre-render of history. Multi-checkpoint history (`F-GROW-7`) populates the same
+  stack rather than inventing a second control model.
+  Reasoning: product direction 2026-07-27 — Grow's value is highest when chosen; interruptive
+  auto-play and unavoidable first-load waits work against `R1`. Staging maps to developer
+  staging→commit muscle memory without moving topology into Thrive. Dual-phase contracts and
+  D1/D4 remain the enforcement spine; D11 only defers the commit and adds UI surface.
+- **Rejected**: *Auto-play every threshold-meeting Grow* — simpler trigger wiring; seizes the
+  session and undercuts ambient Thrive (J4).
+- **Rejected**: *Compute only when the user hits Play* — avoids stack memory cost, but loses
+  instant playback and progressive first-run progress art.
+- **Adopted 2026-07-27** (planning; code lands Phases 6–7, first-run UI Phase 7/12).
 
 ---
 
@@ -697,32 +739,41 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
         default (no feature) build does not register BRP; `cargo deny check` on default
         features still passes; release profile docs/CI never pass `--features brp`
 
-### Phase 6: Grow simulation
-- **Goal**: Compute the deterministic transition between two world states.
+### Phase 6: Grow simulation & stage units
+- **Goal**: Compute deterministic transitions as discrete staged units (not live-world
+  mutations).
 - **Files**: `crates/treepo-grow/src/{lib,diff,timeline,migration,connectivity,transform,
-  budget}.rs`
+  stage,budget}.rs`
 - **Dependencies**: Phase 4
 - **End Conditions**:
   - [ ] The same snapshot pair produces an identical `GrowTimeline` hash across three runs on
         three platforms (`AC-GROW-2`, per D6 scope)
   - [ ] Connectivity assertion holds after every migration pass — no disconnected mass (`N5`)
-  - [ ] Adding one file to the T2 fixture produces a timeline whose changed elements are
+  - [ ] Adding one file to the T2 fixture produces a staged unit whose changed elements are
         confined to the affected limb (`AC-GROW-4`)
-  - [ ] Cancellation mid-simulation publishes nothing (`AC-GROW-3`)
+  - [ ] Cancellation mid-simulation publishes nothing to the committed world (`AC-GROW-3`)
+  - [ ] Stage unit type is serializable and independently addressable (`F-GROW-11`)
 
-### Phase 7: Grow playback, cinema & triggers
-- **Goal**: Make the transition watchable, smooth, and correctly triggered.
-- **Files**: `crates/treepo-app/src/{grow_task,playback,triggers}.rs`,
+### Phase 7: Staging, playback, cinema & first-run agency
+- **Goal**: Stack-based user control — stage on trigger, play on demand, commit on promote;
+  first-run Watch/Skip.
+- **Files**: `crates/treepo-app/src/{grow_task,playback,triggers,stage_stack}.rs`,
+  `crates/treepo-app/src/ui/{stage_panel,onboarding,progress}.rs`,
   `crates/treepo-export/src/ring.rs`, `crates/treepo-app/src/window.rs` (cinema mode)
 - **Dependencies**: Phase 5, Phase 6
 - **End Conditions**:
   - [ ] Grow playback holds 24 fps with no dropped frames through the most expensive
         transformation on minimum spec (`AC-GROW-5`)
-  - [ ] The main thread never blocks during Grow; the previous world keeps animating
-        (`AC-GROW-1`) — asserted by frame-time trace
-  - [ ] First-run Grow on a T2 repository shows first visible growth within 10 s
-        (`AC-ASSOC-1`)
-  - [ ] Pause, scrub and cancel all function during playback (`F-GROW-4`)
+  - [ ] The main thread never blocks during Grow compute/playback; previous committed world
+        keeps animating (`AC-GROW-1`) — asserted by frame-time trace
+  - [ ] A met trigger stages without interrupting Thrive (`AC-GROW-6`)
+  - [ ] Stage panel supports step, continuous play, jump, and collapse-to-final (`F-GROW-4`,
+        `F-GROW-12`, `AC-GROW-7`)
+  - [ ] Grow commit atomically publishes; discard/cancel leaves prior commit intact
+        (`F-GROW-13`, `AC-GROW-3`, D4)
+  - [ ] First association offers Watch the birth and Skip to present; T2 reaches a usable
+        path within 10 s (`F-ASSOC-6`, `AC-ASSOC-1`, `AC-ASSOC-4`)
+  - [ ] Pause, scrub and cancel function during stage playback (`F-GROW-4`)
 
 ### Phase 8: Thrive liveliness & dirtiness
 - **Goal**: The world stays alive between Grows, and shows what is uncommitted.
@@ -766,21 +817,22 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
         (`AC-MAN-6`)
   - [ ] Per-repository settings survive a folder move (`AC-SET-1`)
 
-### Phase 11: Staged replay, workers & enrichment depth
-- **Goal**: Make the front door carry the weight `R1` places on it.
+### Phase 11: Multi-checkpoint history, workers & enrichment depth
+- **Goal**: Deepen the front door with multi-stage history on the **same** stack model (D11).
 - **Files**: `crates/treepo-grow/src/checkpoints.rs`, `crates/treepo-app/src/thrive/workers.rs`,
   `crates/treepo-gen/src/enrichment.rs`, `crates/treepo-app/src/interact/search.rs`
 - **Dependencies**: Phase 8, Phase 9
 - **End Conditions**:
-  - [ ] Staged replay reconstructs checkpoints from the log stream with **zero checkouts** —
-        asserted by test (`F-GROW-7`)
+  - [ ] Multi-checkpoint history reconstructs checkpoints from the log stream with **zero
+        checkouts** and pushes them as stack stages — asserted by test (`F-GROW-7`)
   - [ ] Checkpoint sampling prefers tags and falls back to time; count and threshold recorded
-        with the footage that set them (§11 Q4)
+        with the footage that set them (PRD §11 Q4)
   - [ ] Search locates a path and moves the camera to it (`F-NAV-6`)
-  - [ ] Staged replay on the T2 fixture holds the Phase 7 playback budget
+  - [ ] Multi-stage first-run on the T2 fixture holds the Phase 7 playback budget and uses the
+        same panel controls as single-stage Grow
 
-### Phase 12: Widget mode, onboarding & packaging — **M3 exit**
-- **Goal**: Ship it.
+### Phase 12: Widget mode, onboarding polish & packaging — **M3 exit**
+- **Goal**: Ship it. Core Watch/Skip onboarding lands in Phase 7; this phase polishes and packs.
 - **Files**: `crates/treepo-app/src/window.rs` (widget mode),
   `crates/treepo-app/src/ui/onboarding.rs`, `.github/workflows/budgets.yml`,
   `xtask/src/budget.rs`, `tests/budgets.rs`
@@ -794,6 +846,7 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
   - [ ] A T4 repository warns before starting, remains cancellable, and does not crash
         (`F-CORP-1`)
   - [ ] No essential flow requires a terminal (`R1`) — verified by a clean-machine walkthrough
+        (install → open → Watch or Skip → export)
 
 ---
 
@@ -809,18 +862,18 @@ Phase 0 (foundation)
                      └→ Phase 5 (bevy shell + baking + nav) ── M1 exit
                               [requires Phase 2 + Phase 4]
 
-Phase 5 + Phase 6 → Phase 7 (playback, cinema, triggers)
+Phase 5 + Phase 6 → Phase 7 (staging stack, playback, first-run agency) ── D11
 Phase 5 + Phase 7 → Phase 8 (thrive liveliness)
 Phase 7           → Phase 9 (export) ──────────── M2 exit
 Phase 9           → Phase 10 (settings + store browser)
-Phase 8 + Phase 9 → Phase 11 (staged replay, workers, enrichment)
-Phase 10 + Phase 11 → Phase 12 (widget, onboarding, packaging) ── M3 exit
+Phase 8 + Phase 9 → Phase 11 (multi-checkpoint history, workers, enrichment)
+Phase 10 + Phase 11 → Phase 12 (widget, onboarding polish, packaging) ── M3 exit
 ```
 
 **Parallel-safe pairs** (no shared files, independent end conditions):
 - Phase 2 ∥ Phase 3 — store work and skeleton work touch disjoint crates after Phase 1
 - Phase 6 ∥ Phase 5 — Grow simulation is headless; the Bevy shell does not gate it
-- Phase 10 ∥ Phase 11 — settings UI and replay/workers are disjoint
+- Phase 10 ∥ Phase 11 — settings UI and multi-checkpoint/workers are disjoint
 
 ---
 
@@ -869,10 +922,10 @@ the store out of the repository. Implemented per D9; gated in Phase 2.
    80k-path tree can exceed `NFR-3`'s 4 GB if held resident. **Mitigation:** chunk residency
    with LOD-appropriate resolution and streaming; Phase 5 end conditions measure T3 memory,
    and the chunk budget is tunable via `F-SET-4`.
-5. **RISK-3 (PRD) — the first Grow may not carry `R1`'s weight.** **Mitigation:** Phase 7
-   delivers the single-diff version early enough to be watched by real viewers at M2; Phase 11
-   (staged replay) is scheduled before M3 rather than after, and is the designated cut line if
-   M3 overruns.
+5. **RISK-3 (PRD) — the first Grow may not carry `R1`'s weight.** **Mitigation:** D11 stages
+   rather than forces play; Phase 7 delivers Watch/Skip + single-stage cinema for M2 viewing;
+   Phase 11 multi-checkpoint stack is scheduled before M3 and remains the designated cut line
+   if M3 overruns (`F-GROW-7`).
 6. **RISK-4 (PRD) — aggregation may erase recognition.** **Mitigation:** Phase 5's `AC-NAV-1`
    is a recorded user test with ≥3 participants, not a self-assessment; `F-NAV-6` search lands
    in Phase 11 as the escape hatch.

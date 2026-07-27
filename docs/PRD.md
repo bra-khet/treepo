@@ -1,8 +1,8 @@
 # treepo — Product Requirements Document
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Status:** Approved. Architecture produced — see `.planning/architecture-treepo.md`.  
-**Last updated:** 2026-07-27 *(amendments E1 `AC-GROW-2`, E2 `F-MAN-2`/`F-MAN-6`; NFR-8 clarified for dev-only BRP / D10)*
+**Last updated:** 2026-07-27 *(v1.2: Grow staging stack, user-controlled playback, refined first-run Watch/Skip — see `design/engine-architecture.md` v0.3; prior: E1 `AC-GROW-2`, E2 `F-MAN-2`/`F-MAN-6`, NFR-8 / D10)*
 
 Companion to [`CONSTITUTION.md`](CONSTITUTION.md), which governs intent and holds the
 non-negotiable constraints `N1`–`N9`, principles `P1`–`P10`, and ratified decisions `R1`–`R6`.
@@ -103,14 +103,16 @@ by eye in under 30 seconds. `AC-MAN-2` (zero writes to the working tree) holds a
 in CI from this milestone onward.
 
 ### M2 — Living Tree *(feature-complete MVP)*
-Grow phase with cinematic diff, first-run Grow, Thrive liveliness, working-tree dirtiness
-overlay, identity model, export.
+Grow phase with cinematic diff, **user-controlled staging** (stage on trigger, play/commit on
+demand), first-run Grow with **Watch the birth / Skip to present**, Thrive liveliness,
+working-tree dirtiness overlay, identity model, export.
 
 **Exit:** The five jobs in §2 are all servable. This is the internal "is the idea good?" gate.
 
 ### M3 — Shippable Product
-Staged history replay, workers, enrichment depth, settings surface, widget mode, onboarding,
-storefront requirements, hardware-floor performance work.
+Multi-checkpoint staged history replay (`F-GROW-7`), workers, enrichment depth, settings
+surface, widget mode, onboarding polish, storefront requirements, hardware-floor performance
+work.
 
 **Exit:** v1 release criteria in §7 met on minimum spec.
 
@@ -133,8 +135,8 @@ it found: git repository, plain directory (no `.git`), shallow clone, bare repos
 **F-ASSOC-3** (P0) — Before any long extraction, the user sees an estimate derived from a fast
 file count, and for T3/T4 an explicit confirmation with the expected duration.
 
-**F-ASSOC-4** (P0) — Extraction and the first Grow are cancellable at any point, leaving no
-partial store (`F-MAN-7`) and nothing written to the working tree.
+**F-ASSOC-4** (P0) — Extraction and first-run Grow computation / playback are cancellable at
+any point, leaving no partial store (`F-MAN-7`) and nothing written to the working tree.
 
 **F-ASSOC-7** (P0) — Association works on repositories the user cannot write to — read-only
 mounts, restricted permissions, foreign clones. Under `F-MAN-1` this is an ordinary path, not
@@ -143,16 +145,28 @@ a degraded one.
 **F-ASSOC-5** (P1) — Recently opened repositories are listed on launch and reopen from cached
 manifest without re-extraction.
 
-**F-ASSOC-6** (P1) — The first Grow begins automatically on first association without further
-user action. It is the front door (`R1`), not something the user must discover.
+**F-ASSOC-6** (P0) — **First-run agency (front door under `R1`).** On first association,
+background computation of the first-run Grow sequence begins immediately, and an onboarding
+surface appears that explains Grow vs Thrive, staging, dirtiness, and the world-tree metaphor,
+with a thematically consistent progress indicator. Two options remain available at all times:
+**Watch the birth** (begin or continue cinematic playback of staged material once enough is
+ready — the recommended front door) and **Skip to present** (load the final committed world
+state into Thrive without watching). Skip must remain affordable even on large histories
+(final-state-only path). The first Grow is never an unavoidable long wait, and never a blank
+window while work proceeds (`design/engine-architecture.md` §3.5).
 
-- **AC-ASSOC-1** — Associating a T2 repository from a cold start reaches first visible growth
-  within 10 s, even if total extraction takes longer. Progressive is mandatory; a blank
-  window is a defect.
+- **AC-ASSOC-1** — Associating a T2 repository from a cold start reaches either first visible
+  growth (if the user chooses Watch) or an interactive Thrive view of the final state (if they
+  choose Skip) within 10 s of a usable path existing — progressive staging/compute is
+  mandatory; a blank window is a defect. Skip-to-present must not wait on full cinematic frame
+  pre-render of history.
 - **AC-ASSOC-2** — Cancelling mid-extraction returns to the picker with no partial store in app
   data and nothing written to the repository at any point.
 - **AC-ASSOC-3** — Pointing at a non-repository directory produces a tree from filesystem
   primitives alone, with a clear notice that age, churn, and ownership are unavailable.
+- **AC-ASSOC-4** — On first association, both **Watch the birth** and **Skip to present** are
+  reachable without completing the full cinematic sequence; Skip commits (or loads) the final
+  world state and enters Thrive.
 
 ### 5.2 Primitive Extraction
 
@@ -459,35 +473,43 @@ density) coexisting with the primary material.
 
 ### 5.7 Grow Phase
 
-Implements `design/engine-architecture.md` §3.
+Implements `design/engine-architecture.md` §3 (v0.3 — staging, playback surface, first-run).
 
-**F-GROW-1** (P0) — Grow runs off the main thread and reports progress via events. Thrive
-continues rendering the previous committed world throughout (`N6`).
+**F-GROW-1** (P0) — Grow **computation** runs off the main thread and reports progress via
+events. Thrive continues rendering the previous **committed** world throughout (`N6`). Staging
+and playback never block the main thread.
 
 **F-GROW-2** (P0) — Triggers, all user-tunable, conservative by default: new commits on HEAD,
-merge/rebase moving HEAD, explicit "Grow Now," and first association. Periodic background
-checking defaults to off.
+merge/rebase moving HEAD, explicit "Stage Grow" / "Grow Now," and first association. Periodic
+background checking defaults to off. **A met threshold stages work; it does not seize the
+session with forced playback** (`design/engine-architecture.md` §3.2–§3.3).
 
-**F-GROW-3** (P0) — Grow computes a diff between committed world states and animates the
-transition — added mass grows outward, removed mass retracts or is reclaimed, material migrates
-along the age/recency gradient, ownership changes propagate as recoloring waves. It never
-swaps geometry silently (`P9`).
+**F-GROW-3** (P0) — Grow computes a diff between world states (committed baseline → target, or
+stage-to-stage for multi-stage sequences) and produces a transition timeline — added mass grows
+outward, removed mass retracts or is reclaimed, material migrates along the age/recency
+gradient, ownership changes propagate as recoloring waves. It never swaps geometry silently
+(`P9`).
 
-**F-GROW-4** (P0) — Playback is passive and non-interactive, with pause, scrub, and cancel.
+**F-GROW-4** (P0) — **Stage playback controls.** While a stage plays cinematically, the user may
+pause, scrub, and cancel. Across the stack, the user may step one stage, play a contiguous
+segment continuously, jump to any stage, play all remaining, or collapse to the final staged
+state without watching every intermediate frame (`design/engine-architecture.md` §3.4).
 
-**F-GROW-5** (P0) — The new world state is committed atomically. Thrive never observes a
-half-built tree.
+**F-GROW-5** (P0) — The new world state is committed **atomically on user promote** (Grow
+commit). Thrive never observes a half-built tree. Cancelling playback or discarding stages
+leaves the previous committed world intact.
 
-**F-GROW-6** (P0) — **First-run Grow (v1 form):** a single empty→HEAD transition, presented as
-one continuous growth sequence. This is explicitly *not* a historical replay — see
-`F-GROW-7`. The drafts' language about "playing the entire history" overstates what a single
-diff delivers, and the distinction should be reflected in any user-facing copy.
+**F-GROW-6** (P0) — **First-run Grow (v1 form):** a single empty→HEAD transition staged as the
+first-run sequence, offered via `F-ASSOC-6` (Watch the birth / Skip to present). This is
+explicitly *not* multi-checkpoint historical replay — see `F-GROW-7`. User-facing copy should
+not overclaim a single diff as "the entire history played through every era."
 
-**F-GROW-7** (P1, M3) — **Staged history replay.** The first Grow plays through K checkpoints
-rather than one transition. Path existence and approximate size at each checkpoint are
-reconstructed from the `F-EXT-2` log stream — **no checkouts required**, which is what makes
-this affordable. Materials interpolate toward their final values. This is the highest-value
-post-MVP item under `R1`.
+**F-GROW-7** (P1, M3) — **Multi-checkpoint staged history replay.** First-run (and optionally
+later "replay history") populates the stage stack with K checkpoint stages rather than one
+transition. Path existence and approximate size at each checkpoint are reconstructed from the
+`F-EXT-2` log stream — **no checkouts required**, which is what makes this affordable.
+Materials interpolate toward their final values. Stack navigation (`F-GROW-4`, `F-GROW-11`)
+applies unchanged. This is the highest-value post-MVP item under `R1`.
 
 **Checkpoint sampling: tags where enough exist, falling back to time.** Tags tell the project's
 story and time tells its rhythm; a tagged project usually has the better narrative. The
@@ -499,21 +521,38 @@ thickening, material family shift, new secondary branching, scarring, healing
 (`design/feature-system.md` §8.9).
 
 **F-GROW-9** (P2) — Reverse playback (time-lapse rewind), visually distinct from forward
-trimming (`design/engine-architecture.md` §3.4).
+trimming (`design/engine-architecture.md` §3.6). Open whether reverse reuses the same frames or
+a distinct vocabulary.
 
 **F-GROW-10** (P0) — **Render rate and playback rate are decoupled.** Grow frames are produced
 into the same offscreen buffer the export path already uses (`F-EXP-4`) and played back at a
 smooth fixed rate. Where a frame costs more than its playback interval to render, Grow buffers
 ahead rather than dropping frames or stuttering. Playback may begin before rendering completes
-once sufficient lead exists.
+once sufficient lead exists. Prefer eager stage recipes so user-initiated play is instant when
+frames are already prepared.
 
 This is what lets Grow spend real time on visual quality — multi-pass cellular work, dense
 particle churn during a transformation — without that cost reaching the viewer as jitter. It
 also means the exported artifact and the watched sequence are the same frames, so what a user
 shares is what they saw.
 
-- **AC-GROW-1** — During Grow, the main thread never blocks; the window remains responsive and
-  the previous world keeps animating.
+**F-GROW-11** (P0) — **Ordered stage stack.** Each threshold-meeting structural update produces
+a discrete, replayable **staged Grow change** (target or diff, pre-computed transition
+recipe/timeline, metadata). Stages push onto an ordered stack of arbitrary length — the single
+source of pending structural history. Stages are independently addressable and deterministic
+via path-hash seeds (`N3`). State Sync (`F-THR-6`) never creates stack entries.
+
+**F-GROW-12** (P0) — **Stage navigation surface.** A dedicated, attractive panel presents the
+stack as a simple ordered tree (lines + nodes), with carved-wood / organic treatment native to
+the world-tree aesthetic. It drives `F-GROW-4` and remains usable outside full cinema chrome.
+
+**F-GROW-13** (P0) — **User-initiated Grow commit.** Promoting one or more stages applies them
+to the live world via the atomic commit in `F-GROW-5`. Until commit, Thrive continues on the
+previous committed snapshot (plus dirtiness / lightweight pending previews). Discarding the
+stack (or cancelling mid-playback without commit) leaves committed state unchanged.
+
+- **AC-GROW-1** — During Grow computation and playback, the main thread never blocks; the
+  window remains responsive and the previous committed world keeps animating.
 - **AC-GROW-5** — Grow playback is free of visible stutter at its stated rate on minimum spec,
   including through the most expensive transformation sequences (`F-GROW-8`), by buffering
   ahead where necessary (`F-GROW-10`).
@@ -527,9 +566,15 @@ shares is what they saw.
   quality bar. Determinism is therefore required of the timeline (the data), not of the pixels
   rendered from it. This preserves exactly what `P2` protects: the same change always produces
   the same performance.
-- **AC-GROW-3** — Cancelling mid-Grow restores the previous committed world intact.
-- **AC-GROW-4** — Adding one file to a T2 repository triggers a Grow whose visible change is
-  localized to the affected limb, not a whole-tree reflow.
+- **AC-GROW-3** — Cancelling mid-playback or discarding stages without commit leaves the
+  previous committed world intact; no half-applied topology is visible in Thrive.
+- **AC-GROW-4** — Adding one file to a T2 repository produces a staged Grow whose visible
+  change (when played) is localized to the affected limb, not a whole-tree reflow.
+- **AC-GROW-6** — Meeting a Grow trigger while the user is in Thrive stages work without
+  interrupting ambient Thrive; the stack gains an entry and the stage panel reflects it.
+- **AC-GROW-7** — From a stack with multiple stages, the user can jump to an intermediate stage
+  node and play from there, or collapse to the final staged state, without being forced through
+  every prior stage in order.
 
 ### 5.8 Thrive Phase
 
@@ -652,7 +697,8 @@ a shareable GIF.
 
 ### 5.12 Settings
 
-**F-SET-1** (P0) — Grow triggers and their frequency.
+**F-SET-1** (P0) — Grow triggers, their frequency, and (where exposed) what counts as a
+stage-worthy change. Defaults remain conservative so Grow stays special.
 **F-SET-2** (P0) — Privacy and sharing: the `F-ID-6` reveal opt-in, the stored-data browser and
 purge controls (`F-MAN-9`), and the `F-MAN-10` in-repo opt-in.
 **F-SET-3** (P0) — Per-repository filtering overrides (`F-EXT-8`).
@@ -848,9 +894,11 @@ users would hit by accident.
 
 **RISK-3 — The first Grow may not carry the weight `R1` places on it.** *Medium likelihood,
 high impact.* A single empty→HEAD transition (`F-GROW-6`) is a growth animation, not a story.
-Consumer positioning makes this the acquisition moment. **Mitigation:** treat `F-GROW-7`
-(staged replay) as the highest-value M3 item, and validate the single-diff version against real
-viewers at M2 before committing to it as the shipped front door.
+Consumer positioning makes this the acquisition moment. **Mitigation (updated 2026-07-27):**
+user-controlled staging + Watch/Skip (`F-ASSOC-6`, `F-GROW-11`–`13`) convert interruptive load
+and forced cinema into agency; treat `F-GROW-7` (multi-checkpoint stack) as the highest-value
+M3 item; validate single-diff Watch-the-birth against real viewers at M2 before relying on it
+as the shipped front door.
 
 **RISK-4 — Aggregation may erase the recognition the product exists for.** *Medium likelihood,
 medium impact.* `P6` caps depth; if the cap is too aggressive at T2, the user sees pleasant
@@ -909,13 +957,21 @@ may spend more wall-clock time per frame than real-time playback allows, bufferi
 that motion stays smooth (`F-GROW-10`). §7 is restated accordingly. This removes 60 fps as a
 release gate throughout.
 
+**Q6 — Are Grow triggers interruptive auto-play, or user-controlled staging?** *Decided
+2026-07-27: user-controlled staging.* Thresholds enqueue deterministic staged units onto an
+ordered stack; the user plays, steps, jumps, or commits. First-run always offers Watch the
+birth and Skip to present. Dual-phase contracts unchanged — staging defers the atomic world
+commit. Recorded in `F-GROW-2`, `F-GROW-11`–`13`, `F-ASSOC-6`, and
+`design/engine-architecture.md` §3.3–§3.5.
+
 ### Open
 
 None outstanding. Every question raised in drafting has been resolved.
 
 Items deliberately left to the milestone that needs them — checkpoint count and threshold for
-`F-GROW-7`, dirtiness intensity values, and the eventual store ceiling in `F-MAN-13` — are
-tuning decisions, not open requirements. They are recorded where they will be made.
+`F-GROW-7`, dirtiness intensity values, the eventual store ceiling in `F-MAN-13`, stage-stack
+persistence and transition-asset budgets — are tuning / implementation decisions, not open
+requirements. They are recorded where they will be made.
 
 ---
 
@@ -933,9 +989,15 @@ overlay. The drafts pointed in two directions — "the local working tree is the
 versus "Grow reflects HEAD" — and this reading fits the phase split without a second skeleton.
 
 The first Grow was reframed (`F-GROW-6`): a single empty→HEAD diff is a growth animation, not a
-historical replay, and the drafts' language overstates it. Staged replay (`F-GROW-7`) is
-specified as the real thing and made affordable by reconstructing checkpoints from the log
-stream rather than checking commits out.
+historical replay, and the drafts' language overstates it. Multi-checkpoint staged history
+replay (`F-GROW-7`) is specified as the richer form and made affordable by reconstructing
+checkpoints from the log stream rather than checking commits out.
+
+*Amended 2026-07-27 (v1.2).* Grow is **user-controlled**: triggers **stage** rather than
+auto-play; an ordered stage stack (`F-GROW-11`), navigation surface (`F-GROW-12`), and Grow
+commit (`F-GROW-13`) sit on top of unchanged dual-phase ownership. First association always
+offers **Watch the birth** and **Skip to present** (`F-ASSOC-6`, `AC-ASSOC-4`). Product
+direction lives in `design/engine-architecture.md` v0.3.
 
 Filtering rules (`F-EXT-8`), store layout (`F-MAN-2`), and identity normalization via `.mailmap`
 (`F-EXT-9`) were specified from scratch — all three were open tasks in the drafts. Scale tiers,
@@ -950,9 +1012,9 @@ In-repo `.treepo/` survives as an opt-in that writes a self-ignoring `.treepo/.g
 than touching the repository's root `.gitignore`, which is tracked and therefore off-limits
 under the restored `N1`.
 
-**Escalated, and since resolved.** All five tactical questions raised in drafting were decided
-by the owner on 2026-07-27 and are recorded in §11 with their reasoning, each landing in a
-requirement rather than staying as prose:
+**Escalated, and since resolved.** Tactical questions raised in drafting were decided by the
+owner on 2026-07-27 (Q1–Q5) and Q6 the same day as a product-direction refinement; each lands
+in a requirement rather than staying as prose:
 
 | | Decision | Lands in |
 |---|---|---|
@@ -961,6 +1023,7 @@ requirement rather than staying as prose:
 | Q3 | Dirtiness overlay on at low intensity, with a debug override | `F-THR-4`, `F-THR-8` |
 | Q4 | Staged checkpoints sampled by tags, falling back to time | `F-GROW-7` |
 | Q5 | 30 fps floor; 60 fps is not a hard requirement anywhere | §7, `NFR-10`, `F-GROW-10`, `AC-GROW-5` |
+| Q6 | Grow stages on trigger; user plays/commits; first-run Watch/Skip | `F-GROW-2`, `F-GROW-11`–`13`, `F-ASSOC-6`, engine-architecture §3 |
 
 Q5 had the widest reach: it rewrote the §7 frame budget, removed 60 fps as a release gate
 throughout, and produced `F-GROW-10` — decoupling Grow's render rate from its playback rate, so

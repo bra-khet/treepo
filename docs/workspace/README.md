@@ -18,5 +18,9 @@ implement from one.
    stays internally consistent.
 4. The workspace copy is removed rather than left to drift.
 
-The five original `*-draft.md` design documents were promoted to `../design/` on 2026-07-26
-and no longer live here.
+## Promotion log
+
+| Workspace draft | Promoted | Into |
+|-----------------|----------|------|
+| Five original `*-draft.md` design documents | 2026-07-26 | `../design/` |
+| `engine-architecture-grow-staging-supplement.md` | 2026-07-27 | `../design/engine-architecture.md` v0.3; outline §4; `../PRD.md` v1.2 (`F-ASSOC-6`, `F-GROW-2`/`4`/`6`–`7`/`11`–`13`); `.planning` D11 + Phases 6–7/11–12 |

@@ -39,8 +39,9 @@ All five are living documents, each authoritative for its own area.
 - [`design/visual-construction.md`](design/visual-construction.md) — the hybrid trunk
   decision and the four-layer generative stack (Skeleton → Semantics → Enrichment → Thrive).
 - [`design/engine-architecture.md`](design/engine-architecture.md) — the Grow / Thrive
-  dual-phase contracts, triggers, cinematic diff behavior, State Sync, Bevy notes, and
-  **dev-only agent BRP** live control (§8.1; architecture D10).
+  dual-phase contracts, **stage stack** and user-controlled playback, first-run Watch/Skip,
+  triggers, cinematic diff behavior, State Sync, Bevy notes, and **dev-only agent BRP** live
+  control (§8.1; architecture D10; staging D11).
 - [`design/l-system-parameterization.md`](design/l-system-parameterization.md) — the
   structural skeleton's parameters, primitive→parameter mapping guidelines, and the
   decision menu for the first coherent parameter set.

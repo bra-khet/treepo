@@ -1,11 +1,13 @@
 # Engine Architecture: Grow vs Thrive
 **Design Document — Supplemental Living Section**  
-**Version:** 0.2  
+**Version:** 0.3  
 **Status:** Active draft  
 **Last updated:** 2026-07-27  
 **Project name:** treepo *(locked 2026-07-27 — [`../CONSTITUTION.md`](../CONSTITUTION.md) §10 R5)*  
 
 This document expands and supersedes the high-level description in [`design-outline.md`](design-outline.md) §4. It is the authoritative reference for the dual-phase engine while we implement in Bevy (Rust ECS).
+
+*v0.3 (2026-07-27):* ratifies user-controlled **Grow staging**, the ordered **stage stack**, the dedicated **playback / navigation surface**, and a refined **first-time association** path (Watch the birth / Skip to present). Dual-phase ownership is unchanged; staging defers the world-state commit rather than moving topology work into Thrive. Source draft: workspace `engine-architecture-grow-staging-supplement.md` (promoted).
 
 ---
 
@@ -15,6 +17,7 @@ The Grow / Thrive split is both a **performance architecture** and a **value-add
 
 - **Performance**: Expensive repository analysis, L-system regeneration, and large-scale cellular material updates are rare and off the main thread.
 - **Value**: Grow becomes a cinematic, emotionally resonant event. The user does not merely “refresh a diagram”; they watch the living history of their codebase play out as a procedural pixel simulation. Thrive keeps the world feeling continuously alive between those events.
+- **Agency**: The value of Grow is highest when the user *chooses* to witness it. Structural updates that meet thresholds are **staged**, not forced into interruptive playback. Staging → commit maps to developer muscle memory while preserving the cinematic nature of Grow.
 
 The design deliberately draws from the interaction and simulation languages of Powder Toy, Noita, Terraria, and Minecraft so that visual and semantic feedback feels immediately familiar to players while remaining tightly coupled to real repository state.
 
@@ -26,10 +29,13 @@ The design deliberately draws from the interaction and simulation languages of P
 |--------------------------------|-------------------------------------------------|---------------------------------------------------|
 | Structural topology            | Owns complete rebuild / diff-driven transition  | Structure is frozen                                |
 | Material / cellular simulation | Full constrained CA pass on changed regions     | Lightweight local CA / particle only on dirty rects |
-| Player interaction             | None (or only “direct the next Grow”)           | All interaction                                   |
+| Player interaction             | None during cinematic playback                  | All interaction (including stage panel, commit)   |
+| Stage stack (pending structure)| Produces staged units; commits on user promote  | Displays stack UI; never mutates topology          |
 | Export / recording             | Primary owner of cinematic export               | Can record short loops or stills                  |
-| Frequency                      | Event-driven + configurable                     | Continuous (smooth interactive rate — see PRD §7) |
+| Frequency                      | Event-driven computation; user-timed playback   | Continuous (smooth interactive rate — see PRD §7) |
 | Threading                      | Background / async                              | Main render + simulation thread                   |
+
+**Invariant (unchanged):** Grow owns topology and permanent material change. Thrive never rebuilds the skeleton or runs a full material CA. Staging only **defers** the atomic world-state commit; it does not reassign ownership.
 
 ---
 
@@ -40,31 +46,72 @@ The design deliberately draws from the interaction and simulation languages of P
 Grow is the phase that answers:  
 > “What should the world *become*?”
 
-It calculates the difference between a previous committed world state and a new target state, then plays a high-value, feature-rich, passive cinematic animation that transforms one into the other using procedural cellular automata and L-system growth rules.
+It calculates the difference between a previous committed world state and a new target state, materializes that work as one or more **staged Grow changes**, and — when the user chooses — plays a high-value, feature-rich, passive cinematic animation that transforms one into the other using procedural cellular automata and L-system growth rules. Only a user-initiated **Grow commit** (or equivalent) promotes staged work into the live world state Thrive reads.
 
-### 3.2 Triggers (Initial Set — User Configurable)
+### 3.2 Triggers → Stage, Do Not Auto-Play
 
-- New commit(s) detected on the watched branch / HEAD
+Triggers remain user-configurable and conservative by default. When a threshold is met they **enqueue computation and staging**, they do **not** seize the session with forced playback:
+
+- New meaningful commit(s) on the watched branch / HEAD
 - Merge or rebase that moves HEAD significantly
-- Explicit user “Grow Now” / “Replay History”
+- Explicit user “Stage Grow” / “Grow Now” / “Replay History”
 - First-time association of the application with a repository
 - Configurable periodic background check (default off or very infrequent)
-- Large working-tree changes that the user chooses to “commit into the tree” (future)
+- Large working-tree changes that the user chooses to stage into the tree (future)
 
-All triggers are intended to be user-tunable. The default set is intentionally conservative so that Grow remains special.
+Defaults stay conservative so Grow remains special. The user decides when (and how) to apply and watch any staged sequence.
 
-### 3.3 First-Time Initialization (Special Grow)
+### 3.3 Grow Staging Model
 
-When a repository is associated for the first time:
+When a trigger threshold is met:
 
-1. The world begins at a pure seed (root boulder cluster + minimal basal axiom).
-2. A single (or multi-stage) Grow animation plays that represents the *entire history* up to the current HEAD as one continuous cinematic sequence.
-3. For MVP simplicity this is calculated as one large diff from empty → current.  
-   Future refinement: tag-to-tag or selected commit-range stages so the user can watch the project’s eras unfold.
+1. The system performs the deterministic computation in the background (or on a background schedule).
+2. The result is stored as a **staged Grow change** — a discrete, replayable unit containing:
+   - Target structural state (or the diff from the previous committed / previous-stage state)
+   - Pre-computed transition frames / animation recipe (eagerly generated so playback is instant when the user starts it)
+   - Metadata (source commits / time range, size of change, classification crossings, etc.)
+3. Staged changes are pushed onto an ordered **stack** (arbitrary length). The stack is the single source of pending structural history.
 
-This first Grow is the strongest onboarding and storytelling moment in the product.
+Because every stage is produced from hierarchical path-hash seeds, the same logical change always yields the same visual transition. Stages remain discrete and independently addressable.
 
-### 3.4 Diff-Driven Cinematic Animation
+Thrive continues to show working-tree dirtiness and lightweight pending previews. **State Sync never produces staged Grow entries.** Only a user-initiated Grow commit promotes one or more stages into the live world state.
+
+### 3.4 Playback & Navigation Surface
+
+The staged stack is exposed through a dedicated control surface:
+
+- **Visual language:** a simple, VS Code–style source-tree abstraction (lines + dots / nodes) for the ordered stages.
+- **Aesthetic:** carved wood / organic panel so the control feels native to the world-tree rather than a generic IDE widget.
+- **Capabilities:**
+  - Step-by-step playback of individual stages
+  - Continuous playback of the entire stack (or any contiguous segment)
+  - Forward and reverse direction
+  - Direct jump to any stage (click a node)
+  - Optional “play all remaining” or “collapse to final state”
+
+During **cinematic playback of a stage**, interaction stays limited to pause, scrub, cancel, and stack navigation — the camera is not free-roaming the half-applied tree. Outside playback, the panel is ordinary Thrive UI over the last **committed** world.
+
+This gives precise mental navigation over history the user is about to (or is currently) watching, without requiring them to understand L-system or CA mechanics.
+
+### 3.5 First-Time Association & Large-Repo Experience
+
+First association (empty seed → full history) is a special, high-value Grow sequence, and the product front door under Constitution R1 — but it is **never** an unavoidable long wait.
+
+**Recommended flow:**
+
+1. Background computation of the staged history begins immediately on association.
+2. An onboarding modal appears with:
+   - A short visual tutorial (Grow vs Thrive, staging, dirtiness, world-tree metaphor).
+   - An attractive, cinematic progress indicator (procedurally themed — e.g. growing branch / material deposition) so wait time feels consistent with the product.
+3. Two clear options remain available at all times:
+   - **Watch the birth** — begin (or continue) cinematic playback of the staged sequence once enough material is ready. This is the recommended front door.
+   - **Skip to present** (escape hatch) — load the final committed world state directly into Thrive. Computing the final state alone is comparatively cheap and must always be offered.
+
+**v1 form of the first-run sequence** may be a single empty→HEAD stage; **staged history replay** (multiple checkpoints as stack entries) is the richer form (`F-GROW-7`). Either way the same agency model applies: stage in the background, user chooses Watch or Skip.
+
+Chunked / progressive computation of history epochs (and starting early-frame playback while later epochs finish) is a welcome performance refinement. It is **not** required for the first implementation and must not be locked out by data-model decisions made now.
+
+### 3.6 Diff-Driven Cinematic Animation
 
 Grow does **not** simply replace the old geometry with the new. It generates a transition:
 
@@ -74,12 +121,12 @@ Grow does **not** simply replace the old geometry with the new. It generates a t
 - Ownership or material-family changes can produce visible “re-coloring” or migration waves.
 - Classification threshold crossings (e.g., a subtree becoming “core” or “abandoned”) are rendered as explicit, beautiful transformations rather than silent swaps.
 
-The animation is passive and non-interactive during playback (the user can pause, scrub, or cancel). It is designed to be watched.
+The animation is passive during stage playback (pause, scrub, cancel, stack jump). It is designed to be watched.
 
 **Time direction support (design goal)**  
-The same diff engine should be able to run forward (growth) or reverse (time-lapse rewind). “Trimming” (removing history while moving forward) is a distinct visual vocabulary from pure reverse playback and should be distinguishable if we implement both.
+The same diff engine should be able to run forward (growth) or reverse (time-lapse rewind). “Trimming” (removing history while moving forward) is a distinct visual vocabulary from pure reverse playback and should be distinguishable if we implement both. Whether reverse re-uses the same frame sequence or regenerates a distinct vocabulary is an open implementation note (§9).
 
-### 3.5 Export System (MVP Plan)
+### 3.7 Export System (MVP Plan)
 
 Grow owns the primary export path because the cinematic sequence is the high-value artifact.
 
@@ -89,19 +136,20 @@ Grow owns the primary export path because the cinematic sequence is the high-val
 - Optional short video container (WebM or similar) if Bevy + ffmpeg integration is low-friction
 
 **Simple architecture**
-1. During Grow, frames are captured at a controlled rate into an offscreen buffer or frame queue.
+1. During Grow (stage render-ahead and/or playback), frames are captured at a controlled rate into an offscreen buffer or frame queue.
 2. On completion (or user request) the queue is encoded.
 3. User chooses format and optional length / quality presets.
 4. Export can also be triggered on a previously recorded Grow session stored in the project’s local cache.
 
 Later: higher-quality video, transparent background, selective region export, and “story mode” multi-Grow compilations.
 
-### 3.6 Implementation Notes (Bevy)
+### 3.8 Implementation Notes (Bevy)
 
-- Grow runs as an async task or on a dedicated background schedule.
-- Progress is reported via events so the UI can show a non-blocking progress indicator or a “cinema mode” overlay.
-- The final committed world state (skeleton + materials + enrichment) is written atomically so Thrive never sees a half-built tree.
+- Grow **computation** runs as an async task or on a dedicated background schedule; it produces staged units, not an immediate live-world mutation.
+- Progress is reported via events so the UI can show non-blocking progress, onboarding progress art, or a “cinema mode” overlay during playback.
+- The final committed world state (skeleton + materials + enrichment) is written **atomically on Grow commit** so Thrive never sees a half-built tree.
 - Hierarchical path-hash seeds guarantee that the same logical diff always produces the same visual transition.
+- Open implementation details (threshold UI defaults, stack persistence across restarts, memory budget for pre-computed transition assets, reverse-playback vocabulary, panel ↔ camera integration) are deferred to Bevy experiments; product direction above is enough to keep work aligned.
 
 ---
 
@@ -215,17 +263,29 @@ We deliberately borrow visual and semantic conventions from games players alread
 Repository (filesystem + git)
         │
         ▼
-   [Grow Trigger]
+   [Grow Trigger]  ──►  background compute (does not seize UI)
         │
         ▼
 ┌───────────────────────┐
-│  Grow Phase           │
+│  Grow (compute)       │
 │  • Scan / Diff        │
 │  • Primitive extract  │
 │  • L-system + tiles   │
 │  • Constrained CA     │
-│  • Cinematic play     │
-│  • Atomic commit      │
+│  • Timeline / frames  │
+└──────────┬────────────┘
+           │ push staged unit(s)
+           ▼
+┌───────────────────────┐
+│  Stage Stack          │  ← ordered pending structural history
+│  (replayable units)   │
+└──────────┬────────────┘
+           │ user: play / step / jump / commit
+           ▼
+┌───────────────────────┐
+│  Grow (playback)      │
+│  • Cinema playback    │
+│  • Atomic commit      │  only on user promote
 │  • Optional export    │
 └──────────┬────────────┘
            │ new World State
@@ -234,9 +294,10 @@ Repository (filesystem + git)
 │  Thrive Phase         │
 │  • Render + animate   │
 │  • Player interaction │
+│  • Stage panel UI     │
 │  • Dirtiness overlays │
 │  • Creatures / idle   │
-│  • State Sync (light) │
+│  • State Sync (light) │  never stages Grow entries
 │  • Event reactions    │
 └───────────────────────┘
 ```
@@ -245,10 +306,10 @@ Repository (filesystem + git)
 
 ## 8. Bevy / Rust Implementation Sketch
 
-- **World state** lives in a set of Bevy resources / components that are only mutated by Grow (or by a carefully controlled State Sync).
-- Grow is scheduled as an async task or on `Update` with a heavy `run_if` condition.
-- Thrive systems run every frame and query the frozen structural components plus dynamic animation / particle / creature components.
-- Events (`GrowStarted`, `GrowProgress`, `GrowFinished`, `StateSyncRequested`, etc.) keep the UI and recording systems decoupled.
+- **Committed world state** lives in Bevy resources / components mutated only on Grow commit (or by carefully controlled State Sync overlays that never touch topology).
+- Grow **computation** is an async task producing staged units + timelines; it does not depend on Bevy types in generative crates.
+- Grow **playback** and the stage panel live in `treepo-app`; Thrive systems run every frame against the last committed snapshot.
+- Events (`GrowComputeStarted`, `GrowStageReady`, `GrowPlayback*`, `GrowCommitted`, `StateSyncRequested`, etc.) keep UI, staging, and recording decoupled.
 - Hierarchical seeds and the Feature System configuration are pure data that both phases read.
 
 ### 8.1 Agent live control — Bevy Remote Protocol (BRP)
@@ -281,12 +342,24 @@ against port 15702.
 
 ## 9. Open Questions & Next Decisions
 
-1. Exact user-facing controls for Grow triggers and first-time history depth.
-2. Frame-capture and encoding pipeline details for GIF / image-sequence export.
-3. How aggressively pending dirtiness should influence local CA during Thrive.
-4. Creature population limits and equilibrium rules for the first Thrive inhabitants.
-5. Whether reverse-time Grow playback is required for MVP or can be deferred.
-6. Precise event contract between a future agent layer and Thrive reactions.
+### Resolved (product direction, 2026-07-27)
+
+- **Triggers stage rather than auto-play.** User promotes stages via Grow commit; dual-phase ownership unchanged.
+- **First-run agency.** Background compute + onboarding modal; always offer **Watch the birth** and **Skip to present**.
+- **Stage stack + navigation panel** are first-class surface area (carved-wood tree of stages).
+
+### Still open (implementation / tuning)
+
+1. Exact threshold configuration UI and defaults for what counts as a stage-worthy change.
+2. Persistence of the staged stack across application restarts (and eviction if oversized).
+3. Memory / disk budget for pre-computed transition assets on very large histories.
+4. Whether reverse playback re-uses the same frame sequence or regenerates a distinct visual vocabulary.
+5. How the carved-wood navigation panel integrates with the main camera / Thrive interaction model.
+6. Frame-capture and encoding pipeline details for GIF / image-sequence export.
+7. How aggressively pending dirtiness should influence local CA during Thrive.
+8. Creature population limits and equilibrium rules for the first Thrive inhabitants.
+9. Precise event contract between a future agent layer and Thrive reactions.
+10. Checkpoint count / “enough tags” threshold for multi-stage history replay (`F-GROW-7`) — deferred to M3 footage review per PRD §11 Q4.
 
 ---
 
@@ -295,10 +368,12 @@ against port 15702.
 - Builds directly on [`design-outline.md`](design-outline.md) §4.
 - Consumes the primitive vectors and Interaction Physics defined in [`feature-system.md`](feature-system.md).
 - Generates the structural skeleton and enrichment described in [`visual-construction.md`](visual-construction.md), parameterized per [`l-system-parameterization.md`](l-system-parameterization.md).
-- Operates within the constraints set by [`../CONSTITUTION.md`](../CONSTITUTION.md) — notably strict phase separation, determinism, and continuous liveliness.
+- Operates within the constraints set by [`../CONSTITUTION.md`](../CONSTITUTION.md) — notably strict phase separation, determinism, continuous liveliness, and R1’s first-Grow-as-front-door (realized as **Watch the birth**, not forced autoplay).
+- Requirements: [`../PRD.md`](../PRD.md) §5.1 (association / first run), §5.7 (Grow, including staging and `F-GROW-7`).
+- Build plan: [`.planning/architecture-treepo.md`](../../.planning/architecture-treepo.md) (stage stack data model and phases).
 
 This document will be updated as implementation decisions solidify. All new durable decisions about phase ownership should be recorded here first.
 
 ---
 
-*End of document — Engine Architecture: Grow vs Thrive v0.2*
+*End of document — Engine Architecture: Grow vs Thrive v0.3*

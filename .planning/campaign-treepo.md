@@ -1,9 +1,11 @@
 # Campaign: treepo
-> Architecture: `.planning/architecture-treepo.md` | PRD: `docs/PRD.md` v1.1 | Constitution: `docs/CONSTITUTION.md` v1.3
+> Architecture: `.planning/architecture-treepo.md` | PRD: `docs/PRD.md` v1.2 | Constitution: `docs/CONSTITUTION.md` v1.3
 > Created: 2026-07-27 | Phases: 13 | Complexity: high | Mode: greenfield
+> Updated: 2026-07-27 — D11 Grow stage stack, user-controlled playback, first-run Watch/Skip
 
 Rust / Bevy desktop application. Grow (rare, expensive, cinematic) and Thrive (continuous,
-cheap, interactive) as first-class phases separated by crate boundaries.
+cheap, interactive) as first-class phases separated by crate boundaries. Grow **stages** on
+trigger and **commits** on user promote (architecture D11); dual-phase contracts unchanged.
 
 ## Standing Rules
 
@@ -145,29 +147,36 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   - [ ] **D10**: `--features brp` run listens on localhost:15702; default build has no BRP;
         `cargo deny check` (default features) still green; release never ships with `brp`
 
-## Phase 6 — Grow simulation
-- **Goal**: Compute the deterministic transition between two world states.
+## Phase 6 — Grow simulation & stage units
+- **Goal**: Compute deterministic transitions as discrete staged units (not live-world mutations).
 - **Depends on**: 4
 - **Parallel-safe with**: 5
-- **Files**: `crates/treepo-grow/src/{lib,diff,timeline,migration,connectivity,transform,budget}.rs`
+- **Files**: `crates/treepo-grow/src/{lib,diff,timeline,migration,connectivity,transform,stage,budget}.rs`
 - **Note**: implements E1 — determinism is verified on the `GrowTimeline`, not on pixels.
+  Stage unit type is D11 / `F-GROW-11`.
 - **End Conditions**:
   - [ ] The same snapshot pair produces an identical `GrowTimeline` hash across three runs on three platforms (`AC-GROW-2`)
   - [ ] Connectivity assertion holds after every migration pass — no disconnected mass (`N5`)
-  - [ ] Adding one file to the T2 fixture confines timeline changes to the affected limb (`AC-GROW-4`)
-  - [ ] Cancellation mid-simulation publishes nothing (`AC-GROW-3`)
+  - [ ] Adding one file to the T2 fixture confines staged-unit changes to the affected limb (`AC-GROW-4`)
+  - [ ] Cancellation mid-simulation publishes nothing to the committed world (`AC-GROW-3`)
+  - [ ] Stage unit type is serializable and independently addressable (`F-GROW-11`)
 
-## Phase 7 — Grow playback, cinema & triggers
-- **Goal**: Make the transition watchable, smooth, and correctly triggered.
+## Phase 7 — Staging, playback, cinema & first-run agency
+- **Goal**: Stack-based user control (stage on trigger, play on demand, commit on promote);
+  first-run Watch the birth / Skip to present (D11).
 - **Depends on**: 5, 6
 - **Parallel-safe with**: none
-- **Files**: `crates/treepo-app/src/{grow_task,playback,triggers}.rs`,
+- **Files**: `crates/treepo-app/src/{grow_task,playback,triggers,stage_stack}.rs`,
+  `crates/treepo-app/src/ui/{stage_panel,onboarding,progress}.rs`,
   `crates/treepo-export/src/ring.rs`, `crates/treepo-app/src/window.rs` (cinema mode)
 - **End Conditions**:
   - [ ] Grow playback holds 24 fps with no dropped frames through the most expensive transformation on minimum spec (`AC-GROW-5`)
-  - [ ] Main thread never blocks during Grow; previous world keeps animating — frame-time trace (`AC-GROW-1`)
-  - [ ] First-run Grow on T2 shows first visible growth within 10 s (`AC-ASSOC-1`)
-  - [ ] Pause, scrub, and cancel all function during playback (`F-GROW-4`)
+  - [ ] Main thread never blocks during Grow compute/playback; previous committed world keeps animating — frame-time trace (`AC-GROW-1`)
+  - [ ] Met trigger stages without interrupting Thrive (`AC-GROW-6`)
+  - [ ] Stage panel: step, continuous play, jump, collapse-to-final (`F-GROW-4`, `F-GROW-12`, `AC-GROW-7`)
+  - [ ] Grow commit atomic; discard/cancel leaves prior commit intact (`F-GROW-13`, `AC-GROW-3`)
+  - [ ] First association offers Watch + Skip; T2 usable path within 10 s (`F-ASSOC-6`, `AC-ASSOC-1`, `AC-ASSOC-4`)
+  - [ ] Pause, scrub, and cancel function during stage playback (`F-GROW-4`)
 
 ## Phase 8 — Thrive liveliness & dirtiness
 - **Goal**: The world stays alive between Grows, and shows what is uncommitted.
@@ -207,8 +216,8 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   - [ ] Opting into `.treepo/` leaves `git status` clean and root `.gitignore` untouched (`AC-MAN-6`)
   - [ ] Per-repository settings survive a folder move (`AC-SET-1`)
 
-## Phase 11 — Staged replay, workers & enrichment depth
-- **Goal**: Make the front door carry the weight `R1` places on it.
+## Phase 11 — Multi-checkpoint history, workers & enrichment depth
+- **Goal**: Deepen the front door with multi-stage history on the same stack model (D11).
 - **Depends on**: 8, 9
 - **Parallel-safe with**: 10
 - **Files**: `crates/treepo-grow/src/checkpoints.rs`,
@@ -216,13 +225,13 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   `crates/treepo-app/src/interact/search.rs`
 - **Cut line**: `F-GROW-7` is the designated descope if M3 overruns (RISK-6).
 - **End Conditions**:
-  - [ ] Staged replay reconstructs checkpoints from the log stream with **zero checkouts** — asserted by test (`F-GROW-7`)
+  - [ ] Multi-checkpoint history reconstructs from the log stream with **zero checkouts** and pushes stack stages — asserted by test (`F-GROW-7`)
   - [ ] Checkpoint sampling prefers tags, falls back to time; count and threshold recorded with the footage that set them (PRD §11 Q4)
   - [ ] Search locates a path and moves the camera to it (`F-NAV-6`)
-  - [ ] Staged replay on T2 holds the Phase 7 playback budget
+  - [ ] Multi-stage first-run on T2 holds Phase 7 playback budget and uses the same panel as single-stage Grow
 
-## Phase 12 — Widget mode, onboarding & packaging → **M3 EXIT**
-- **Goal**: Ship it.
+## Phase 12 — Widget mode, onboarding polish & packaging → **M3 EXIT**
+- **Goal**: Ship it. Core Watch/Skip lands in Phase 7; this phase polishes and packs.
 - **Depends on**: 10, 11
 - **Parallel-safe with**: none
 - **Files**: `crates/treepo-app/src/window.rs` (widget mode),
@@ -235,7 +244,7 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   - [ ] Every §7 budget passes on minimum spec across T0–T3 (`F-CORP-1`)
   - [ ] Signed, installable artifacts build for Windows, macOS, Linux (`NFR-7`)
   - [ ] T4 repository warns before starting, remains cancellable, does not crash (`F-CORP-1`)
-  - [ ] **Clean-machine walkthrough**: install → open repository → watch Grow → export, with no terminal and no `git` installed (`R1`, decision D3)
+  - [ ] **Clean-machine walkthrough**: install → open repository → Watch or Skip → export, with no terminal and no `git` installed (`R1`, decision D3)
 
 ---
 
