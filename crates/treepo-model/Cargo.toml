@@ -1,0 +1,21 @@
+[package]
+name = "treepo-model"
+description = "Core types: repository paths, extracted primitives, the manifest, and identity keys. No I/O, no Bevy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# `treepo-det` only, and that is the whole list for the foreseeable future. This crate is a
+# vocabulary, not a worker: `treepo-vcs` fills these types in, `treepo-gen` reads them, and
+# neither direction needs anything else present here.
+#
+# Phase 2 adds `serde` for D9's binary manifest. When it does, it goes in as
+# `default-features = false, features = ["alloc", "derive"]` — this crate is `no_std` and
+# stays that way.
+[dependencies]
+treepo-det = { workspace = true }
+
+[lints]
+workspace = true

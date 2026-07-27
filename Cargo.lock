@@ -1473,6 +1473,13 @@ name = "treepo-det"
 version = "0.1.0"
 
 [[package]]
+name = "treepo-model"
+version = "0.1.0"
+dependencies = [
+ "treepo-det",
+]
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

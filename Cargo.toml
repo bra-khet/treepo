@@ -1,9 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/treepo-det", "xtask", "tools/spike-numstat"]
+members = [
+  "crates/treepo-det",
+  "crates/treepo-model",
+  "xtask",
+  "tools/spike-numstat",
+]
 
 # Crates are added here as their phase lands (architecture §File Tree). Phase 0 ships the
-# determinism foundation and the task runner that gates every later phase.
+# determinism foundation and the task runner that gates every later phase; Phase 1 adds the
+# model every later crate exchanges values in.
 
 [workspace.package]
 version = "0.1.0"
@@ -14,6 +20,7 @@ publish = false
 
 [workspace.dependencies]
 treepo-det = { path = "crates/treepo-det" }
+treepo-model = { path = "crates/treepo-model" }
 
 # Lint policy applies to every member via `[lints] workspace = true`.
 #
