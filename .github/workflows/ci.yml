@@ -1,0 +1,94 @@
+name: CI
+
+# Build and test on all three target platforms (N8), plus the constraint gates from the
+# campaign's Standing Rules that do not need a determinism comparison of their own.
+# Cross-platform *output* equality lives in determinism.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A build warning is a build failure. The lint policy in Cargo.toml and clippy.toml is
+  # only a policy if something enforces it.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: build & test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not hide what the other two would have said — a
+      # platform-specific determinism failure is exactly the kind of thing that shows up
+      # on one runner and nowhere else.
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs exactly the toolchain pinned in rust-toolchain.toml, which is a
+      # determinism input rather than a convenience.
+      - name: Install pinned toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+  lint:
+    name: fmt & clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # clippy.toml's disallowed-types and disallowed-methods are how N3 is enforced
+      # against HashMap iteration order and wall-clock reads.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  dep-guard:
+    name: dep-guard (N6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      # No crate in the generative set may reach bevy, under any feature combination
+      # (architecture D1). This is what keeps the phase boundary a compile-time fact.
+      - name: Assert crate dependency boundaries
+        run: cargo xtask dep-guard
+
+  deny:
+    name: cargo-deny (N2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # DEFAULT FEATURES ONLY. `brp` (architecture D10) deliberately pulls Bevy's
+      # localhost remote-protocol stack for agent tooling, and enabling it here would put
+      # network crates into the graph this check exists to keep clean (RISK-D). Do not add
+      # `--all-features`, and do not add `--features brp`.
+      - name: Check dependency bans, licences, advisories, sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --workspace

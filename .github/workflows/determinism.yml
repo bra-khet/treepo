@@ -1,0 +1,106 @@
+name: Determinism
+
+# AC-DET-1, AC-DET-2, AC-DET-3.
+#
+# Architecture D2: "CI runs each corpus fixture three times per platform and compares
+# serialized-output hashes across all nine runs."
+#
+# The shape of this workflow is that sentence. Each platform runs the probes three times in
+# one process (AC-DET-1) and publishes a report; a final job compares the three reports byte
+# for byte (AC-DET-2). The reports contain nothing platform-specific, so any difference at
+# all is a real finding.
+#
+# RISK-2 is what this exists for: sin/cos are not guaranteed bit-identical across platform
+# math libraries, and the failure mode — a tree that is subtly the wrong shape on someone
+# else's machine — is close to undiagnosable if it is found late. Phase 0 gates on it before
+# any generative code exists to inherit the problem.
+#
+# Later phases extend the probe list rather than this workflow: Phase 3 adds skeleton
+# hashes, Phase 6 the GrowTimeline hash (architecture D6).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    name: probe (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Three runs per probe, in one process. Catches anything reading ambient state.
+      - name: Run determinism probes
+        run: cargo xtask determinism --runs 3 --out determinism-${{ matrix.name }}.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.name }}
+          path: determinism-${{ matrix.name }}.txt
+          if-no-files-found: error
+
+  compare:
+    name: compare across platforms (AC-DET-2)
+    needs: probe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+
+      - name: Reports
+        run: |
+          for file in $(find reports -name 'determinism-*.txt' | sort); do
+            echo "--- $file"
+            cat "$file"
+          done
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find reports -name 'determinism-*.txt' | sort)
+
+          if [ "${#files[@]}" -ne 3 ]; then
+            echo "::error::expected 3 platform reports, found ${#files[@]}"
+            exit 1
+          fi
+
+          reference="${files[0]}"
+          status=0
+          for file in "${files[@]:1}"; do
+            if ! diff -u "$reference" "$file"; then
+              echo "::error::$file differs from $reference"
+              status=1
+            fi
+          done
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::AC-DET-2 violated: the same input produced different output on different platforms."
+            echo "Something in the generative path depends on the machine. The usual suspects,"
+            echo "in the order they are worth checking:"
+            echo "  1. platform libm reached the trig path (F-SKEL-6)"
+            echo "  2. HashMap or HashSet iteration order"
+            echo "  3. an unsorted directory read (AC-DET-3)"
+            echo "  4. a debug/release arithmetic difference — overflow panics vs wraps"
+            exit 1
+          fi
+
+          echo "All three platforms agree, byte for byte."
+          cat "$reference"
