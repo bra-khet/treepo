@@ -212,6 +212,24 @@ impl Builder {
     /// [`BuildError`] if a git command fails.
     pub fn commit_as(&mut self, message: &str, name: &str, email: &str) -> Result<(), BuildError> {
         self.git(&["add", "--all"])?;
+        self.commit_staged(message, name, email)
+    }
+
+    /// Commits what is already staged, without touching the index.
+    ///
+    /// For fixtures whose index deliberately disagrees with the working tree — the
+    /// case-collision shape builds an index entry that a case-insensitive filesystem cannot
+    /// materialize, and `git add --all` on a case-*sensitive* one would stage its deletion.
+    ///
+    /// # Errors
+    ///
+    /// [`BuildError`] if the commit fails.
+    pub fn commit_staged(
+        &mut self,
+        message: &str,
+        name: &str,
+        email: &str,
+    ) -> Result<(), BuildError> {
         let date = format!("{} +0000", self.clock);
         self.git_env(
             &["commit", "--quiet", "--allow-empty", "-m", message],

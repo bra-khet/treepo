@@ -301,11 +301,9 @@ fn build_case_collision(root: &Path, name: &str) -> Result<(), BuildError> {
     builder.write("Readme.md", b"one\n")?;
     builder.commit("first spelling")?;
 
-    // On a case-insensitive filesystem the second write lands on the first file, so the
-    // index is edited directly. This is the only way to *build* the collision that real
+    // On a case-insensitive filesystem the second write would land on the first file, so
+    // the index is edited directly. This is the only way to *build* the collision that real
     // repositories acquire when contributors on different platforms disagree.
-    let blob = builder.git(&["hash-object", "-w", "--stdin-paths"]);
-    drop(blob);
     let hash = {
         let path = root.join("readme-alt-content");
         std::fs::write(&path, b"two\n")?;
@@ -319,7 +317,13 @@ fn build_case_collision(root: &Path, name: &str) -> Result<(), BuildError> {
         "--cacheinfo",
         &format!("100644,{hash},README.md"),
     ])?;
-    builder.commit("second spelling, differing only in case")?;
+    // Not `commit`: `git add --all` would see the injected entry has no file in the working
+    // tree on a case-sensitive filesystem and stage its removal, undoing the fixture.
+    builder.commit_staged(
+        "second spelling, differing only in case",
+        "Corpus Builder",
+        "corpus@treepo.invalid",
+    )?;
     Ok(())
 }
 
