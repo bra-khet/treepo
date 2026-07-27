@@ -27,10 +27,24 @@
 //! long, and it is the *same* fraction of a pixel on every machine, which is the property
 //! that actually matters.
 //!
-//! More precision is available cheaply if a later phase wants it (a wider table, or a
-//! small-angle correction term against the residual). Nothing outside this module needs to
-//! change if it does — but any such change alters every generated tree, so it is a
-//! deliberate act with a determinism-harness run on either side of it.
+//! # Precision is locked
+//!
+//! *Reviewed and locked 2026-07-27, before Phase 3.*
+//!
+//! A wider table or a small-angle correction term against the residual would both have been
+//! cheap to add here, and neither is wanted. The residual sits well below the L-system's own
+//! noise floor (`F-SKEL-4` raises noise with churn and skew), and far below the scale at
+//! which a `P6` aggregation decision moves a limb. Precision this module does not need would
+//! buy nothing a viewer could see.
+//!
+//! Treat the table and the interpolation as frozen. Every number in this module is pinned by
+//! the golden digest in the tests below and by `cargo xtask determinism`, so a change fails
+//! the build rather than quietly reshaping the world — which is the point, because changing
+//! any of it changes **every tree treepo will ever generate**, including the parameter row
+//! that Phase 3 tunes against these exact values.
+//!
+//! Reopening this is a deliberate act: a recorded decision, and a determinism-harness run on
+//! either side of it.
 
 use crate::fixed::{Angle, Fx};
 

@@ -48,9 +48,18 @@ overall    39681da8a69904d23e4d7d5e38915fee55008deac7ecb259b9d56f145765fc92
 `trig` is also pinned as a golden-digest unit test inside `treepo-det::trig`, so an
 accidental edit to the sine table fails `cargo test`, not just CI.
 
-**Any change to these numbers changes every tree treepo will ever generate.** That is not a
-reason never to change them — the trig table can be widened, `Fx` rounding could be revised
-— but it is a reason to do it deliberately, with a harness run recorded on either side.
+**Any change to these numbers changes every tree treepo will ever generate.**
+
+### Trig precision — locked 2026-07-27
+
+The 1025-entry table with linear interpolation (absolute error under `3 × 10⁻⁷`) was reviewed
+against the alternative of a wider table or a small-angle correction term, and **kept as
+built**. The residual is below the L-system noise floor (`F-SKEL-4`) and far below the scale
+at which `P6` aggregation moves a limb; the extra precision would buy nothing a viewer could
+see, and Phase 3 will tune the parameter row against these exact values.
+
+Frozen, along with the golden digests above. Reopening it is a recorded decision plus a
+harness run on either side — not a code edit.
 
 ---
 
