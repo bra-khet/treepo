@@ -316,9 +316,15 @@ mod tests {
             panic!("expected a repository at {}", root.display());
         };
         assert!(repo.head.is_some(), "treepo has commits");
-        assert!(!repo.is_shallow, "the working checkout is not shallow");
         assert_eq!(target.root(), root);
         assert!(target.repository().is_some());
+        // Shallowness is not asserted either way: a CI checkout is shallow by default and a
+        // developer's is not. What must hold is that the flag and the notice agree, which
+        // is the part PRD §6 cares about — a shallow clone must always be said out loud.
+        assert_eq!(
+            repo.is_shallow,
+            target.notices().contains(&Notice::ShallowClone)
+        );
     }
 
     #[test]

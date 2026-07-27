@@ -31,7 +31,12 @@ jobs:
           - { name: macos, os: macos-latest }
           - { name: windows, os: windows-latest }
     steps:
+      # Full history, not the default single commit. `treepo-vcs`'s integration tests walk
+      # this repository's own history (F-EXT-2), and a shallow checkout would leave them
+      # asserting almost nothing while still passing — the quiet kind of green.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Installs exactly the toolchain pinned in rust-toolchain.toml, which is a
       # determinism input rather than a convenience.

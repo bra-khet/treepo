@@ -93,7 +93,11 @@ pub struct TemporalPrimitives {
     /// `stability_score` — inverse of recent churn relative to size, in `0..=1`.
     ///
     /// 1 is untouched, 0 is churning at or above its own line count in the recent window.
-    pub stability: Fx,
+    ///
+    /// `None` until the path's line count is known (`F-EXT-4`): churn is measured in lines,
+    /// so without a denominator in lines there is no honest ratio to record. Same convention
+    /// as [`DerivedSignals`](super::DerivedSignals).
+    pub stability: Option<Fx>,
 }
 
 impl TemporalPrimitives {

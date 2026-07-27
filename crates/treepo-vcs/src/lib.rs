@@ -25,11 +25,32 @@
 //! * [`discover`] — `F-ASSOC-2`. What is at the path the user picked, and what to tell them.
 //! * [`filter`] — `F-EXT-8`. What counts as the repository's structure.
 //! * [`walk`] — `F-EXT-1`. Structural and size primitives from the HEAD tree.
+//! * [`mailmap`] — `F-EXT-9`. One human is one contributor.
+//! * [`log_pass`] — `F-EXT-2`. Every temporal and ownership primitive, from one traversal.
 //!
-//! Still to come in Phase 1: `log_pass` (`F-EXT-2`, written from `tools/spike-numstat`),
-//! `lang` (`F-EXT-4`), `mailmap` (`F-EXT-9`), and `status` (`F-THR-4`). `blame` (`F-EXT-3`)
-//! is deferred past the first Grow by design — `RISK-1` is that it is unaffordable as a
-//! gating pass.
+//! Still to come in Phase 1: `lang` (`F-EXT-4`) and `status` (`F-THR-4`).
+//!
+//! # `git blame` is not reachable from here
+//!
+//! `F-EXT-3` demotes blame to a resumable pass that runs *after* the first Grow, because
+//! `RISK-1` is that it is `O(files × history)` and unaffordable as a gating step. That is
+//! enforced structurally rather than by discipline: this crate does not enable `gix`'s
+//! `blame` feature, so `gix::blame` does not exist in this build and reaching for it does
+//! not compile.
+//!
+//! ```compile_fail
+//! // F-EXT-3 / RISK-1: blame must not be reachable from extraction.
+//! let _: fn() = || { let _ = gix::blame::Error::default(); };
+//! ```
+//!
+//! A `compile_fail` test passes when the code fails to compile for *any* reason, so this
+//! one needs a control. The same reference through a feature that *is* enabled compiles,
+//! which is what makes the failure above mean "the feature is off" rather than "`gix` is
+//! not in scope":
+//!
+//! ```
+//! let _: fn() = || { let _: Option<gix::diff::Rewrites> = None; };
+//! ```
 //!
 //! # Determinism
 //!
@@ -45,8 +66,12 @@
 
 pub mod discover;
 pub mod filter;
+pub mod log_pass;
+pub mod mailmap;
 pub mod walk;
 
 pub use discover::{DiscoverError, Notice, RepoTarget, Target, discover};
 pub use filter::{Decision, DefaultExclusions, ExclusionGroup, FilterSet};
+pub use log_pass::{History, HistoryError, HistoryOptions, PathHistory, log_pass};
+pub use mailmap::Identities;
 pub use walk::{Structure, StructureSource, WalkError, WalkOptions, walk};
