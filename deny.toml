@@ -35,6 +35,16 @@ allow = [
   "Unlicense",
   "Unicode-3.0",
   "Unicode-DFS-2016",
+  # MPL-2.0 is weak, file-level copyleft: the obligation attaches to the MPL-licensed
+  # source files themselves, not to a work that merely links them. Used unmodified as a
+  # transitive dependency it requires attribution and, if those files are ever modified,
+  # publication of the modified files — it does not reach treepo's own source.
+  #
+  # Added deliberately rather than pre-emptively. It first appeared via `uluru`, an LRU
+  # cache inside `gix-pack`, so the alternative was giving up gix (architecture D3) over a
+  # cache implementation. Worth a lawyer's glance before the storefront release, since this
+  # note is an engineering reading and not legal advice.
+  "MPL-2.0",
 ]
 confidence-threshold = 0.93
 exceptions = []

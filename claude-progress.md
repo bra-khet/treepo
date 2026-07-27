@@ -109,15 +109,84 @@ Recorded because they are not in the architecture and someone will otherwise re-
   within its stated interpolation bound. No constant in the crate rests on being typed
   correctly.
 
+---
+
+## RISK-A spike — **PASS, with caveats** (2026-07-27)
+
+`tools/spike-numstat/` — temporary, delete once `treepo-vcs::log_pass` is written from it.
+
+**Question.** Can `gix` assemble per-file added/deleted line counts over a real commit graph
+fast enough for `F-EXT-2`? If not, `RISK-1`'s mitigation collapses and architecture D3 (`gix`
+over subprocess `git`) has to be reopened.
+
+**Corpus.** `bevyengine/bevy` — 11,870 commits, 2,956 files at HEAD, 1,646 authors. Roughly
+60% of T2 on commits, ~30% on files, so the numbers below are extrapolated on commit count
+rather than measured at T2. Windows, 16 cores; Windows is typically the slowest platform for
+git object I/O, so this should be a pessimistic reading.
+
+### Measured
+
+| | bevy (11,870 commits) | extrapolated to T2 (~20k) | extrapolated to T3 (~200k) |
+|---|---|---|---|
+| gix, 1 thread | 38.65 s | ~65 s | ~10.9 min |
+| gix, 4 threads *(min spec)* | 21.82 s | **~37 s** | **~6.1 min** |
+| gix, 8 threads | 19.07 s | ~32 s | ~5.4 min |
+| `git log --numstat` | 9.5–10.8 s | ~17 s | ~2.9 min |
+
+Budgets: T2 full extraction target 60 s / ceiling 3 min; T3 target 10 min / ceiling 30 min.
+
+**Verdict: proceed with `gix`.** On the 4-core minimum spec the log pass takes ~37 s of T2's
+60 s budget, leaving ~23 s for the filesystem walk and language/LOC work — tight but viable,
+and far inside the 3-minute ceiling. T3 lands at ~6 min against a 10-minute target. The
+subprocess-`git` fallback is **not** needed, so `R1` and `N1` are not being traded away.
+
+`AC-EXT-2` makes this a first-run cost only; incremental re-extraction after one commit
+touches one commit.
+
+### The three findings that matter
+
+1. **Effectively all the cost is blob diffing.** `--no-counts` walks the whole graph in
+   **0.20 s** of a 38.65 s run. gix's revision traversal is not the problem and never was;
+   the cost is decompressing blobs and diffing them. Rename tracking was suspected and
+   cleared — forcing `track_rewrites(None)` bought only 2.5%.
+2. **Parallelism works but scales poorly.** 1.77× at 4 threads, 2.03× at 8, and it
+   *regresses* at 16 — a shared bottleneck, most likely the object database. This is the
+   main optimization lever if the budget tightens. Untested: `max-performance` (zlib-ng),
+   which would likely help decompression but adds a C dependency against `NFR-7`.
+   **Line counts were byte-identical at 1, 2, 4, 8 and 16 threads**, so parallelising this
+   costs nothing under `N3` — summing line counts is associative.
+3. **gix disagrees with `git` on ~7% of commits, by ±1–3 lines.** Totals differ by 0.033%
+   (2,191,935 vs 2,191,210 insertions). Every difference is *symmetric* — insertions and
+   deletions shift together — which is the signature of hunk-boundary placement, not
+   miscounting; `git` applies `--indent-heuristic` by default. Immaterial for churn
+   primitives, which want magnitude, and irrelevant to `N3`, which requires that *we* are
+   reproducible, not that we match another tool.
+
+### Two things worth carrying forward
+
+- **`N1`:** gix's blob-diff path hard-disables external diff commands
+  (`unreachable!("we disabled that")`), so a repository cannot get code executed through a
+  configured external differ. That is one of the concrete hazards D3 cited against
+  subprocess `git`, and it is closed by construction.
+- **`N2`:** gix adds 175 packages and `cargo deny check` reports **bans ok** — no
+  network-capable crate. The one thing it did catch was a licence: `uluru` (MPL-2.0), an LRU
+  cache inside `gix-pack`. MPL-2.0 was deliberately left off the allow-list so it would
+  require a decision; it is now allowed, with the reasoning recorded in `deny.toml`. **Worth
+  a lawyer's glance before the storefront release** — that note is an engineering reading,
+  not legal advice.
+
+### Phase 1 should re-measure
+
+The extrapolation is honest but it is still an extrapolation. Once `tools/corpus/` builds a
+real T2 fixture (~20k commits, ~10k files), re-run this before relying on the 37 s figure —
+bevy is light on file count, which is exactly the axis the tree diff scales on.
+
+---
+
 ## Next
 
-**Phase 1 — model & repository extraction.** Depends only on Phase 0.
+**Phase 1 — model & repository extraction.** Depends only on Phase 0. The spike gate above is
+cleared, so extraction can be written on `gix` directly.
 
-Before building on it: the campaign flags a **spike first** on RISK-A — validate that `gix`
-can produce per-file line counts over the commit graph efficiently enough for `F-EXT-2`, against
-the T2 fixture, *before* the extraction layer is written on top of it. If the spike fails, the
-campaign says stop and escalate rather than quietly falling back to subprocess `git`, because
-that fallback trades away `R1` (no git binary on a consumer machine) and widens `N1`.
-
-`cargo xtask dep-guard` already lists `treepo-model` and `treepo-vcs` as absent, so it will
-start checking them the moment they exist.
+`cargo xtask dep-guard` already lists `treepo-model` and `treepo-vcs` as absent, so it starts
+checking them the moment they exist.

@@ -1,0 +1,36 @@
+[package]
+name = "spike-numstat"
+description = "RISK-A spike: can gix produce per-file line counts over a T2 commit graph inside the F-EXT-2 budget?"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# TEMPORARY. This crate exists to answer one question before Phase 1 commits to an
+# extraction strategy (campaign Phase 1, "⚠ Spike first"). It is deleted once the answer is
+# recorded — either `treepo-vcs::log_pass` is written from it, or the fallback is escalated.
+#
+# It lives in tools/ rather than crates/ deliberately: `cargo xtask dep-guard` polices the
+# generative set under crates/, and a spike has no business being in it.
+
+# Explicit feature set rather than gix's defaults. gix's `default` is network-free already,
+# but naming what we use is what keeps it that way — `blocking-network-client` and friends
+# are one careless `default-features = true` away, and N2's whole mechanism is that no such
+# crate is in the graph to begin with.
+#
+# `max-performance-safe` rather than `max-performance`: the latter pulls zlib-ng, a C
+# dependency that would complicate three-platform packaging (NFR-7) for a gain this
+# workload has not been shown to need.
+[dependencies]
+gix = { version = "0.86", default-features = false, features = [
+  "blob-diff",            # the thing under test — per-file added/deleted line counts
+  "revision",             # commit graph traversal
+  "mailmap",              # F-EXT-9 needs it; included so its deps are measured too
+  "sha1",                 # object hashing — gix does not build without a hash backend
+  "max-performance-safe", # perf without a C dependency
+  "parallel",
+] }
+
+[lints]
+workspace = true
