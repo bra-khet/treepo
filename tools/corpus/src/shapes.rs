@@ -9,9 +9,11 @@
 //! * **T2 and T3.** PRD §3 specifies real public repositories pinned by commit SHA, not
 //!   synthetic ones — a generated 20,000-commit repository would have the wrong *shape*, and
 //!   the budgets in §7 are about real history. Pinning and caching those is separate work.
-//! * **Symlinks and non-UTF-8 names on Windows.** Both need either developer mode or a
-//!   filesystem that permits the bytes. The shapes are built where they can be and skipped
-//!   where they cannot, which the shape's `platforms` field records rather than hides.
+//! * **Symlinks on Windows, and non-UTF-8 names anywhere but Linux.** Symlinks need a
+//!   permission Windows does not grant by default; non-UTF-8 names are rejected outright by
+//!   macOS, whose filesystems require valid UTF-8 where Linux permits any byte. The shapes
+//!   are built where they can be and skipped where they cannot, which [`Platforms`] records
+//!   rather than hides.
 
 use crate::{BuildError, Builder};
 use std::path::Path;
@@ -21,8 +23,14 @@ use std::path::Path;
 pub enum Platforms {
     /// Everywhere.
     All,
-    /// Unix only — symlinks and arbitrary filename bytes.
+    /// Unix only — symlinks need either a permission or a filesystem Windows lacks.
     UnixOnly,
+    /// Linux only — filenames that are not valid UTF-8.
+    ///
+    /// Not merely "not Windows": macOS rejects them at the syscall with `EILSEQ`, because
+    /// APFS and HFS+ require valid UTF-8 where Linux permits any byte but `/` and NUL. The
+    /// distinction is invisible until CI runs on all three, which is what it is for.
+    LinuxOnly,
 }
 
 impl Platforms {
@@ -32,6 +40,7 @@ impl Platforms {
         match self {
             Self::All => true,
             Self::UnixOnly => cfg!(unix),
+            Self::LinuxOnly => cfg!(target_os = "linux"),
         }
     }
 }
@@ -162,7 +171,7 @@ pub fn all_shapes() -> &'static [Shape] {
         Shape {
             name: "non-utf8",
             covers: "PRD §6 Non-UTF8 paths; F-INSP-4",
-            platforms: Platforms::UnixOnly,
+            platforms: Platforms::LinuxOnly,
             build: build_non_utf8,
         },
     ]

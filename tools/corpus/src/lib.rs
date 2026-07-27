@@ -74,6 +74,13 @@ pub enum BuildError {
     },
     /// The filesystem refused.
     Io(std::io::Error),
+    /// A named shape failed to build.
+    Shape {
+        /// Which one.
+        name: &'static str,
+        /// Why.
+        source: Box<BuildError>,
+    },
 }
 
 impl std::fmt::Display for BuildError {
@@ -85,6 +92,7 @@ impl std::fmt::Display for BuildError {
             ),
             Self::Git { args, stderr } => write!(f, "git {} failed: {stderr}", args.join(" ")),
             Self::Io(source) => write!(f, "{source}"),
+            Self::Shape { name, source } => write!(f, "fixture `{name}`: {source}"),
         }
     }
 }
@@ -322,7 +330,12 @@ pub fn build_all(root: &Path) -> Result<Vec<Fixture>, BuildError> {
 /// [`BuildError`] if the fixture fails to build.
 pub fn build(root: &Path, shape: Shape) -> Result<Fixture, BuildError> {
     let path = root.join(shape.name);
-    (shape.build)(&path, shape.name)?;
+    // Named, because a bare `Illegal byte sequence` from sixteen fixtures is a diagnosis
+    // that has to start from scratch.
+    (shape.build)(&path, shape.name).map_err(|source| BuildError::Shape {
+        name: shape.name,
+        source: Box::new(source),
+    })?;
     Ok(Fixture {
         name: shape.name,
         path,
