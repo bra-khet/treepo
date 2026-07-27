@@ -185,16 +185,48 @@ bevy is light on file count, which is exactly the axis the tree diff scales on.
 
 ## Phase 1 — model & repository extraction
 
-Spike gate cleared, so extraction is being written on `gix` directly.
+Spike gate cleared; extraction is written on `gix` directly. `tools/spike-numstat` has been
+deleted — its stated condition was "delete once `treepo-vcs::log_pass` is written from it",
+and it now is.
 
 | Deliverable | Status |
 |---|---|
-| `crates/treepo-model/**` | **done** — 63 tests + 2 `compile_fail` doctests |
-| `crates/treepo-vcs/**` | not started |
-| `assets/filters/default-exclusions.ron` | not started |
-| `assets/params/folder-signals.ron` | not started |
-| `tools/corpus/**` | not started |
-| `tests/readonly.rs`, `tests/degenerate.rs` | not started |
+| `crates/treepo-model/**` | **done** |
+| `crates/treepo-vcs/{discover,filter,walk}.rs` | **done** — `F-ASSOC-2`, `F-EXT-8`, `F-EXT-1` |
+| `crates/treepo-vcs/{log_pass,mailmap}.rs` | **done** — `F-EXT-2`, `F-EXT-9` |
+| `assets/filters/default-exclusions.ron` | **done** |
+| `tools/corpus/**` | **done** — 16 shapes, T0/T1 and the §6 rows |
+| `tests/degenerate.rs` | **done** — 14 rows covered |
+| `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | not started |
+| `assets/params/folder-signals.ron` (`F-EXT-5`) | not started |
+| `crates/treepo-vcs/status.rs` (`F-THR-4`) | not started |
+| `xtask readonly-audit` (`AC-MAN-2`) | not started |
+| T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
+
+Three fields are deliberately `Option` and still `None`, all waiting on `F-EXT-4`'s content
+classification: `BalanceScore::kind`, `TemporalPrimitives::stability`, and every
+`DerivedSignals` field. They are unmeasured rather than defaulted so nothing downstream
+mistakes "not looked at" for "zero".
+
+### What the fixtures found
+
+Three real defects, none of which any amount of local testing would have surfaced:
+
+1. **Shallow clones killed extraction.** A shallow boundary commit records a parent whose
+   object was never fetched; `diff_chunk` died reading it, where PRD §6 requires a tree plus
+   a warning. Git grafts those commits to parentless; `log_pass` now resolves the boundary
+   set once and matches. Fixed at the source rather than by catching the error in the
+   worker, so a missing object anywhere else stays loud — that would be real corruption.
+2. **CI checked out shallow.** `actions/checkout` defaults to `fetch-depth: 1`, which broke
+   a shallowness assertion on Windows and would have left every history test asserting
+   almost nothing while passing. CI now sets `fetch-depth: 0`, and the history tests refuse
+   to run against a shallow checkout rather than passing vacuously.
+3. **"Not Windows" and "arbitrary filename bytes" are different questions.** macOS rejects
+   non-UTF-8 filenames at the syscall with `EILSEQ` — APFS and HFS+ require valid UTF-8
+   where Linux permits any byte but `/` and NUL. Only a three-platform matrix separates the
+   two. The `case-collision` shape hit the mirror image: `git add --all` stages the
+   *removal* of an injected index entry on a case-sensitive filesystem, and Windows folds
+   the names so it never showed there.
 
 ### `treepo-model` — decisions worth finding again
 
@@ -243,10 +275,16 @@ phases that produce them; defining them now would be guessing at Phase 3.
 
 ## Next
 
-**`treepo-vcs`** — `discover`, `walk`, `filter`, `log_pass`, `mailmap`, `lang`, `status`.
-`log_pass` is written from `tools/spike-numstat/`, which is deleted once it is.
+**`lang.rs` (`F-EXT-4`)** — language and LOC breakdown, and the content categories that close
+the three `Option` fields above. It is the last `P0` extraction requirement without an
+implementation.
 
-Two things Phase 1 still owes, both recorded above and neither started: the corpus fixtures
-(`tools/corpus/**`), which are also what re-validates the spike's extrapolated ~37 s T2
-figure against a real fixture; and `tests/degenerate.rs`, which needs one passing test per
-PRD §6 row.
+Then the two Phase 1 end conditions still open:
+
+- **`cargo xtask readonly-audit`** (`AC-MAN-2`, `AC-EXT-4`) — assert zero writes to any
+  fixture working tree. The corpus gives it something to audit; the HEAD-tree walk should
+  make it trivially green, which is the point of having built it that way.
+- **T2/T3 pinned repositories and `AC-EXT-1`** — the spike's ~37 s T2 figure is still an
+  extrapolation from bevy, which is light on file count, the axis the tree diff scales on.
+  PRD §3 specifies real public repositories pinned by commit SHA rather than synthetic ones,
+  so this needs a pinning-and-caching mechanism, not another generator.
