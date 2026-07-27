@@ -285,10 +285,29 @@ fn excluded_content_is_filtered_but_tracked_files_are_kept() {
     assert!(structure.excluded > 0, "the filter did fire");
 }
 
+/// Asserts a platform-gated test agrees with its shape's own gate.
+///
+/// The `cfg` on the test and the `platforms` on the shape are two statements of one fact,
+/// and they have already drifted apart once — macOS is Unix but rejects non-UTF-8 names, so
+/// a `cfg(unix)` test outlived the fixture it needed. Checking here means the next drift is
+/// a failure rather than a test that quietly stops existing.
+fn assert_shape_available(name: &str) {
+    let shape = corpus::all_shapes()
+        .iter()
+        .find(|shape| shape.name == name)
+        .unwrap_or_else(|| panic!("no shape named {name}"));
+    assert!(
+        shape.platforms.available(),
+        "this test is compiled on a platform where the `{name}` fixture is not built — its \
+         cfg and the shape's `platforms` disagree"
+    );
+}
+
 /// | Symlinks | Not followed. Cycles impossible by construction. |
 #[cfg(unix)]
 #[test]
 fn symlinks_are_recorded_and_never_followed() {
+    assert_shape_available("symlinks");
     let (_, structure, _) = extract("symlinks");
     let link = structure
         .records
@@ -309,9 +328,13 @@ fn symlinks_are_recorded_and_never_followed() {
 }
 
 /// | Non-UTF8 paths | Lossy display names; the raw path is preserved for `F-INSP-4`. |
-#[cfg(unix)]
+///
+/// Linux only, not Unix: macOS rejects these names at the syscall (`EILSEQ`), so the fixture
+/// cannot exist there.
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_paths_keep_their_bytes() {
+    assert_shape_available("non-utf8");
     let (_, structure, _) = extract("non-utf8");
     let odd = structure
         .records
