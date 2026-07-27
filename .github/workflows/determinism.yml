@@ -39,7 +39,7 @@ jobs:
           - { name: macos, os: macos-latest }
           - { name: windows, os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install pinned toolchain
         run: rustup show
@@ -50,7 +50,7 @@ jobs:
       - name: Run determinism probes
         run: cargo xtask determinism --runs 3 --out determinism-${{ matrix.name }}.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: determinism-${{ matrix.name }}
           path: determinism-${{ matrix.name }}.txt
@@ -61,7 +61,7 @@ jobs:
     needs: probe
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: reports
 

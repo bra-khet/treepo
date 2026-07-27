@@ -31,7 +31,7 @@ jobs:
           - { name: macos, os: macos-latest }
           - { name: windows, os: windows-latest }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installs exactly the toolchain pinned in rust-toolchain.toml, which is a
       # determinism input rather than a convenience.
@@ -50,7 +50,7 @@ jobs:
     name: fmt & clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -67,7 +67,7 @@ jobs:
     name: dep-guard (N6)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
@@ -81,7 +81,7 @@ jobs:
     name: cargo-deny (N2)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # DEFAULT FEATURES ONLY. `brp` (architecture D10) deliberately pulls Bevy's
       # localhost remote-protocol stack for agent tooling, and enabling it here would put

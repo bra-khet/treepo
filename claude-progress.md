@@ -13,26 +13,25 @@ Phase 0 — workspace and determinism foundation — is built and green.
 
 | Gate | Command | Status |
 |---|---|---|
-| Build | `cargo build --workspace` | green on Windows; Linux/macOS await first CI run |
+| Build | `cargo build --workspace` | green on Linux, macOS, Windows |
 | Tests | `cargo test -p treepo-det` | green — 38 unit tests + 1 doctest |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | green |
 | Format | `cargo fmt --all -- --check` | green |
 | `N6` | `cargo xtask dep-guard` | green |
 | `N2` | `cargo deny check` | green — advisories, bans, licences, sources |
 | `AC-DET-1` | `cargo xtask determinism` | green — 5 probes × 3 runs |
-| `AC-DET-2` | determinism.yml compare job | **pending first CI run** |
+| `AC-DET-2` | determinism.yml compare job | **green — confirmed 2026-07-27** |
 
-### The one thing not yet proven
+**Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
 
-`AC-DET-2` — bit-identical trig across Windows, macOS and Linux — cannot be closed from a
-single machine. The harness, the workflow, and the comparison are in place and the compare
-step was exercised locally against both matching and deliberately mismatched reports. What
-remains is pushing to a remote and letting the three runners disagree or not.
+### AC-DET-2, confirmed
 
-Everything about the design says they will agree: the trig path is integer-only, the report
-is written with LF on every platform, and debug and release builds already produce identical
-reports on Windows. But it is unproven until CI says so, and it is the single highest-value
-thing to confirm before Phase 1 builds on it.
+Linux, macOS and Windows each ran the probes three times and produced **byte-identical
+reports** — all five digests, on all three platforms, matching the values below. `RISK-2`
+(cross-platform float determinism) is closed for the primitive layer; the table trig of
+`F-SKEL-6` does what it was built to do.
+
+This is the result Phase 3 depends on, and it is now evidence rather than expectation.
 
 ### Reference digests (Windows, release and debug alike)
 
