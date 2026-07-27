@@ -56,8 +56,9 @@ impl LineCounts {
 /// What kind of content a path holds — the `code : assets : config : docs : generated :
 /// binary` ratio of `F-EXT-4`.
 ///
-/// One category per file, assigned by `treepo-vcs::lang` from extension, `.gitattributes`
-/// `linguist-*` markers, and folder context. Directories carry a mix rather than a category.
+/// One category per file, assigned by `treepo-vcs::lang` from the file name, its extension,
+/// and any `.gitattributes` `linguist-*` marker, with the bytes themselves overruling all
+/// three when they contain a NUL. Directories carry a mix rather than a category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ContentCategory {
     /// Source in a recognized programming language.

@@ -196,17 +196,50 @@ and it now is.
 | `crates/treepo-vcs/{log_pass,mailmap}.rs` | **done** — `F-EXT-2`, `F-EXT-9` |
 | `assets/filters/default-exclusions.ron` | **done** |
 | `tools/corpus/**` | **done** — 16 shapes, T0/T1 and the §6 rows |
-| `tests/degenerate.rs` | **done** — 14 rows covered |
-| `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | not started |
+| `tests/degenerate.rs` | **done** — 18 rows covered |
+| `crates/treepo-vcs/lang.rs` (`F-EXT-4`) | **done** — plus `F-EXT-8` rule 4 and `F-EXT-6` |
+| `assets/languages/languages.ron` | **done** |
 | `assets/params/folder-signals.ron` (`F-EXT-5`) | not started |
 | `crates/treepo-vcs/status.rs` (`F-THR-4`) | not started |
 | `xtask readonly-audit` (`AC-MAN-2`) | not started |
 | T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
 
-Three fields are deliberately `Option` and still `None`, all waiting on `F-EXT-4`'s content
-classification: `BalanceScore::kind`, `TemporalPrimitives::stability`, and every
-`DerivedSignals` field. They are unmeasured rather than defaulted so nothing downstream
-mistakes "not looked at" for "zero".
+The three deliberately-`None` fields are now filled: `BalanceScore::kind`,
+`TemporalPrimitives::stability`, and `DerivedSignals`. The `Option` stays in every case —
+`None` still means "not measured", and the pass leaves it there wherever there is no honest
+denominator (a directory of assets has no line count to divide churn by, and a repository
+with no `Code` files has nothing for its docs to be stale against).
+
+### `lang.rs` — the three decisions
+
+1. **Comment counting is a state machine, never a parser.** `AC-EXT-4` forbids evaluating
+   repository content, so a language plugin that loads project config is the exact code path
+   `N1` closes. Two rules keep the approximation from failing badly rather than slightly:
+   only a line whose *first* non-blank content is a comment marker counts as a comment (so a
+   URL in a string is code), and a block comment is only tracked across lines when it opens
+   at the start of one. Tracking mid-line `/*` would let a single `"/*"` in a string literal
+   make the rest of a file read as one enormous comment. The chosen failure undercounts a
+   rare construct; the rejected one is invisible.
+2. **Extension matching folds ASCII case; `filter.rs` deliberately does not.** Not an
+   inconsistency. Honouring `core.ignorecase` in the *filter* would make the same repository
+   produce a different tree depending on the platform it was cloned on — the exact
+   `AC-DET-2` failure. Folding case *here* applies to path bytes treepo already holds, so
+   `.PNG` and `.png` classify identically everywhere. One introduces platform variance, the
+   other removes it.
+3. **`.gitattributes` is read from the tree, not from `gix`'s attribute stack.** The stack
+   needs the index and can reach into the working directory, and `walk` advertises that the
+   HEAD-tree path touches neither. Two attributes do not justify giving that up. The cost is
+   macros, `info/attributes`, and the user's global attributes file — none of which anyone
+   uses for `linguist-*`. What it buys is that extraction of a committed tree depends on
+   nothing outside that tree, which is also what makes it reproducible elsewhere.
+
+`linguist-generated` and `linguist-vendored` both map to `ContentCategory::Generated`. There
+is no `Vendored` variant because `design/feature-system.md` §8.5 gives both the same
+"machined" material — a variant no renderer would read differently is a variant that only
+creates the chance of reading it wrong. This also stays in `lang.rs` rather than `filter.rs`:
+a marker changes what a path *is*, not whether it is structure. Filtered-out vendored code
+would be missing from the tree; classified as generated it is present and rendered as what
+the repository said it was.
 
 ### What the fixtures found
 
@@ -273,11 +306,30 @@ phases that produce them; defining them now would be guessing at Phase 3.
 
 ---
 
+## Agent hygiene
+
+Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
+and read the output**, before every push. CI is the second filter, never the first. This is
+written down because it was violated once: commit `4ef8286` went out unread and failed on a
+`dead_code` warning that a local clippy run would have shown in two seconds. Three further CI
+round-trips in the same sprint went to platform differences that were reasonable-about-able
+before pushing. The full local gate is:
+
+```
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo xtask determinism && cargo xtask dep-guard && cargo deny check
+```
+
 ## Next
 
-**`lang.rs` (`F-EXT-4`)** — language and LOC breakdown, and the content categories that close
-the three `Option` fields above. It is the last `P0` extraction requirement without an
-implementation.
+**`F-EXT-5` folder signals** — `assets/params/folder-signals.ron` plus the structured records
+of `design/feature-system.md` §3.1: `signal_name`, `default_semantic_weight`,
+`content_modulation`, `effective_weight`, `position_in_hierarchy`. `lang.rs` already produces
+most of what the modulation needs (`language_distribution`, `size_ratio`, `binary_ratio` via
+`category_ratio`, and `test_like_ratio` via `Classification::is_test`), so this sprint is
+mostly the dictionary and the weighting, not new extraction.
 
 Then the two Phase 1 end conditions still open:
 

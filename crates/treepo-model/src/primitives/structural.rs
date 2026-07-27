@@ -144,16 +144,23 @@ pub struct BalanceScore {
     pub size: Fx,
     /// How evenly subtree depth is spread across immediate children.
     pub depth: Fx,
-    /// How evenly content categories (code, asset, config, docs) are spread.
+    /// How evenly content categories are spread across all seven of
+    /// [`ContentCategory::ALL`](super::size::ContentCategory::ALL).
     ///
-    /// `None` until content classification has run (`F-EXT-4`), following the same
-    /// convention as [`DerivedSignals`](super::DerivedSignals): a missing measurement is
-    /// `None`, never a defaulted zero that reads as real imbalance.
+    /// A directory of nothing but code scores 0 — it is concentrated in one category, which
+    /// is what a kind-imbalance is. Because a real directory rarely holds more than three
+    /// categories, values cluster low; they cluster low *consistently*, which is what makes
+    /// two directories comparable.
+    ///
+    /// `None` for a leaf, which has no distribution to be balanced about, and `None` before
+    /// content classification has run (`F-EXT-4`) — the same convention as
+    /// [`DerivedSignals`](super::DerivedSignals), where a missing measurement is never a
+    /// defaulted zero that would read as real imbalance.
     pub kind: Option<Fx>,
 }
 
 impl BalanceScore {
-    /// A leaf's score: nothing to be unbalanced about, and no categories measured yet.
+    /// A leaf's score: nothing to be unbalanced about, on any axis.
     pub const EVEN: Self = Self {
         size: Fx::ONE,
         depth: Fx::ONE,

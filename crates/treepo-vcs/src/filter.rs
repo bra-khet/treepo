@@ -8,9 +8,12 @@
 //! 3. **Apply a built-in default exclusion set.** `assets/filters/default-exclusions.ron`,
 //!    compiled in by [`FilterSet::built_in`].
 //! 4. **Detect generated and vendored content via `.gitattributes` `linguist-*` markers.**
-//!    Not yet — it needs the attribute stack that `lang.rs` also needs, and lands with it.
-//!    [`FilterSet`] has no hook for it today; adding one before there is a caller would be
-//!    guessing at the shape.
+//!    In [`lang::Attributes`](crate::lang::Attributes), not here, and deliberately: a marker
+//!    changes what a path *is*, not whether it is structure. Vendored code that this module
+//!    dropped would be missing from the tree; classified as
+//!    [`Generated`](treepo_model::primitives::size::ContentCategory::Generated) it is present
+//!    and rendered in the "machined" material `design/feature-system.md` §8.5 describes,
+//!    which is what the repository asked for by marking it.
 //! 5. **Overridable per repository.** [`FilterOverrides`] from the manifest, applied here.
 //!
 //! # Why `.gitignore` needs no pattern matching

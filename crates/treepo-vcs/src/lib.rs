@@ -25,10 +25,16 @@
 //! * [`discover`] — `F-ASSOC-2`. What is at the path the user picked, and what to tell them.
 //! * [`filter`] — `F-EXT-8`. What counts as the repository's structure.
 //! * [`walk`] — `F-EXT-1`. Structural and size primitives from the HEAD tree.
+//! * [`lang`] — `F-EXT-4`. Language, LOC, and content categories, from one read per file.
 //! * [`mailmap`] — `F-EXT-9`. One human is one contributor.
 //! * [`log_pass`] — `F-EXT-2`. Every temporal and ownership primitive, from one traversal.
 //!
-//! Still to come in Phase 1: `lang` (`F-EXT-4`) and `status` (`F-THR-4`).
+//! Two of them have an ordering constraint, and it is the only one in the crate:
+//! [`lang::apply_history_signals`] needs both a content pass and a history pass to have run,
+//! because `stability` divides churn in lines by a line count and `doc_staleness_days`
+//! compares commit times selected by content category. Everything else composes in any order.
+//!
+//! Still to come in Phase 1: `status` (`F-THR-4`).
 //!
 //! # `git blame` is not reachable from here
 //!
@@ -73,6 +79,9 @@ pub mod walk;
 
 pub use discover::{DiscoverError, Notice, RepoTarget, Target, discover};
 pub use filter::{Decision, DefaultExclusions, ExclusionGroup, FilterSet};
+pub use lang::{
+    Attributes, Catalogue, Classification, ContentOptions, Marker, ScanError, ScanReport, scan,
+};
 pub use log_pass::{History, HistoryError, HistoryOptions, PathHistory, log_pass};
 pub use mailmap::Identities;
 pub use walk::{Structure, StructureSource, WalkError, WalkOptions, walk};

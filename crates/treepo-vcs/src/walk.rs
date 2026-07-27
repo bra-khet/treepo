@@ -31,8 +31,9 @@
 //!
 //! [`SizePrimitives::lines`], `language_bytes`, and `category_bytes` stay empty, and
 //! [`BalanceScore::kind`] stays `None`. All four need content classification (`F-EXT-4`),
-//! which needs to read blobs; that lands with `lang.rs`. They are left unmeasured rather
-//! than defaulted so nothing downstream mistakes "not looked at" for "zero".
+//! which needs to read blobs — [`lang::scan`](crate::lang::scan) does that, and
+//! [`Structure::sources`] is what it reads from. They are left unmeasured rather than
+//! defaulted so nothing downstream mistakes "not looked at" for "zero".
 
 use crate::discover::{Target, entry_name};
 use crate::filter::FilterSet;
@@ -52,25 +53,43 @@ pub enum StructureSource {
     Filesystem,
 }
 
+/// Bytes above which a file counts as a large-file outlier (`P7`, PRD §6).
+///
+/// Large enough that ordinary source, images, and lockfiles are not outliers; small enough
+/// to catch the vendored binary that would otherwise consume its parent's whole budget.
+/// Belongs in a parameter file eventually, alongside the other thresholds `F-SKEL-5` makes
+/// editable; a constant keeps it in one place until there is a file to put it in.
+///
+/// Shared with [`ContentOptions`](crate::lang::ContentOptions), which measures the same
+/// files against the same line — two defaults that drifted apart would produce a
+/// `large_file_debt` that disagreed with `large_file_count` on the same tree.
+pub const LARGE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Knobs the walk reads. Defaults are the shipped ones.
 #[derive(Debug, Clone, Copy)]
 pub struct WalkOptions {
-    /// Bytes above which a file counts as a large-file outlier (`P7`, PRD §6).
-    ///
-    /// Belongs in a parameter file eventually, alongside the other thresholds `F-SKEL-5`
-    /// makes editable; a field here keeps it testable until there is a file to put it in.
+    /// Bytes above which a file counts as a large-file outlier. See [`LARGE_FILE_BYTES`].
     pub large_file_bytes: u64,
 }
 
 impl Default for WalkOptions {
     fn default() -> Self {
         Self {
-            // Large enough that ordinary source, images, and lockfiles are not outliers;
-            // small enough to catch the vendored binary that would otherwise consume its
-            // parent's whole budget.
-            large_file_bytes: 4 * 1024 * 1024,
+            large_file_bytes: LARGE_FILE_BYTES,
         }
     }
+}
+
+/// Where a file's bytes can be read from, for the content pass (`F-EXT-4`).
+///
+/// The walk already resolved every file to something readable, and throwing that away only
+/// to resolve it again from the path would cost a tree lookup per file on the HEAD path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileSource {
+    /// A blob in the object database, from the HEAD tree.
+    Blob(gix::ObjectId),
+    /// A file on disk, for the no-repository fallback.
+    Disk(PathBuf),
 }
 
 /// What one walk produced.
@@ -81,6 +100,12 @@ pub struct Structure {
     /// Always contains the repository root, even for an empty repository — PRD §6 requires
     /// a seed and root cluster rather than nothing (`AC-SKEL-2`).
     pub records: Vec<PathRecord>,
+    /// Where each file's bytes can be read from, for [`lang::scan`](crate::lang::scan).
+    ///
+    /// Keyed by path rather than by record index because [`roll_up`] sorts the records, and
+    /// an index-keyed side table would silently point at the wrong file afterwards.
+    /// Directories, symlinks, and submodules are absent — none of them has content to read.
+    pub sources: BTreeMap<RepoPath, FileSource>,
     /// Where the structure came from.
     pub source: StructureSource,
     /// How many paths the filter removed (`F-EXT-8`).
@@ -154,6 +179,7 @@ pub fn walk(
         // "seed and root cluster", not a filesystem tree pretending to be committed.
         Target::Repository(_) => Structure {
             records: vec![PathRecord::new(RepoPath::root(), NodeKind::Directory)],
+            sources: BTreeMap::new(),
             source: StructureSource::HeadTree,
             excluded: 0,
             unreadable: 0,
@@ -174,6 +200,7 @@ fn walk_head_tree(repo: &gix::Repository, filter: &FilterSet) -> Result<Structur
         .map_err(|error| WalkError::Object(error.to_string()))?;
 
     let mut records = vec![PathRecord::new(RepoPath::root(), NodeKind::Directory)];
+    let mut sources = BTreeMap::new();
     let mut excluded = 0usize;
     let mut pending = vec![(RepoPath::root(), head_tree.id)];
 
@@ -222,6 +249,7 @@ fn walk_head_tree(repo: &gix::Repository, filter: &FilterSet) -> Result<Structur
                     .find_header(oid)
                     .map_err(|error| WalkError::Object(error.to_string()))?
                     .size();
+                sources.insert(path.clone(), FileSource::Blob(oid));
             }
             records.push(record);
 
@@ -233,6 +261,7 @@ fn walk_head_tree(repo: &gix::Repository, filter: &FilterSet) -> Result<Structur
 
     Ok(Structure {
         records,
+        sources,
         source: StructureSource::HeadTree,
         excluded,
         unreadable: 0,
@@ -242,6 +271,7 @@ fn walk_head_tree(repo: &gix::Repository, filter: &FilterSet) -> Result<Structur
 /// Walks the filesystem, for a directory with no repository (PRD §6, `AC-ASSOC-3`).
 fn walk_filesystem(root: &Path, filter: &FilterSet) -> Result<Structure, WalkError> {
     let mut records = vec![PathRecord::new(RepoPath::root(), NodeKind::Directory)];
+    let mut sources = BTreeMap::new();
     let mut excluded = 0usize;
     let mut unreadable = 0usize;
     let mut pending = vec![(RepoPath::root(), root.to_path_buf())];
@@ -283,6 +313,7 @@ fn walk_filesystem(root: &Path, filter: &FilterSet) -> Result<Structure, WalkErr
             let mut record = PathRecord::new(path.clone(), node);
             if node == NodeKind::File {
                 record.size.bytes = len;
+                sources.insert(path.clone(), FileSource::Disk(push_name(&directory, &name)));
             }
             records.push(record);
 
@@ -294,6 +325,7 @@ fn walk_filesystem(root: &Path, filter: &FilterSet) -> Result<Structure, WalkErr
 
     Ok(Structure {
         records,
+        sources,
         source: StructureSource::Filesystem,
         excluded,
         unreadable,
@@ -343,15 +375,11 @@ fn roll_up(records: &mut [PathRecord], options: WalkOptions) {
     records.sort_by(|a, b| a.path.cmp(&b.path));
     let count = records.len();
 
+    let parent_of = parent_indices(records);
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); count];
-    let mut parent_of: Vec<Option<usize>> = vec![None; count];
-    for index in 0..count {
-        let Some(parent) = records[index].path.parent() else {
-            continue;
-        };
-        if let Ok(parent_index) = records.binary_search_by(|record| record.path.cmp(&parent)) {
+    for (index, parent) in parent_of.iter().enumerate() {
+        if let &Some(parent_index) = parent {
             children[parent_index].push(index);
-            parent_of[index] = Some(parent_index);
         }
     }
 
@@ -431,7 +459,7 @@ fn roll_up(records: &mut [PathRecord], options: WalkOptions) {
         structural.balance = BalanceScore {
             size: evenness(&child_bytes),
             depth: evenness(&child_depths),
-            // Needs content categories (`F-EXT-4`), which land with `lang.rs`.
+            // Needs content categories, so `lang::scan` fills it on its own pass.
             kind: None,
         };
         structural.hierarchy_skew = hierarchy_skew(descendant_files + descendant_dirs, max_depth);
@@ -458,6 +486,27 @@ fn roll_up(records: &mut [PathRecord], options: WalkOptions) {
     }
 }
 
+/// Each record's parent, by index, for a slice already sorted by path.
+///
+/// `None` for the root, and for a record whose parent was filtered away — a gap that cannot
+/// happen on either walk, since a rule matching a directory also matches everything beneath
+/// it, but which is silently dropped rather than asserted because a hand-built slice in a
+/// test has no such guarantee.
+///
+/// Shared with [`lang`](crate::lang), which rolls content up the same tree. Two independent
+/// derivations of the same parent relation is one more than the number that can be right.
+pub(crate) fn parent_indices(records: &[PathRecord]) -> Vec<Option<usize>> {
+    records
+        .iter()
+        .map(|record| {
+            let parent = record.path.parent()?;
+            records
+                .binary_search_by(|candidate| candidate.path.cmp(&parent))
+                .ok()
+        })
+        .collect()
+}
+
 /// How evenly a total is spread across parts, in `0..=1`.
 ///
 /// Normalized total-variation distance from a uniform split: 1 when every part is equal, 0
@@ -466,7 +515,7 @@ fn roll_up(records: &mut [PathRecord], options: WalkOptions) {
 /// directory" is exactly the question `P7`'s clamp asks.
 ///
 /// A single part is perfectly even by definition, as is a total of zero.
-fn evenness(parts: &[u64]) -> Fx {
+pub(crate) fn evenness(parts: &[u64]) -> Fx {
     let count = parts.len() as u128;
     if count <= 1 {
         return Fx::ONE;

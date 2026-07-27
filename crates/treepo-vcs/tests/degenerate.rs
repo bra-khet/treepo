@@ -15,8 +15,10 @@
 //! directory is not a cargo target and would never run.
 
 use std::path::PathBuf;
-use treepo_model::manifest::NodeKind;
+use treepo_model::manifest::{LanguageTable, NodeKind};
 use treepo_model::path::RepoPath;
+use treepo_model::primitives::size::ContentCategory;
+use treepo_vcs::lang::{Catalogue, ContentOptions, ScanReport, apply_history_signals, scan};
 use treepo_vcs::{
     DiscoverError, FilterSet, HistoryOptions, Notice, Target, WalkOptions, discover, log_pass, walk,
 };
@@ -35,14 +37,46 @@ fn path(s: &str) -> RepoPath {
     RepoPath::new(s.as_bytes()).expect("valid path")
 }
 
-/// Discover, filter, walk, and apply history — the whole Phase 1 pipeline.
+/// Discover, filter, walk, scan, and apply history — the whole Phase 1 pipeline.
+///
+/// Every shape runs all of it, including the shapes whose test only looks at one pass. A
+/// fixture that breaks a pass nobody thought to check against it is the interesting case,
+/// and it is only reachable if every fixture goes through every pass.
 fn extract(name: &str) -> (Target, treepo_vcs::Structure, treepo_vcs::History) {
+    let (target, structure, history, _, _) = extract_content(name);
+    (target, structure, history)
+}
+
+/// The same pipeline, keeping what the content pass produced.
+fn extract_content(
+    name: &str,
+) -> (
+    Target,
+    treepo_vcs::Structure,
+    treepo_vcs::History,
+    LanguageTable,
+    ScanReport,
+) {
     let target = discover(fixture(name)).expect("fixture opens");
     let filter = FilterSet::built_in();
     let mut structure = walk(&target, &filter, WalkOptions::default()).expect("walk");
+
+    let mut languages = LanguageTable::new();
+    let report = scan(
+        &target,
+        &mut structure,
+        &Catalogue::built_in(),
+        &mut languages,
+        ContentOptions::default(),
+    )
+    .expect("content scan");
+
     let history = log_pass(&target, &filter, HistoryOptions::default()).expect("history");
     treepo_vcs::log_pass::apply(&mut structure.records, &history);
-    (target, structure, history)
+    // Last, because it needs both of the passes above (see `treepo_vcs::lang`).
+    apply_history_signals(&mut structure.records);
+
+    (target, structure, history, languages, report)
 }
 
 /// | Empty repository | Seed and root-boulder cluster. Never a lonely trunk. (`AC-SKEL-2`) |
@@ -347,6 +381,99 @@ fn non_utf8_paths_keep_their_bytes() {
     assert_eq!(odd.path.as_bytes(), b"src/caf\xe9.rs");
     assert_eq!(odd.path.display(), "src/caf\u{fffd}.rs");
     assert_eq!(odd.path.extension(), Some(&b"rs"[..]));
+}
+
+/// `F-EXT-8` rule 4, against a `.gitattributes` git itself committed.
+///
+/// The unit tests in `treepo_vcs::lang` prove the parser and the matcher. This proves the
+/// blob reaches them at all — that the file is in the tree, found by name, read, and applied
+/// to the right paths. Every step between the parser and the walk is only checked here.
+#[test]
+fn linguist_markers_from_a_committed_gitattributes_are_honoured() {
+    let (_, structure, _, _, report) = extract_content("excluded-content");
+    assert_eq!(report.attribute_files, 1, "the fixture commits one");
+
+    let by_path = treepo_vcs::walk::by_path(&structure.records);
+    let vendored = by_path[&path("vendor/thirdparty/big.js")];
+    assert_eq!(
+        vendored.size.category_bytes.keys().next(),
+        Some(&ContentCategory::Generated),
+        "`vendor/** linguist-vendored` reaches the file"
+    );
+    // It is still JavaScript, and still counted — a marker changes the category, not the
+    // language, and generated content has real lines.
+    assert!(vendored.size.lines.total > 0);
+    assert_eq!(vendored.size.language_bytes.len(), 1);
+
+    // A file the pattern does not cover keeps the category its suffix implies.
+    let source = by_path[&path("src/main.rs")];
+    assert_eq!(
+        source.size.category_bytes.keys().next(),
+        Some(&ContentCategory::Code)
+    );
+    assert!(
+        by_path[&RepoPath::root()]
+            .derived
+            .generated_debt
+            .expect("measured")
+            > treepo_det::Fx::ZERO
+    );
+}
+
+/// | One enormous file | ... | `P7` soft clamp; the outlier is data, not an error. |
+///
+/// The content half: an 8 MB binary asset is categorized without being read. `find_header`
+/// gave the walk its size for free, and opening it would buy nothing but the `AC-EXT-1`
+/// budget's worst minute.
+#[test]
+fn an_enormous_binary_asset_is_measured_without_being_read() {
+    let (_, structure, _, _, report) = extract_content("huge-file");
+    let by_path = treepo_vcs::walk::by_path(&structure.records);
+
+    let enormous = by_path[&path("assets/enormous.bin")];
+    assert!(enormous.size.bytes >= 8 * 1024 * 1024);
+    assert_eq!(
+        enormous.size.category_bytes.keys().next(),
+        Some(&ContentCategory::Binary)
+    );
+    assert_eq!(enormous.size.lines.total, 0, "never opened");
+    assert_eq!(enormous.size.language_bytes.len(), 0);
+
+    // Only the two small sources were read, and the default cap was never reached — the
+    // asset was skipped by category, which is the cheaper of the two guards.
+    assert_eq!(report.scanned, 2);
+    assert_eq!(report.too_large, 0);
+
+    // And the debt signal still sees it, because bytes need no read.
+    let root = by_path[&RepoPath::root()];
+    assert!(root.derived.large_file_debt.expect("measured") > treepo_det::Fx::from_ratio(9, 10));
+}
+
+/// A repository with no commits has no blobs; the pass must produce nothing, not fail.
+#[test]
+fn scanning_an_empty_repository_measures_nothing() {
+    let (_, structure, _, languages, report) = extract_content("empty");
+    assert_eq!(report, ScanReport::default());
+    assert!(languages.is_empty());
+    let root = &structure.records[0];
+    assert_eq!(root.size.lines.total, 0);
+    assert!(root.size.category_bytes.is_empty());
+    // Nothing measured is not zero measured, all the way down.
+    assert_eq!(root.derived.comment_density, None);
+    assert_eq!(root.derived.generated_debt, None);
+    assert_eq!(root.temporal.stability, None);
+}
+
+/// The no-repository fallback reads content from disk, since there is no tree to read it
+/// from. Same records, different source (PRD §6, `AC-ASSOC-3`).
+#[test]
+fn a_plain_directory_still_gets_its_content_counted() {
+    let (_, structure, _, languages, report) = extract_content("no-git");
+    assert!(report.scanned > 0, "files on disk are still read");
+    assert!(!languages.is_empty());
+    let root = &structure.records[0];
+    assert!(root.size.lines.total > 0);
+    assert!(root.derived.comment_density.is_some());
 }
 
 /// Every shape must be reachable, so a fixture cannot rot unnoticed.
