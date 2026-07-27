@@ -66,6 +66,7 @@
 
 pub mod discover;
 pub mod filter;
+pub mod lang;
 pub mod log_pass;
 pub mod mailmap;
 pub mod walk;

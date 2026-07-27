@@ -1,0 +1,196 @@
+// The language and content catalogue — `F-EXT-4`.
+//
+// Read by `treepo-vcs::lang`, compiled in with `include_str!` for the same reason
+// `assets/filters/default-exclusions.ron` is: extraction must not depend on resolving an
+// asset path at runtime.
+//
+// # What each field decides
+//
+// * `name` — the language recorded in `Manifest::languages`, and the key of
+//   `SizePrimitives::language_bytes`. Two entries may share a name; they are one language
+//   with several spellings on disk.
+// * `category` — one of `Code`, `Asset`, `Config`, `Docs`, `Generated`, `Binary`, `Unknown`.
+//   Drives the `code : asset : config : docs : generated : binary` ratio, and decides
+//   whether lines are counted at all (`ContentCategory::is_textual`).
+// * `extensions` — matched against the final `.`-separated suffix, ASCII-lowercased.
+// * `filenames` — matched against the whole file name, ASCII-lowercased. For files that
+//   carry no extension, `Makefile` and `Dockerfile` being the usual suspects.
+// * `line_comment` / `block_comment` — the comment syntax, for the LOC breakdown. Omit
+//   both and every non-blank line counts as code, which is right for JSON and for the
+//   formats where nothing else is defensible.
+//
+// # Matching is case-insensitive, unlike the exclusion set
+//
+// The two files disagree on purpose. An exclusion pattern matched case-insensitively would
+// make the same repository filter differently depending on the platform it was cloned on
+// (`AC-DET-2`); folding case *here* has the opposite effect, because the fold is applied to
+// the path bytes treepo already holds. `.PNG` and `.png` classify identically on every
+// platform, which is what `N3` wants.
+//
+// # Coverage is deliberately partial
+//
+// An unrecognized extension yields `Unknown`, not a guess. `Unknown` is a category like any
+// other and a repository full of it renders as a repository full of files treepo could not
+// name — which is honest, and visibly fixable by adding an entry here.
+(
+    version: 1,
+
+    languages: [
+        // ---- systems and compiled ----
+        (name: "Rust", category: Code, extensions: ["rs"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "C", category: Code, extensions: ["c", "h"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "C++", category: Code, extensions: ["cc", "cpp", "cxx", "c++", "hpp", "hh", "hxx"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "C#", category: Code, extensions: ["cs"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Objective-C", category: Code, extensions: ["m", "mm"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Go", category: Code, extensions: ["go"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Zig", category: Code, extensions: ["zig"], line_comment: ["//"]),
+        (name: "Swift", category: Code, extensions: ["swift"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Java", category: Code, extensions: ["java"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Kotlin", category: Code, extensions: ["kt", "kts"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Scala", category: Code, extensions: ["scala", "sc"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Groovy", category: Code, extensions: ["groovy", "gradle"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Dart", category: Code, extensions: ["dart"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Assembly", category: Code, extensions: ["asm", "s"], line_comment: [";", "#"]),
+
+        // ---- scripting and dynamic ----
+        (name: "JavaScript", category: Code, extensions: ["js", "mjs", "cjs", "jsx"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "TypeScript", category: Code, extensions: ["ts", "tsx", "mts", "cts"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Vue", category: Code, extensions: ["vue"],
+         line_comment: ["//"], block_comment: [("/*", "*/"), ("<!--", "-->")]),
+        (name: "Svelte", category: Code, extensions: ["svelte"],
+         line_comment: ["//"], block_comment: [("/*", "*/"), ("<!--", "-->")]),
+        (name: "Python", category: Code, extensions: ["py", "pyi", "pyw"], line_comment: ["#"]),
+        (name: "Ruby", category: Code, extensions: ["rb", "rake"],
+         line_comment: ["#"], block_comment: [("=begin", "=end")]),
+        (name: "PHP", category: Code, extensions: ["php"],
+         line_comment: ["//", "#"], block_comment: [("/*", "*/")]),
+        (name: "Perl", category: Code, extensions: ["pl", "pm"], line_comment: ["#"]),
+        (name: "Lua", category: Code, extensions: ["lua"],
+         line_comment: ["--"], block_comment: [("--[[", "]]")]),
+        (name: "Shell", category: Code, extensions: ["sh", "bash", "zsh", "fish", "ksh"],
+         filenames: [".bashrc", ".zshrc", ".profile"], line_comment: ["#"]),
+        (name: "PowerShell", category: Code, extensions: ["ps1", "psm1", "psd1"],
+         line_comment: ["#"], block_comment: [("<#", "#>")]),
+        (name: "Batch", category: Code, extensions: ["bat", "cmd"], line_comment: ["rem", "::"]),
+
+        // ---- functional ----
+        (name: "Haskell", category: Code, extensions: ["hs", "lhs"],
+         line_comment: ["--"], block_comment: [("{-", "-}")]),
+        (name: "OCaml", category: Code, extensions: ["ml", "mli"], block_comment: [("(*", "*)")]),
+        (name: "F#", category: Code, extensions: ["fs", "fsi", "fsx"],
+         line_comment: ["//"], block_comment: [("(*", "*)")]),
+        (name: "Elixir", category: Code, extensions: ["ex", "exs"], line_comment: ["#"]),
+        (name: "Erlang", category: Code, extensions: ["erl", "hrl"], line_comment: ["%"]),
+        (name: "Clojure", category: Code, extensions: ["clj", "cljs", "cljc"], line_comment: [";"]),
+        (name: "Lisp", category: Code, extensions: ["lisp", "el", "scm", "rkt"], line_comment: [";"]),
+        (name: "Julia", category: Code, extensions: ["jl"],
+         line_comment: ["#"], block_comment: [("#=", "=#")]),
+        (name: "Nim", category: Code, extensions: ["nim", "nims"],
+         line_comment: ["#"], block_comment: [("#[", "]#")]),
+        (name: "R", category: Code, extensions: ["r"], line_comment: ["#"]),
+
+        // ---- markup, styling, shaders, queries ----
+        (name: "HTML", category: Code, extensions: ["html", "htm", "xhtml"],
+         block_comment: [("<!--", "-->")]),
+        (name: "CSS", category: Code, extensions: ["css", "scss", "sass", "less", "styl"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "SQL", category: Code, extensions: ["sql"],
+         line_comment: ["--"], block_comment: [("/*", "*/")]),
+        (name: "GLSL", category: Code, extensions: ["glsl", "vert", "frag", "geom", "comp", "hlsl", "wgsl", "metal"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "Protocol Buffers", category: Code, extensions: ["proto"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "GraphQL", category: Code, extensions: ["graphql", "gql"], line_comment: ["#"]),
+
+        // ---- configuration ----
+        (name: "JSON", category: Config, extensions: ["json", "jsonc", "json5", "webmanifest"]),
+        (name: "YAML", category: Config, extensions: ["yaml", "yml"], line_comment: ["#"]),
+        (name: "TOML", category: Config, extensions: ["toml"], line_comment: ["#"]),
+        (name: "RON", category: Config, extensions: ["ron"],
+         line_comment: ["//"], block_comment: [("/*", "*/")]),
+        (name: "XML", category: Config, extensions: ["xml", "xsd", "xsl", "xslt", "plist", "csproj", "vcxproj", "resx"],
+         block_comment: [("<!--", "-->")]),
+        (name: "INI", category: Config, extensions: ["ini", "cfg", "conf", "properties"],
+         filenames: [".editorconfig"], line_comment: ["#", ";"]),
+        (name: "Make", category: Config, extensions: ["mk", "mak"],
+         filenames: ["makefile", "gnumakefile"], line_comment: ["#"]),
+        (name: "CMake", category: Config, extensions: ["cmake"],
+         filenames: ["cmakelists.txt"], line_comment: ["#"]),
+        (name: "Dockerfile", category: Config, extensions: ["dockerfile"],
+         filenames: ["dockerfile", "containerfile", ".dockerignore"], line_comment: ["#"]),
+        (name: "Bazel", category: Config, extensions: ["bzl", "bazel"],
+         filenames: ["build", "workspace"], line_comment: ["#"]),
+        (name: "Terraform", category: Config, extensions: ["tf", "tfvars"],
+         line_comment: ["#", "//"], block_comment: [("/*", "*/")]),
+        (name: "Nix", category: Config, extensions: ["nix"],
+         line_comment: ["#"], block_comment: [("/*", "*/")]),
+        // No extensions: a leading dot is not a suffix separator, so these are name matches
+        // only. `RepoPath::extension` deliberately returns `None` for `.gitignore`.
+        (name: "Git config", category: Config,
+         filenames: [".gitignore", ".gitattributes", ".gitmodules", ".mailmap"], line_comment: ["#"]),
+
+        // ---- documentation ----
+        (name: "Markdown", category: Docs, extensions: ["md", "markdown", "mdx"],
+         block_comment: [("<!--", "-->")]),
+        (name: "reStructuredText", category: Docs, extensions: ["rst"]),
+        (name: "AsciiDoc", category: Docs, extensions: ["adoc", "asciidoc"], line_comment: ["//"]),
+        (name: "Org", category: Docs, extensions: ["org"], line_comment: ["#"]),
+        (name: "TeX", category: Docs, extensions: ["tex", "sty", "cls", "bib"], line_comment: ["%"]),
+        (name: "Plain text", category: Docs, extensions: ["txt", "rtf"],
+         filenames: ["readme", "license", "licence", "copying", "notice", "authors", "contributors", "changelog", "changes", "install", "news", "todo"]),
+    ],
+
+    // Extensions that carry a category but no language. Nothing here is read for lines: a
+    // texture is not source in a language nobody has written a parser for, it is a texture.
+    categories: [
+        (category: Asset, extensions: [
+            "png", "jpg", "jpeg", "gif", "bmp", "webp", "avif", "ico", "icns", "tif", "tiff", "svg",
+            "mp3", "wav", "ogg", "flac", "aac", "m4a", "opus", "mid", "midi",
+            "mp4", "mov", "avi", "webm", "mkv", "m4v",
+            "ttf", "otf", "woff", "woff2", "eot",
+            "obj", "fbx", "gltf", "glb", "blend", "dae", "stl", "ply", "usd", "usdz", "vox",
+            "psd", "ai", "sketch", "fig", "xcf", "kra", "aseprite", "ase",
+        ]),
+        (category: Binary, extensions: [
+            "exe", "dll", "so", "dylib", "a", "lib", "o", "obj", "pdb", "class", "jar", "war",
+            "pyc", "pyd", "wasm", "bin", "dat", "img", "iso", "dmg", "msi", "deb", "rpm",
+            "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst", "lz4",
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods",
+            "db", "sqlite", "sqlite3", "mdb",
+            "safetensors", "ckpt", "pt", "pth", "onnx", "gguf", "npy", "npz", "h5", "pkl",
+        ]),
+    ],
+
+    // A path is test-like if any directory component matches `test_directories`, or the file
+    // name matches `test_files`. Feeds `DerivedSignals::test_to_source` and, from `F-EXT-5`,
+    // the `test_like_ratio` of a folder signal's content modulation.
+    test_directories: ["test", "tests", "spec", "specs", "__tests__", "testing", "e2e", "integration-tests"],
+    test_files: ["test_*", "*_test.*", "*.test.*", "*.spec.*", "*_spec.*", "*Test.java", "*Tests.cs", "conftest.py"],
+
+    // Conventions for machine-written files that carry no `linguist-generated` marker. The
+    // marker wins where a repository sets one; this list is the fallback for the many that
+    // do not. Lockfiles belong here rather than in the exclusion set — they are real content
+    // with real size, they are simply nobody's authorship.
+    generated_files: [
+        "*.min.js", "*.min.css", "*.map",
+        "*.pb.go", "*.pb.cc", "*.pb.h", "*_pb2.py", "*_pb2_grpc.py", "*_pb.rb",
+        "*.g.dart", "*.freezed.dart", "*.g.cs", "*.designer.cs",
+        "*.generated.*", "*_generated.*", "*.gen.go",
+        "Cargo.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb",
+        "poetry.lock", "Pipfile.lock", "Gemfile.lock", "composer.lock", "go.sum", "flake.lock",
+    ],
+)
