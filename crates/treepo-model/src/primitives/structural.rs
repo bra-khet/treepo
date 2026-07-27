@@ -145,15 +145,19 @@ pub struct BalanceScore {
     /// How evenly subtree depth is spread across immediate children.
     pub depth: Fx,
     /// How evenly content categories (code, asset, config, docs) are spread.
-    pub kind: Fx,
+    ///
+    /// `None` until content classification has run (`F-EXT-4`), following the same
+    /// convention as [`DerivedSignals`](super::DerivedSignals): a missing measurement is
+    /// `None`, never a defaulted zero that reads as real imbalance.
+    pub kind: Option<Fx>,
 }
 
 impl BalanceScore {
-    /// A perfectly balanced score, for a leaf with nothing to be unbalanced about.
+    /// A leaf's score: nothing to be unbalanced about, and no categories measured yet.
     pub const EVEN: Self = Self {
         size: Fx::ONE,
         depth: Fx::ONE,
-        kind: Fx::ONE,
+        kind: None,
     };
 }
 

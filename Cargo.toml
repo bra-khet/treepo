@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/treepo-det",
   "crates/treepo-model",
+  "crates/treepo-vcs",
   "xtask",
   "tools/spike-numstat",
 ]
@@ -21,6 +22,7 @@ publish = false
 [workspace.dependencies]
 treepo-det = { path = "crates/treepo-det" }
 treepo-model = { path = "crates/treepo-model" }
+treepo-vcs = { path = "crates/treepo-vcs" }
 
 # Lint policy applies to every member via `[lints] workspace = true`.
 #

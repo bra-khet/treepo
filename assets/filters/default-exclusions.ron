@@ -1,0 +1,125 @@
+// F-EXT-8 item 3 — the built-in default exclusion set.
+//
+// These are paths that exist in a repository but are not *its* structure: dependencies
+// somebody else wrote, output a build produced, and caches a tool left behind. Including
+// them would make every JavaScript repository look like `node_modules` with a small project
+// attached, which is the opposite of what P4 asks the tree to show.
+//
+// Every group carries a `reason`. That is not decoration — a user looking at a tree with no
+// `vendor` limb should be able to find out why it is missing without reading source, and
+// F-SET-3 lets them override any group per repository.
+//
+// This set is deliberately conservative. A wrongly excluded directory is invisible and its
+// absence is hard to notice; a wrongly included one is merely noise the user can filter. So
+// entries are named directories and unambiguous conventions, never guesses like `data` or
+// `lib` that are real source in plenty of projects.
+//
+// Matching is gitignore-flavoured and documented in `treepo-vcs::filter`:
+//   * a pattern without `/` matches a path component at any depth (`target`)
+//   * a pattern with `/` is anchored at the repository root (`docs/_build`)
+//   * `*` and `?` glob within one component; `**` spans components
+(
+    version: 1,
+    groups: [
+        (
+            name: "package-managers",
+            reason: "Dependencies fetched by a package manager. Somebody else's code, restorable from a manifest.",
+            patterns: [
+                "node_modules",
+                "bower_components",
+                "jspm_packages",
+                "vendor/bundle",
+                "Pods",
+                "Carthage/Build",
+                ".pub-cache",
+                ".cargo/registry",
+                "packages/.pnpm",
+            ],
+        ),
+        (
+            name: "build-output",
+            reason: "Produced by a build, not written by a person. Regenerated on every compile.",
+            patterns: [
+                "target",
+                "dist",
+                "build",
+                "out",
+                "bin/Debug",
+                "bin/Release",
+                "obj",
+                ".next",
+                ".nuxt",
+                ".svelte-kit",
+                ".output",
+                "cmake-build-*",
+                "DerivedData",
+                "docs/_build",
+                "_site",
+                "site-packages",
+            ],
+        ),
+        (
+            name: "virtual-environments",
+            reason: "Language runtimes and interpreters installed into the project directory.",
+            patterns: [
+                ".venv",
+                "venv",
+                "virtualenv",
+                ".direnv",
+                ".bundle",
+                ".gradle",
+                ".stack-work",
+                ".tox",
+                ".nox",
+            ],
+        ),
+        (
+            name: "caches",
+            reason: "Tool caches. Disposable by definition, and often larger than the source.",
+            patterns: [
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                ".ipynb_checkpoints",
+                ".sass-cache",
+                ".parcel-cache",
+                ".turbo",
+                ".cache",
+                "*.egg-info",
+            ],
+        ),
+        (
+            name: "tooling-metadata",
+            reason: "Editor and tooling state. Configuration about the project rather than the project.",
+            patterns: [
+                ".idea",
+                ".vscode",
+                ".vs",
+                ".fleet",
+                ".history",
+                ".terraform",
+            ],
+        ),
+        (
+            name: "other-version-control",
+            reason: "Another version-control system's metadata directory.",
+            patterns: [
+                ".svn",
+                ".hg",
+                ".bzr",
+                "CVS",
+            ],
+        ),
+        (
+            name: "minified-and-bundled",
+            reason: "Machine-generated derivatives of source that is already in the tree.",
+            patterns: [
+                "*.min.js",
+                "*.min.css",
+                "*.map",
+                "*.bundle.js",
+            ],
+        ),
+    ],
+)

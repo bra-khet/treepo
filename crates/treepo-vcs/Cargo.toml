@@ -1,0 +1,40 @@
+[package]
+name = "treepo-vcs"
+description = "Repository extraction: discovery, filtering, the HEAD-tree walk, and the single history pass."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The feature set is the one the RISK-A spike measured, plus `attributes` for F-EXT-8's
+# `linguist-*` markers. Explicit rather than gix's defaults: gix's `default` is network-free
+# already, but naming what we use is what keeps it that way — `blocking-network-client` is
+# one careless `default-features = true` away, and N2's mechanism is that no such crate is in
+# the graph at all.
+#
+# `max-performance-safe` rather than `max-performance`: the latter pulls zlib-ng, a C
+# dependency that would complicate three-platform packaging (NFR-7) for a gain the spike did
+# not show this workload needs.
+[dependencies]
+treepo-det = { workspace = true }
+treepo-model = { workspace = true }
+
+gix = { version = "0.86", default-features = false, features = [
+  "blob-diff",            # F-EXT-2 per-file line counts
+  "revision",             # commit graph traversal
+  "mailmap",              # F-EXT-9
+  "attributes",           # F-EXT-8 item 4 — .gitattributes linguist-* markers
+  "sha1",                 # object hashing — gix does not build without a hash backend
+  "max-performance-safe", # perf without a C dependency
+  "parallel",
+] }
+
+# The asset formats the architecture's file tree specifies. `assets/filters/*.ron` and
+# `assets/params/*.ron` are read here and by treepo-gen; Bevy reads RON natively from
+# Phase 5, so this is the format the whole product already speaks.
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
