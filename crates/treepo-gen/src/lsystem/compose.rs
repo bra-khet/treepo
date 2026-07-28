@@ -68,7 +68,7 @@ use super::grammar;
 use super::turtle::{self, Start, Tip};
 use crate::params::{SkeletonInputs, Table};
 use alloc::vec::Vec;
-use treepo_det::Angle;
+use treepo_det::{Angle, Fx};
 use treepo_model::{
     AggregateNode, Manifest, NodeId, NodeRole, PathRecord, Point, RepoPath, Skeleton,
 };
@@ -90,8 +90,12 @@ pub fn compose(manifest: &Manifest, table: &Table, origin: Point, heading: Angle
         },
         &root,
         None,
-        origin,
-        heading,
+        Site {
+            position: origin,
+            heading,
+            // Nothing upstream: the root limb is as wide as its own mass says and no wider.
+            carried: None,
+        },
         0,
     );
     skeleton
@@ -139,23 +143,51 @@ impl<'a> Context<'a> {
     }
 }
 
+/// Where a limb attaches, and what it inherits from there.
+///
+/// The three things travel together everywhere — a tip hands all of them to the child that
+/// grows from it — so they are one value rather than three parameters that a call site could
+/// pair up wrongly.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Site {
+    /// The point the limb leaves from.
+    pub position: Point,
+    /// The direction it leaves in.
+    pub heading: Angle,
+    /// The width of the branch at this point, or `None` at the base of the tree, where
+    /// nothing upstream constrains how thick the first thing may be.
+    pub carried: Option<Fx>,
+}
+
+impl From<&turtle::Tip> for Site {
+    fn from(tip: &turtle::Tip) -> Self {
+        Self {
+            position: tip.position,
+            heading: tip.heading,
+            carried: Some(tip.width),
+        }
+    }
+}
+
 /// Places one path as a limb, and everything beneath it.
 pub(crate) fn place(
     ctx: &mut Context<'_>,
     path: &RepoPath,
     parent: Option<NodeId>,
-    origin: Point,
-    heading: Angle,
+    at: Site,
     level: u8,
 ) -> NodeId {
     let inputs = inputs_for(ctx.manifest, ctx.table, path);
-    let params = ctx.table.limb_params(&inputs);
+    let params = match at.carried {
+        Some(carried) => ctx.table.limb_params(&inputs).grafted_onto(carried),
+        None => ctx.table.limb_params(&inputs),
+    };
     let seed = ctx.manifest.seed_for(path);
 
     let node = ctx.skeleton.push_node(
         parent,
-        origin,
-        heading,
+        at.position,
+        at.heading,
         seed,
         NodeRole::Limb { path: path.clone() },
     );
@@ -173,11 +205,11 @@ pub(crate) fn place(
     let interpretation = turtle::interpret(
         &modules,
         Start {
-            position: origin,
-            heading,
+            position: at.position,
+            heading: at.heading,
             node,
         },
-        params.droop,
+        params.tropism,
     );
     ctx.skeleton.extend_segments(interpretation.segments);
 
@@ -340,8 +372,7 @@ fn attach(
                     ctx,
                     &record.path,
                     Some(node),
-                    tip.position,
-                    tip.heading,
+                    Site::from(tip),
                     level.saturating_add(1),
                 );
             }
@@ -576,6 +607,58 @@ pub(crate) mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// `C1`'s falloff across the composition boundary, over a grown tree.
+    ///
+    /// Whatever a limb's own drivers say, it grafts onto a branch that has already tapered and
+    /// takes one more step of `width_ratio` from there — so no limb can be as thick as its
+    /// parent, at any depth, in any repository. Before this held, every limb started from its
+    /// own `base_width` and a tree rendered at one uniform weight from trunk to twig.
+    ///
+    /// Sabotage: drop the `.min(carried * width_ratio)` from `LimbParams::grafted_onto` and
+    /// this fails on the first nested fixture, naming the pair.
+    #[test]
+    fn no_limb_is_wider_than_the_branch_it_grows_from() {
+        for manifest in [
+            manifest_of(&[
+                ("src/main.rs", 4_000),
+                ("src/net/tcp.rs", 9_000),
+                ("src/net/http/client.rs", 6_000),
+                ("src/net/http/server.rs", 5_000),
+                ("docs/guide.md", 1_500),
+            ]),
+            flat(40),
+            manifest_of(&[("a/b/c/d/e/f/g/deep.rs", 800)]),
+        ] {
+            let skeleton = compose_of(&manifest);
+
+            // The widest thing each node draws. A limb's first segment is its widest, so this
+            // is the limb's own base width as the turtle actually used it.
+            let widest = |id: NodeId| -> Option<Fx> {
+                skeleton
+                    .segments()
+                    .iter()
+                    .filter(|segment| segment.node == id)
+                    .map(|segment| segment.base_width)
+                    .max()
+            };
+
+            for node in skeleton.nodes() {
+                let (Some(parent), Some(child_width)) = (node.parent, widest(node.id)) else {
+                    continue;
+                };
+                let Some(parent_width) = widest(parent) else {
+                    continue;
+                };
+                assert!(
+                    child_width < parent_width,
+                    "{:?} draws at {child_width:?}, no narrower than its parent's \
+                     {parent_width:?}",
+                    node.role.anchor()
+                );
+            }
+        }
     }
 
     /// `P6` and `P7` together, and the single most important property in this module:

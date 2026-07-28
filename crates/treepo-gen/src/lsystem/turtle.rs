@@ -41,8 +41,13 @@
 //! The magnitude is largest at the horizontal, which is where a real limb's bending moment is
 //! largest. That it falls out of the sign convention rather than needing a lookup is the
 //! reason the convention was chosen.
+//!
+//! Upward tropism is the same expression negated, so the two are applied as one subtraction —
+//! see [`Tropism`](crate::params::Tropism), which also explains why the ground band beneath it
+//! is *not* scaled by `sin`.
 
 use super::grammar::Module;
+use crate::params::Tropism;
 use alloc::vec::Vec;
 use treepo_det::{Angle, Fx, sin_cos};
 use treepo_model::{NodeId, Point, Segment};
@@ -92,6 +97,14 @@ struct State {
     heading: Angle,
     width: Fx,
     generation: u8,
+    /// Whether the ground band currently has hold of this branch.
+    ///
+    /// In the turtle state rather than beside it so that it is pushed and popped with
+    /// everything else: a fork's two children both inherit whether their parent was being
+    /// lifted, and a branch that recovers does not silently un-lift its sibling. That is
+    /// what makes the hysteresis read as one continuous arc per branch rather than as a
+    /// property of the traversal order.
+    grounded: bool,
     /// The segment this branch is growing from, if any.
     ///
     /// Carried in the turtle state rather than searched for afterwards: a fork's children
@@ -104,9 +117,9 @@ struct State {
 
 /// Interprets a module string into segments and attachment sites.
 ///
-/// `droop` is `E3`'s tropism, applied after each segment as described in the module header.
+/// `tropism` is applied after each segment as described in the module header.
 #[must_use]
-pub fn interpret(modules: &[Module], start: Start, droop: Angle) -> Interpretation {
+pub fn interpret(modules: &[Module], start: Start, tropism: Tropism) -> Interpretation {
     let mut result = Interpretation::default();
     let mut state = State {
         position: start.position,
@@ -114,6 +127,10 @@ pub fn interpret(modules: &[Module], start: Start, droop: Angle) -> Interpretati
         width: Fx::ZERO,
         generation: 0,
         parent: None,
+        // A limb grafted onto a branch that was already heading for the ground starts
+        // uncorrected and is caught on its first segment, which is one segment of overshoot
+        // and the alternative is threading a flag across the composition boundary for it.
+        grounded: false,
     };
     let mut stack: Vec<State> = Vec::new();
     // The widest thing leaving each segment's far end, or `None` where nothing does.
@@ -145,7 +162,7 @@ pub fn interpret(modules: &[Module], start: Start, droop: Angle) -> Interpretati
                     widest_child[parent] = Some(widest);
                 }
                 state.position = end;
-                state.heading = bend(state.heading, droop);
+                (state.heading, state.grounded) = bend(state.heading, state.grounded, &tropism);
                 state.parent = Some(index);
             }
             Module::Push => {
@@ -183,23 +200,55 @@ fn advance(from: Point, heading: Angle, length: Fx) -> Point {
     Point::new(from.x.add(sin.mul(length)), from.y.add(cos.mul(length)))
 }
 
-/// Applies tropism — see the module header for why this is one expression and not four.
-fn bend(heading: Angle, droop: Angle) -> Angle {
-    if droop == Angle::ZERO {
-        return heading;
+/// Applies tropism, returning the new heading and whether the ground band still has hold.
+///
+/// See the module header for why the `sin` term is one expression and not four, and
+/// [`Tropism`] for why the ground band below it is not a `sin` term at all.
+fn bend(heading: Angle, grounded: bool, tropism: &Tropism) -> (Angle, bool) {
+    // A binary angle read as `i32` *is* its signed deviation from vertical: the wrap point
+    // sits at half a turn, so [0°, 180°) is positive and [180°, 360°) is negative. Clockwise
+    // is positive, matching the heading convention, and no branch is needed to get there.
+    let signed = heading.to_bits() as i32;
+    let away = signed.unsigned_abs();
+
+    // Two thresholds, and the gap between them is the hysteresis.
+    let grounded = if grounded {
+        away >= tropism.ground_release.to_bits()
+    } else {
+        away > tropism.ground_engage.to_bits()
+    };
+
+    let mut heading = heading;
+
+    // `E3` pulls down and tropism pulls up, both proportional to `sin(heading)`, so their
+    // difference is one rotation rather than two. i128 so no table value can overflow the
+    // product; the shift undoes `Fx`'s Q32.32 scaling and the cast wraps, which is what a
+    // binary angle's negative already is.
+    let net = i64::from(tropism.droop.to_bits()) - i64::from(tropism.uplift.to_bits());
+    if net != 0 {
+        let (sin, _) = sin_cos(heading);
+        let scaled = (i128::from(net) * i128::from(sin.to_bits())) >> 32;
+        heading += Angle::from_bits(scaled as u32);
     }
-    let (sin, _) = sin_cos(heading);
-    // i128 so no table value can overflow the product; the shift undoes `Fx`'s Q32.32
-    // scaling and the cast wraps, which is what a binary angle's negative already is.
-    let scaled = (i128::from(droop.to_bits()) * i128::from(sin.to_bits())) >> 32;
-    heading + Angle::from_bits(scaled as u32)
+
+    // Flat, and toward vertical by the shorter way round. Not scaled by `sin`, which is zero
+    // at exactly straight down — the heading the correction exists for.
+    if grounded && tropism.ground_lift != Angle::ZERO {
+        heading = if signed >= 0 {
+            heading - tropism.ground_lift
+        } else {
+            heading + tropism.ground_lift
+        };
+    }
+
+    (heading, grounded)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lsystem::grammar;
-    use crate::params::{LimbParams, Table};
+    use crate::params::{LimbParams, Table, Tropism};
     use treepo_det::Seed;
 
     fn start() -> Start {
@@ -218,11 +267,24 @@ mod tests {
             length_ratio: Fx::from_ratio(7, 10),
             width_ratio: Fx::from_ratio(9, 10),
             length_jitter: Fx::ZERO,
-            droop: Angle::ZERO,
+            tropism: Tropism::NONE,
             base_length: Fx::from_int(1),
             base_width: Fx::from_ratio(2, 10),
             branch_capacity: 4,
         }
+    }
+
+    /// `E3` alone, with nothing opposing it and no ground to avoid.
+    fn sagging(millidegrees: i32) -> Tropism {
+        Tropism {
+            droop: Angle::from_millidegrees(millidegrees),
+            ..Tropism::NONE
+        }
+    }
+
+    /// Just the heading, for the tests that do not care about the band.
+    fn bent(heading: Angle, tropism: &Tropism) -> Angle {
+        bend(heading, false, tropism).0
     }
 
     /// The convention, asserted rather than described: zero is up, a quarter turn is right.
@@ -230,7 +292,7 @@ mod tests {
     fn heading_zero_is_straight_up_and_a_quarter_turn_is_right() {
         let modules = [Module::Width(Fx::ONE), Module::Forward(Fx::from_int(1))];
 
-        let up = interpret(&modules, start(), Angle::ZERO);
+        let up = interpret(&modules, start(), Tropism::NONE);
         let end = up.segments[0].end;
         assert_eq!(end.x, Fx::ZERO);
         assert_eq!(end.y, Fx::ONE);
@@ -241,7 +303,7 @@ mod tests {
                 heading: Angle::QUARTER,
                 ..start()
             },
-            Angle::ZERO,
+            Tropism::NONE,
         );
         let end = right.segments[0].end;
         assert_eq!(end.x, Fx::ONE);
@@ -251,36 +313,154 @@ mod tests {
     /// `E3` in all four quadrants, which is the whole claim the one-line tropism makes.
     #[test]
     fn droop_pulls_every_heading_downward_and_leaves_the_vertical_alone() {
-        let droop = Angle::from_millidegrees(10_000);
+        let droop = sagging(10_000);
 
         // Straight up and straight down are fixed points.
-        assert_eq!(bend(Angle::ZERO, droop), Angle::ZERO);
-        assert_eq!(bend(Angle::HALF, droop), Angle::HALF);
+        assert_eq!(bent(Angle::ZERO, &droop), Angle::ZERO);
+        assert_eq!(bent(Angle::HALF, &droop), Angle::HALF);
 
         // Pointing right, the heading turns further clockwise — toward the ground.
         let right = Angle::QUARTER;
-        assert!(bend(right, droop).to_bits() > right.to_bits());
+        assert!(bent(right, &droop).to_bits() > right.to_bits());
 
         // Pointing left, it turns anticlockwise — also toward the ground.
         let left = Angle::THREE_QUARTER;
-        assert!(bend(left, droop).to_bits() < left.to_bits());
+        assert!(bent(left, &droop).to_bits() < left.to_bits());
 
         // And the horizontal sags hardest, which is where the bending moment is largest.
         let diagonal = Angle::from_millidegrees(45_000);
-        let horizontal_sag = bend(right, droop).to_bits() - right.to_bits();
-        let diagonal_sag = bend(diagonal, droop).to_bits() - diagonal.to_bits();
+        let horizontal_sag = bent(right, &droop).to_bits() - right.to_bits();
+        let diagonal_sag = bent(diagonal, &droop).to_bits() - diagonal.to_bits();
         assert!(horizontal_sag > diagonal_sag);
     }
 
+    /// Tropism is droop's mirror: same magnitudes, opposite direction, everywhere.
+    ///
+    /// Sabotage: give `uplift` the same sign as `droop` in `bend` and this fails on the first
+    /// assertion, with the tree bending twice as hard toward the ground.
     #[test]
-    fn no_droop_leaves_a_limb_perfectly_straight() {
+    fn tropism_lifts_every_heading_that_droop_would_have_dropped() {
+        let magnitude = 10_000;
+        let down = sagging(magnitude);
+        let up = Tropism {
+            uplift: Angle::from_millidegrees(magnitude),
+            ..Tropism::NONE
+        };
+
+        for heading in [45_000, 90_000, 135_000, 225_000, 270_000, 315_000] {
+            let heading = Angle::from_millidegrees(heading);
+            let sagged = i64::from(
+                bent(heading, &down)
+                    .to_bits()
+                    .wrapping_sub(heading.to_bits()) as i32,
+            );
+            let lifted =
+                i64::from(bent(heading, &up).to_bits().wrapping_sub(heading.to_bits()) as i32);
+
+            // Within one bit, not exactly: the `>> 32` that undoes `Fx`'s scaling floors, so
+            // it does not commute with negation. One bit of a binary angle is 8e-8 degrees.
+            // Rounding to nearest instead would move the artifact rather than remove it, and
+            // flooring is what the rest of the crate does. The case that has to be exact —
+            // equal droop and uplift cancelling — is exact, because `bend` short-circuits on
+            // a net of zero before it shifts anything. That is asserted below.
+            assert!(
+                (sagged + lifted).abs() <= 1,
+                "at {heading:?} droop and uplift are not mirror images: {sagged} vs {lifted}"
+            );
+            assert!(sagged != 0, "at {heading:?} droop did nothing to compare");
+        }
+
+        // And the two cancel exactly when they are equal, which is what makes them one
+        // subtraction in `bend` rather than two rotations applied in some order.
+        let balanced = Tropism {
+            droop: Angle::from_millidegrees(magnitude),
+            uplift: Angle::from_millidegrees(magnitude),
+            ..Tropism::NONE
+        };
+        let heading = Angle::QUARTER;
+        assert_eq!(bent(heading, &balanced), heading);
+    }
+
+    /// The reason the ground band is not a `sin` term.
+    ///
+    /// A tropism proportional to `sin(heading)` is zero at straight down — the one heading it
+    /// most needs to correct is its own fixed point, and a limb that arrives there is stuck.
+    /// The band is flat, so it is not.
+    #[test]
+    fn the_ground_band_recovers_a_limb_pointing_straight_down() {
+        let sin_only = Tropism {
+            uplift: Angle::from_millidegrees(20_000),
+            ..Tropism::NONE
+        };
+        assert_eq!(
+            bent(Angle::HALF, &sin_only),
+            Angle::HALF,
+            "a sin-scaled tropism cannot move a limb pointing straight down — that is the \
+             fixed point the band exists for"
+        );
+
+        let banded = Tropism {
+            droop: Angle::ZERO,
+            uplift: Angle::from_millidegrees(20_000),
+            ground_engage: Angle::from_millidegrees(96_000),
+            ground_release: Angle::from_millidegrees(72_000),
+            ground_lift: Angle::from_millidegrees(15_000),
+        };
+        let (lifted, grounded) = bend(Angle::HALF, false, &banded);
+        assert!(grounded, "straight down must engage the band");
+        assert!(
+            away_from_vertical(lifted) < away_from_vertical(Angle::HALF),
+            "the band did not bring the heading back toward vertical"
+        );
+    }
+
+    /// How far a heading is from straight up, either way, in millidegrees.
+    fn away_from_vertical(heading: Angle) -> i64 {
+        i64::from((heading.to_bits() as i32).unsigned_abs()) * 360_000 / (1i64 << 32)
+    }
+
+    /// The hysteresis, which is the whole reason there are two thresholds.
+    ///
+    /// A limb inside the band stays corrected until it is well clear, not merely back past the
+    /// line it crossed. With one threshold it would be released the instant it recovered and
+    /// caught again on the next segment, drawing a saw edge along the boundary instead of an
+    /// arc clear of it.
+    #[test]
+    fn the_ground_band_holds_on_past_the_line_it_engaged_at() {
+        let banded = Tropism {
+            droop: Angle::ZERO,
+            ground_engage: Angle::from_millidegrees(96_000),
+            ground_release: Angle::from_millidegrees(72_000),
+            ground_lift: Angle::from_millidegrees(15_000),
+            ..Tropism::NONE
+        };
+
+        // Between the two thresholds the answer depends on which way the limb is travelling,
+        // which is what hysteresis *is*.
+        let between = Angle::from_millidegrees(84_000);
+        assert!(
+            !bend(between, false, &banded).1,
+            "a limb on its way down is not yet caught at 84 degrees"
+        );
+        assert!(
+            bend(between, true, &banded).1,
+            "a limb already being lifted is not released at 84 degrees"
+        );
+
+        // Outside the band the two agree, or it would be a latch rather than a band.
+        assert!(bend(Angle::from_millidegrees(120_000), false, &banded).1);
+        assert!(!bend(Angle::from_millidegrees(30_000), true, &banded).1);
+    }
+
+    #[test]
+    fn no_tropism_leaves_a_limb_perfectly_straight() {
         let modules = [
             Module::Width(Fx::ONE),
             Module::Forward(Fx::ONE),
             Module::Forward(Fx::ONE),
             Module::Forward(Fx::ONE),
         ];
-        let straight = interpret(&modules, start(), Angle::ZERO);
+        let straight = interpret(&modules, start(), Tropism::NONE);
         for segment in &straight.segments {
             assert_eq!(segment.start.x, Fx::ZERO);
             assert_eq!(segment.end.x, Fx::ZERO);
@@ -308,7 +488,7 @@ mod tests {
             Module::Pop,
         ];
 
-        let result = interpret(&modules, start(), Angle::ZERO);
+        let result = interpret(&modules, start(), Tropism::NONE);
         assert_eq!(result.tips.len(), 2);
         // Both branches left the same fork, going opposite ways.
         assert_eq!(result.tips[0].position.y, result.tips[1].position.y);
@@ -322,7 +502,7 @@ mod tests {
             Module::Width(Fx::ONE),
             Module::Forward(Fx::ONE),
         ];
-        let result = interpret(&modules, start(), Angle::ZERO);
+        let result = interpret(&modules, start(), Tropism::NONE);
         assert_eq!(result.segments.len(), 1);
     }
 
@@ -335,7 +515,7 @@ mod tests {
             &Seed::root(b"taper"),
             4,
         );
-        let result = interpret(&modules, start(), Angle::ZERO);
+        let result = interpret(&modules, start(), Tropism::NONE);
 
         for segment in &result.segments {
             let children: Vec<&Segment> = result
@@ -362,7 +542,7 @@ mod tests {
             &Seed::root(b"repro"),
             8,
         );
-        let droop = Angle::from_millidegrees(6_000);
+        let droop = sagging(6_000);
         assert_eq!(
             interpret(&modules, start(), droop),
             interpret(&modules, start(), droop)
@@ -380,7 +560,7 @@ mod tests {
                 &Seed::root(b"attach"),
                 sites,
             );
-            let result = interpret(&modules, start(), Angle::ZERO);
+            let result = interpret(&modules, start(), Tropism::NONE);
             assert!(!result.tips.is_empty());
             assert_eq!(
                 result.tips.len(),

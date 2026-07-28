@@ -1004,10 +1004,11 @@ the pipeline. `a_grown_container_is_marked_even_though_it_has_no_geometry` now g
 instead, and asserts both halves: that aggregates still carry no geometry, and that they are
 still marked. If Phase 4 gives containers real geometry, that test fails and says so.
 
-### What the pictures say — four findings, none of them code
+### What the pictures said — four findings, none of them code
 
-This is §6 step 4, and it is the whole reason the tool exists. `lsystem.ron` is coherent,
-validated and defended by 58 tests, and the tests can only prove a table is *self-consistent*.
+This is §6 step 4, and it is the whole reason the tool exists. `lsystem.ron` was coherent,
+validated and defended by 58 tests, and the tests could only prove a table *self-consistent*.
+**The first three were then fixed — see the tuning sprint below; the fourth is still open.**
 
 1. **Nothing tapers across the composition boundary.** `C1`'s width falloff applies *inside* an
    L-system instance; a child limb then draws a fresh `base_width` from the table. So a limb
@@ -1031,6 +1032,101 @@ capped at five with two terracotta containers holding what is past the cap. **`A
 be judged yet**, and not because the tool is missing anything: the corpus has no clean-versus-
 messy pair at comparable size. It needs the T1 pin (`ripgrep`) or a fixture built for it.
 
+## The tuning sprint — findings 1 to 3, closed
+
+Table version **3 → 4**. Each change was made, then looked at, before the next one started —
+§6's "one parameter family at a time", with `m0-silhouette` as the instrument.
+
+### 1. The falloff crosses the composition boundary
+
+`LimbParams::grafted_onto(carried)` — the narrower of two claims:
+
+* **what it carries**: one more step of `width_ratio` past the branch it grafts onto, which is
+  exactly what the next generation *inside* that branch would have got, so a joint between two
+  limbs is indistinguishable from a joint within one;
+* **what it is**: its own mass-driven `base_width`, so a small directory on a thick trunk is
+  drawn small rather than inheriting the trunk.
+
+Taking the minimum means a heavy subtree on a thin twig stays thin, and that is right — the
+parent is thick *because* of what it carries, so a thin parent already claims there is little
+below it. Under equal drivers the inherited term always wins and the chain narrows strictly.
+
+`compose::Site` is the vehicle: position, heading, and *what the branch had tapered to*, which
+travel together everywhere a tip hands a child to `place`. Threading a bare third parameter
+through four call sites was the alternative.
+
+**Sabotage-verified.** Dropping the `.min(...)`: `params` reports the chain flat at `0.199999`
+for five levels, and `compose` names the pair — `docs` drawing at `0.225` off a parent at
+`0.220`, a child wider than its parent. `treepo.png` went from one uniform weight to a visible
+root-to-twig gradient in the same edit.
+
+### 2. Tropism, and the ground band that `sin` cannot provide
+
+`tropism` is a row beside `droop`, driven by the wildness signals `D1 + D3` already uses with
+the sign that says a disciplined repository grows straighter: `convention` up, `bushiness` and
+`skew_abs` down. Nothing temporal — `G1` holds. The turtle applies **the difference**, so it is
+one subtraction rather than a second code path, and a heavy limb still sags — from a heading
+that was being lifted, which is what a loaded branch on a living tree does.
+
+**Why a second mechanism was needed.** A `sin`-scaled uplift is zero at straight down: the one
+heading it most needs to correct is its own fixed point, and a limb that reaches vertical-down
+stays there forever. `the_ground_band_recovers_a_limb_pointing_straight_down` asserts exactly
+that about the `sin` term before asserting the band fixes it.
+
+So the band is **flat**, and it has two thresholds. Past `engage` from vertical a fixed `lift`
+rotates the heading back every segment; it keeps hold until the heading is inside `release`.
+The gap is the hysteresis and it is the whole design — with one threshold a limb chatters along
+the boundary, corrected and released and corrected, drawing a saw edge; with two it dips, is
+lifted clear, and travels freely until it dips again. `validate` refuses `release >= engage`,
+because that is the band with its hysteresis removed.
+
+`grounded` lives in the turtle's `State`, so it is pushed and popped with everything else: a
+fork's children both inherit whether their parent was being lifted.
+
+**`AC-SKEL-2` is untouched, and the digest proves it.** `empty.png`'s skeleton hash was
+`36e951ce5d91588d` before the change and after it. Roots and the basal segment are placed by
+`trunk.rs` directly and never run through the turtle, so no tropism can reach them — the roots
+stay below ground because they are not branches.
+
+### 3. The basal axiom is an aspect rule, not a number
+
+`trunk.basal_length: Row` became `basal_aspect` (per-mille of the stem's own width) plus
+`basal_min` (a floor), read through `TrunkParams::basal_length(width)` so `grow` and
+`place_group` cannot disagree about it.
+
+The old row fought `packing` and lost. A stem is as wide as its limbs' base widths summed, so a
+repository with eight top-level entries got one eight limb-widths across while an absolute cap
+held its length under a single limb-length. Both numbers were reasonable; together they
+described a disc. An aspect ratio cannot have that argument, and `F-SKEL-3` already says the
+axiom's "length/radius [is] driven by total root mass / primary limb count" — the stem's width
+is precisely where that mass has been added up.
+
+**"Minimal" is now a shape rather than a size.** `validate` caps the aspect at 2000: never more
+than twice as long as it is wide, at any scale. A repository with one top-level directory still
+gets almost no trunk, because it has almost no width to be long in proportion to.
+
+**The value came from a failing test, not from taste.** At an aspect of 1400 the existing
+`the_fan_controls_how_far_the_trunk_extends` failed with the axiom at `1.109` against an
+overlap of `0.325` — the axiom out-reaching the limbs it was supposed to start, which is
+`F-SKEL-3` violated from the other side. That number is the bound; `380` sits inside it.
+
+### Finding 4 is still open, and finding 3 ran into it
+
+The fan is the reason. `trunk.fan` reaches `150000` — limbs at ±75° from vertical — and
+treepo's own bushiness takes it near that ceiling, which is why `treepo.png` still spreads
+sideways more than it rises.
+
+It also bounds finding 3, and the geometry says so exactly. Two limbs `θ` apart separate at
+`d = (w₁+w₂)/(4·sin(θ/2))`, and with `n` primaries over a fan `F` that works out to an overlap
+of about `stem_width/(packing × F)` — **independent of `n`, and set entirely by the fan.** At
+150° that is 0.53 stem-widths of overlap, so an axiom may be at most about half as long as it
+is wide before it becomes the trunk. A stem *shaped* like a stem needs an aspect near 1.0,
+which needs the fan under about 80°.
+
+So the axiom is as long as the current fan permits, and that is why the base still reads
+squat. Narrowing `trunk.fan` is one row and it is a separate family — the next tuning pass, not
+this one.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -1053,18 +1149,15 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**The pipeline is complete end to end and there are pictures of it.** `treepo_gen::grow` →
-`m0-silhouette` → a PNG, deterministically, for any repository on disk.
+**The pipeline is complete, there are pictures of it, and three of the four findings those
+pictures produced are closed.** Trees taper root to twig, stand up, keep clear of the ground,
+and stand on a stem rather than a disc.
 
-Next is **the tuning sprint**, which is what M0 was always for. Four findings are written up
-above; §6 says one parameter family at a time, and the order that follows from them is:
-
-1. **Carry the width falloff across the composition boundary** (finding 1). Structural, so it
-   goes first — every later judgement about thickness is made against it.
-2. **Tropism** (finding 3). `lsystem.ron` already has `droop`, which bends *downward*; an
-   upward bias is the same mechanism with the opposite sign and belongs beside it as data.
-3. **Reconcile `basal_length` with `stem_width`** (finding 2). Probably a rule rather than a
-   number — a stem's length tied to its own width — and `validate` is where it is stated.
+Next in the same loop is **`trunk.fan`** — finding 4, and the row that bounds finding 3. The
+arithmetic above says the overlap that makes a trunk is `stem_width/(packing × fan)`, so a fan
+of 150° leaves half a stem-width of it and a fan under 80° leaves more than one. Narrowing
+`max` toward 95–100° keeps ±50° of sprawl for `AC-SKEL-1`'s wilder repository while giving
+every tree a base that reads as a base. One row, and then look again.
 
 Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
 `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three

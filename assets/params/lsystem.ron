@@ -67,7 +67,7 @@
 // driver would re-shape `docs/` because somebody touched `src/`, which loses `AC-GROW-4` and
 // makes a Grow unreadable.
 (
-    version: 3,
+    version: 4,
 
     // What the raw counts are measured against. These are absolute constants rather than
     // maxima taken over the manifest, and deliberately so: normalizing against the
@@ -170,6 +170,47 @@
         mass: 12000,
     )),
 
+    // ── §8, tropism ─────────────────────────────────────────────────────────────────────
+    // Upward tropism, per segment, opposing droop. `treepo-gen` applies their difference, so
+    // a heavy limb still sags — it sags from a heading that was being lifted, which is what
+    // a loaded branch on a living tree does.
+    //
+    // Without this the tree did not stand up. A 36-degree branch angle over five generations
+    // plus the composition fan walks a heading past horizontal, and with only droop pulling,
+    // nothing ever brings it back. §8 already names tropism as an addition that does not
+    // change the parameterization contract.
+    //
+    // The drivers are the wildness signals `D1 + D3` already uses, with the sign that says a
+    // disciplined repository grows straighter: conventional structure reaches up, and skew
+    // and bushiness sprawl. Nothing temporal — `G1`.
+    tropism: (base: 11000, min: 0, max: 34000, per: (
+        convention: 9000,
+        bushiness: -7000,
+        skew_abs: -6000,
+    )),
+
+    // Where the ground is. Angles are from vertical, in millidegrees, so 90000 is horizontal.
+    //
+    // A tropism scaled by sin(heading) is zero at straight down, which is the one heading it
+    // most needs to correct — a limb that gets there stays there. This band is flat and
+    // catches that case: past `engage` from vertical, `lift` rotates the heading back toward
+    // up every segment until it is inside `release`.
+    //
+    // `release` is well below `engage` and that gap is the whole design. With one threshold a
+    // limb chatters on it — corrected, released, corrected — and draws a visible zigzag along
+    // the boundary. With two, it dips, is lifted clear, then travels freely until it dips
+    // again: a long shallow arc rather than a saw edge. `treepo-gen` refuses a table where
+    // `release` is not strictly below `engage`, because that is the band with its hysteresis
+    // removed.
+    //
+    // None of this touches the root cluster: roots are placed by `trunk.rs` directly and
+    // never run through the turtle, so they stay below ground where they belong.
+    ground: (
+        engage:  96000,
+        release: 72000,
+        lift:    15000,
+    ),
+
     // ── Starting geometry ───────────────────────────────────────────────────────────────
     // The first segment of each limb, per mille of a world unit. §4: larger subtrees produce
     // longer and thicker primary limbs. `depth` lengthens rather than thickens, so a deep
@@ -220,14 +261,30 @@
     // zero — mass is a share of the parent's bytes, and the root has no parent — so a row
     // here that leans on `mass` is leaning on nothing.
     trunk: (
-        // The one number that must stay small. `validate` refuses a table whose basal
-        // segment could exceed the shortest limb it can produce: a basal segment long
-        // enough to read as a trunk on its own makes every tree's trunk a constant, and
-        // makes `AC-SKEL-2`'s empty repository the lonely trunk the design rejects.
-        basal_length: (base: 150, min: 100, max: 190, per: (
-            bushiness: 30,
-            depth: 20,
-        )),
+        // The basal axiom's length, as a per-mille of its own width. An aspect ratio, not a
+        // length — 1400 means "forty per cent longer than it is wide".
+        //
+        // This was an absolute row, and it fought `packing` and lost. A stem is as wide as
+        // its limbs' base widths summed, so a repository with eight top-level entries got a
+        // stem eight limb-widths across while the row held its length under one limb-length.
+        // Both numbers were reasonable; together they described a disc, and that is what the
+        // renderer drew.
+        //
+        // An aspect ratio cannot disagree with the width, and `F-SKEL-3` already says the
+        // axiom's "length/radius [is] driven by total root mass / primary limb count" — the
+        // stem's width is precisely where that mass has been added up.
+        //
+        // "Minimal" is then a shape rather than a size: `validate` caps this at 2000, so the
+        // axiom is never more than twice as long as it is wide, at any scale. A repository
+        // with one top-level directory still gets almost no trunk, because it has almost no
+        // width to be long in proportion to.
+        basal_aspect: 380,
+
+        // The floor, in per mille of a world unit — what an almost-empty repository's seed is
+        // drawn at, where there is no width for the aspect rule to work from. Held below the
+        // shortest limb the table can produce, for the reason the old absolute cap existed:
+        // at the floor a stem out-reaching a limb would be the lonely trunk again.
+        basal_min: 90,
 
         // How much of its limbs' combined base width a stem occupies, per mille. At 1000 the
         // limbs would touch without overlapping; below it they overlap, and the overlap is

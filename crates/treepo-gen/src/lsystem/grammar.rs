@@ -206,7 +206,7 @@ fn signed_angle(rng: &mut ChaCha8Rng, spread: Angle) -> Angle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::Table;
+    use crate::params::{Table, Tropism};
 
     fn params() -> LimbParams {
         LimbParams {
@@ -216,7 +216,7 @@ mod tests {
             length_ratio: Fx::from_ratio(7, 10),
             width_ratio: Fx::from_ratio(9, 10),
             length_jitter: Fx::ZERO,
-            droop: Angle::ZERO,
+            tropism: Tropism::NONE,
             base_length: Fx::from_int(1),
             base_width: Fx::from_ratio(2, 10),
             branch_capacity: 4,

@@ -100,11 +100,14 @@ const BUILT_IN_RON: &str = include_str!("../../../assets/params/lsystem.ron");
 /// independently, and a table edit must not invalidate a stored manifest.
 ///
 /// Version 2 adds `branch_capacity`, the composition threshold. Version 3 adds the [`trunk`]
-/// section. Bumped rather than accepted silently each time, because an older table parses
-/// perfectly while lacking a row that changes what the tree looks like.
+/// section. Version 4 adds `tropism` and the [`ground`] band, and replaces the trunk's
+/// `basal_length` row with an aspect rule. Bumped rather than accepted silently each time,
+/// because an older table parses perfectly while lacking a row that changes what the tree
+/// looks like.
 ///
 /// [`trunk`]: TrunkTable
-pub const TABLE_VERSION: u32 = 3;
+/// [`ground`]: GroundTable
+pub const TABLE_VERSION: u32 = 4;
 
 /// Children-per-node used as each [`BranchingHistogram`] bucket's representative value.
 ///
@@ -162,8 +165,8 @@ pub struct LimbParams {
     pub width_ratio: Fx,
     /// Maximum stochastic deviation from [`length_ratio`](Self::length_ratio), either way.
     pub length_jitter: Fx,
-    /// Downward pitch applied to a limb heavy enough to sag — `E3`.
-    pub droop: Angle,
+    /// Everything that bends this limb's heading after a segment — `E3` and its opposite.
+    pub tropism: Tropism,
     /// Length of this limb's first segment, in world units.
     pub base_length: Fx,
     /// Width of this limb's first segment, in world units.
@@ -178,11 +181,104 @@ pub struct LimbParams {
     pub branch_capacity: u16,
 }
 
+/// What bends a heading after each segment — `E3`'s droop, and the two things that oppose it.
+///
+/// # Why droop alone was not enough
+///
+/// `E3` bends a limb *downward* in proportion to `sin(heading)`, which is correct physics for
+/// a loaded branch and is the whole of the tropism the v0.1 row asked for. With nothing
+/// pulling the other way, a branch angle of 36° over five generations plus the composition
+/// fan walks a heading to horizontal and past it, and the tree stops standing up. Real trees
+/// do not, because phototropism opposes gravity continuously.
+///
+/// So [`uplift`](Self::uplift) is the same expression with the opposite sign, and the turtle
+/// applies their difference: one subtraction, no second code path.
+/// `design/l-system-parameterization.md` §8 already names tropism forces as an addition that
+/// does not change the parameterization contract.
+///
+/// # The ground band, and why `sin` cannot do it
+///
+/// A `sin`-scaled uplift is zero at straight down — the one heading it most needs to correct
+/// is its own fixed point. A limb that reaches vertical-down stays there forever.
+///
+/// The ground band is the fix and is not scaled by anything: past
+/// [`ground_engage`](Self::ground_engage) from vertical, a flat
+/// [`ground_lift`](Self::ground_lift) rotates the heading back toward up every segment, and
+/// it keeps doing so until the heading is inside
+/// [`ground_release`](Self::ground_release). That gap is deliberate. With a single threshold
+/// a limb chatters along it — corrected, released, corrected — and draws a visible zigzag on
+/// the boundary. With two, it dips, is lifted clear, and then travels freely until it dips
+/// again, which is the long shallow arc a real branch makes.
+///
+/// [`Table::validate`] refuses `release >= engage`, because that is a band with no hysteresis
+/// in it and the chatter is what it was written to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tropism {
+    /// Downward pitch applied to a limb heavy enough to sag — `E3`.
+    pub droop: Angle,
+    /// Upward pitch opposing it, per segment.
+    pub uplift: Angle,
+    /// How far from vertical a heading must stray before the ground band engages.
+    pub ground_engage: Angle,
+    /// How far back toward vertical it must come before the band lets go.
+    pub ground_release: Angle,
+    /// The flat rotation applied toward vertical while the band is engaged.
+    pub ground_lift: Angle,
+}
+
+impl Tropism {
+    /// No bending at all — what a perfectly straight limb is grown with.
+    ///
+    /// The band is placed at straight down rather than at zero: a heading reaches exactly
+    /// half a turn only by arriving there, so the band is off because nothing can cross it
+    /// rather than because a lift of zero makes it harmless.
+    pub const NONE: Self = Self {
+        droop: Angle::ZERO,
+        uplift: Angle::ZERO,
+        ground_engage: Angle::HALF,
+        ground_release: Angle::ZERO,
+        ground_lift: Angle::ZERO,
+    };
+}
+
+impl LimbParams {
+    /// This limb as it grows from a branch that has already tapered to `carried`.
+    ///
+    /// `C1`'s width falloff applies from one generation to the next *inside* a derivation, and
+    /// for a while nothing applied it between one limb and the next: every limb started from
+    /// the width its own mass justified, so a limb four levels out drew as thick as one leaving
+    /// the trunk and the whole tree rendered at a single weight. The falloff has to cross the
+    /// composition boundary or it is not a falloff, it is a per-limb constant.
+    ///
+    /// The rule is the narrower of two claims, and both are needed:
+    ///
+    /// * **what it carries** — one more step of `width_ratio` past the branch it grafts onto,
+    ///   which is exactly what the next generation *inside* that branch would have got, so a
+    ///   joint between two limbs is indistinguishable from a joint within one;
+    /// * **what it is** — its own mass-driven [`base_width`](Self::base_width), so a small
+    ///   directory hanging off the trunk is drawn small rather than inheriting the trunk.
+    ///
+    /// Taking the minimum means a heavy subtree on a thin twig stays thin, which is right: the
+    /// parent is thick *because* of what it carries, so a thin parent is already the claim that
+    /// there is not much below it. Under equal drivers the inherited term always wins and the
+    /// chain narrows strictly, one `width_ratio` per level.
+    #[must_use]
+    pub fn grafted_onto(self, carried: Fx) -> Self {
+        Self {
+            base_width: self.base_width.min(carried.mul(self.width_ratio)),
+            ..self
+        }
+    }
+}
+
 /// The hybrid trunk's knobs for one repository — the output of [`Table::trunk_params`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrunkParams {
-    /// Length of the basal axiom. Short by construction; [`Table::validate`] keeps it so.
-    pub basal_length: Fx,
+    /// The basal axiom's length as a multiple of its own width — see
+    /// [`TrunkTable::basal_aspect`]. Read through [`basal_length`](Self::basal_length).
+    pub basal_aspect: Fx,
+    /// The shortest a basal axiom may be, whatever the aspect rule works out to.
+    pub basal_min: Fx,
     /// Total angular spread of the limbs leaving a stem.
     pub fan: Angle,
     /// How many root-mass nodes sit at the base.
@@ -191,6 +287,18 @@ pub struct TrunkParams {
     pub packing: Fx,
     /// The share of the repository below which a top-level entry is grouped (`F2`).
     pub group_below: Fx,
+}
+
+impl TrunkParams {
+    /// How long a stem `width` wide should be.
+    ///
+    /// The rule rather than a number, so `grow` and `place_group` cannot disagree about it —
+    /// an `F2` group stem is the basal axiom one level down, and the two being the same
+    /// function is what keeps that true.
+    #[must_use]
+    pub fn basal_length(&self, width: Fx) -> Fx {
+        width.mul(self.basal_aspect).max(self.basal_min)
+    }
 }
 
 /// Every structural signal the skeleton is permitted to read, normalized.
@@ -485,6 +593,23 @@ impl Row {
     }
 }
 
+/// Where the ground is, and how hard a limb works to stay off it — see [`Tropism`].
+///
+/// Three constants rather than three [`Row`]s: this is a statement about the *tree's* frame
+/// rather than about any one limb, in the same way [`Table::min_length`] is. A limb permitted
+/// its own idea of where the ground was could grant itself a lower one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroundTable {
+    /// Degrees from vertical, in millidegrees, past which the band engages.
+    pub engage: i32,
+    /// Degrees from vertical, in millidegrees, inside which it lets go. Strictly less than
+    /// [`engage`](Self::engage) — the gap is the hysteresis.
+    pub release: i32,
+    /// The flat rotation toward vertical applied per segment while engaged, in millidegrees.
+    pub lift: i32,
+}
+
 /// The whole parameter table — `F-SKEL-5`.
 ///
 /// Constructed from RON by [`Table::from_ron`] or [`Table::built_in`], and validated on the
@@ -515,8 +640,12 @@ pub struct Table {
     pub width_ratio: Row,
     /// Stochastic length deviation, per mille.
     pub length_jitter: Row,
-    /// Droop in millidegrees.
+    /// Droop in millidegrees — `E3`, downward.
     pub droop: Row,
+    /// Upward tropism in millidegrees, opposing [`droop`](Self::droop) — see [`Tropism`].
+    pub tropism: Row,
+    /// The hysteretic band that keeps a tree off the ground — see [`Tropism`].
+    pub ground: GroundTable,
     /// First-segment length, per mille of a world unit.
     pub base_length: Row,
     /// First-segment width, per mille of a world unit.
@@ -536,20 +665,36 @@ pub struct Table {
 /// overlapping near the origin. Pure "stack independent branches" was rejected there for
 /// L-system compatibility, redraw stability, and readable silhouettes.
 ///
-/// So the numbers here divide in two. [`basal_length`](Self::basal_length) is the *minimal*
-/// part — short, and it stays short. [`packing`](Self::packing) and [`fan`](Self::fan) are
+/// So the numbers here divide in two. [`basal_aspect`](Self::basal_aspect) is the *minimal*
+/// part — stubby, and it stays stubby. [`packing`](Self::packing) and [`fan`](Self::fan) are
 /// the *emergent* part: how tightly the primary limbs are bunched, which is what actually
 /// produces the trunk a viewer sees.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrunkTable {
-    /// Length of the basal axiom, per mille of a world unit.
+    /// The basal axiom's length as a per-mille of its own width — an aspect ratio.
     ///
-    /// The one number that must stay small. A basal segment long enough to read as a trunk on
-    /// its own would make `AC-SKEL-2`'s empty repository into exactly the lonely trunk the
-    /// design forbids, and would make every tree's trunk a constant rather than something its
-    /// limbs produce.
-    pub basal_length: Row,
+    /// This was a [`Row`] with an absolute range, and it fought [`packing`](Self::packing) and
+    /// lost. A stem is as wide as its limbs' combined base widths, so a repository with eight
+    /// top-level entries produced a stem near eight limb-widths across while the row held its
+    /// length under one limb-length. The two numbers were each internally consistent and
+    /// jointly described a disc.
+    ///
+    /// An aspect ratio cannot have that argument with anything, and it is closer to what
+    /// `F-SKEL-3` actually asks for — "length/radius driven by total root mass / primary limb
+    /// count" already says the axiom's *length* is mass-driven, and the stem's width is where
+    /// that mass is already summed up.
+    ///
+    /// "Minimal" is then a statement about shape rather than about absolute size:
+    /// [`Table::validate`] caps this at 2000, so the axiom is never more than twice as long as
+    /// it is wide. A repository with one top-level entry still gets almost no trunk, because
+    /// there is almost nothing to be wide about — which is the hybrid trunk's whole claim.
+    pub basal_aspect: i32,
+    /// The shortest the basal axiom may be, per mille of a world unit.
+    ///
+    /// A floor rather than a target: it is what an almost-empty repository's seed is drawn at,
+    /// where the aspect rule has almost no width to work from.
+    pub basal_min: i32,
     /// How much of the combined limb width a stem occupies, per mille.
     ///
     /// A stem carries limbs whose base widths sum to some total. At `1000` it is as wide as
@@ -633,10 +778,10 @@ impl Table {
             ("width_ratio", &self.width_ratio),
             ("length_jitter", &self.length_jitter),
             ("droop", &self.droop),
+            ("tropism", &self.tropism),
             ("base_length", &self.base_length),
             ("base_width", &self.base_width),
             ("branch_capacity", &self.branch_capacity),
-            ("basal_length", &self.trunk.basal_length),
             ("fan", &self.trunk.fan),
             ("root_cluster", &self.trunk.root_cluster),
         ];
@@ -702,6 +847,45 @@ impl Table {
             });
         }
 
+        // §8 — tropism opposes droop, per segment. Bounded at 45° for the same reason the
+        // branching angle is bounded: a per-segment rotation larger than a branching angle
+        // stops being a bias and becomes the shape.
+        if self.tropism.min < 0 || self.tropism.max > 45_000 {
+            return Err(TableError::Decision {
+                row: "tropism",
+                decision: "§8",
+                detail: "upward tropism belongs in 0..=45 degrees per segment",
+            });
+        }
+        if self.ground.lift < 0 || self.ground.lift > 45_000 {
+            return Err(TableError::Decision {
+                row: "ground",
+                decision: "§8",
+                detail: "the ground lift belongs in 0..=45 degrees per segment",
+            });
+        }
+
+        // The band has to sit past the horizontal — a tree whose limbs may not reach sideways
+        // is a column — and short of straight down, where a root cluster already lives.
+        if !(90_000..=170_000).contains(&self.ground.engage) {
+            return Err(TableError::Decision {
+                row: "ground",
+                decision: "§8",
+                detail: "the ground band engages between 90 and 170 degrees from vertical",
+            });
+        }
+
+        // The whole point of the band. Equal thresholds are a band with no hysteresis, and a
+        // limb then chatters along the boundary instead of arcing clear of it.
+        if self.ground.release >= self.ground.engage || self.ground.release < 0 {
+            return Err(TableError::Decision {
+                row: "ground",
+                decision: "§8",
+                detail: "ground.release must be below ground.engage — the gap is the \
+                         hysteresis, and without it a limb oscillates on the threshold",
+            });
+        }
+
         // Ratios are proportions. A falloff at or above 1.0 never terminates.
         for (name, row) in [
             ("length_ratio", &self.length_ratio),
@@ -736,12 +920,37 @@ impl Table {
         // segment longer than that is no longer a starter the limbs grow from, it is the
         // trunk, and `AC-SKEL-2`'s empty repository becomes the lonely trunk the design
         // rejects.
-        if self.trunk.basal_length.max > self.base_length.min {
+        // F-SKEL-3 — the basal segment is minimal, and a table may not make it otherwise.
+        //
+        // Stated as an aspect rather than as an absolute length, which is the correction this
+        // sprint made. An absolute cap fought `packing`: the stem's width is the sum of its
+        // limbs' widths, so a broad repository produced one many limb-widths across while the
+        // cap held its length under a single limb-length, and the axiom drew as a disc. The
+        // design document already says the axiom's length is driven by root mass, and the
+        // stem's width is where that mass has been summed.
+        //
+        // So "minimal" means stubby: never more than twice as long as it is wide. A stem that
+        // is *long* has stopped being a starter the limbs grow from and become the trunk,
+        // whatever its absolute size, and `AC-SKEL-2`'s empty repository is still a seed
+        // because there is nothing there to be wide about.
+        if self.trunk.basal_aspect < 1 || self.trunk.basal_aspect > 2000 {
             return Err(TableError::Decision {
-                row: "basal_length",
+                row: "basal_aspect",
                 decision: "F-SKEL-3",
-                detail: "the basal axiom is minimal — it may not exceed the shortest limb the \
-                         table can produce, or the trunk stops emerging from its limbs",
+                detail: "the basal axiom is minimal — it may be at most twice as long as it is \
+                         wide, or the trunk stops emerging from its limbs",
+            });
+        }
+
+        // The floor is what an almost-empty repository's seed is drawn at, so it is held below
+        // the shortest limb the table can produce for the reason the old absolute cap was: at
+        // the floor, a stem out-reaching a limb would be a lonely trunk.
+        if self.trunk.basal_min < 1 || self.trunk.basal_min > self.base_length.min {
+            return Err(TableError::Decision {
+                row: "basal_min",
+                decision: "F-SKEL-3",
+                detail: "the basal axiom's floor is positive and below the shortest limb the \
+                         table can produce",
             });
         }
 
@@ -820,7 +1029,13 @@ impl Table {
             length_ratio: per_mille(self.length_ratio.evaluate(inputs)),
             width_ratio: per_mille(self.width_ratio.evaluate(inputs)),
             length_jitter: per_mille(self.length_jitter.evaluate(inputs)),
-            droop: Angle::from_millidegrees(self.droop.evaluate(inputs)),
+            tropism: Tropism {
+                droop: Angle::from_millidegrees(self.droop.evaluate(inputs)),
+                uplift: Angle::from_millidegrees(self.tropism.evaluate(inputs)),
+                ground_engage: Angle::from_millidegrees(self.ground.engage),
+                ground_release: Angle::from_millidegrees(self.ground.release),
+                ground_lift: Angle::from_millidegrees(self.ground.lift),
+            },
             base_length: per_mille(self.base_length.evaluate(inputs)),
             base_width: per_mille(self.base_width.evaluate(inputs)),
             branch_capacity: u16::try_from(self.branch_capacity.evaluate(inputs)).unwrap_or(1),
@@ -835,7 +1050,8 @@ impl Table {
     #[must_use]
     pub fn trunk_params(&self, inputs: &SkeletonInputs) -> TrunkParams {
         TrunkParams {
-            basal_length: per_mille(self.trunk.basal_length.evaluate(inputs)),
+            basal_aspect: per_mille(self.trunk.basal_aspect),
+            basal_min: per_mille(self.trunk.basal_min),
             fan: Angle::from_millidegrees(self.trunk.fan.evaluate(inputs)),
             root_cluster: u16::try_from(self.trunk.root_cluster.evaluate(inputs)).unwrap_or(1),
             packing: per_mille(self.trunk.packing),
@@ -1242,6 +1458,57 @@ mod tests {
         ));
     }
 
+    /// `C1`'s falloff has to survive the composition boundary, which is what
+    /// [`LimbParams::grafted_onto`] is for. Under equal drivers — the same params grafted onto
+    /// themselves, level after level — the chain must narrow strictly, by exactly one
+    /// `width_ratio` per step, so a joint between limbs is the same joint as one inside a limb.
+    ///
+    /// This is the unit half. `compose`'s `no_limb_is_wider_than_the_branch_it_grows_from`
+    /// is the same claim over a grown tree, where the drivers are not equal.
+    #[test]
+    fn a_graft_narrows_a_limb_by_exactly_one_step_of_the_falloff() {
+        let table = Table::built_in();
+        let params = table.limb_params(&SkeletonInputs::default());
+        assert!(
+            params.width_ratio < Fx::ONE,
+            "a falloff that does not fall is not a falloff"
+        );
+
+        let mut level = params;
+        let mut widths = alloc::vec![level.base_width];
+        for _ in 0..5 {
+            level = params.grafted_onto(level.base_width);
+            widths.push(level.base_width);
+        }
+
+        for pair in widths.windows(2) {
+            assert!(
+                pair[1] < pair[0],
+                "width did not decrease across a graft: {:?}",
+                widths
+            );
+            assert_eq!(
+                pair[1],
+                pair[0].mul(params.width_ratio),
+                "a graft must apply the falloff and nothing else"
+            );
+        }
+    }
+
+    /// The other half of the rule: a graft never *widens* a limb its own mass says is small.
+    /// Inheriting the trunk's width would make every leaf directory look like a main branch.
+    #[test]
+    fn a_graft_onto_something_enormous_leaves_a_small_limb_small() {
+        let table = Table::built_in();
+        let params = table.limb_params(&SkeletonInputs::default());
+        let grafted = params.grafted_onto(Fx::from_int(10_000));
+
+        assert_eq!(
+            grafted.base_width, params.base_width,
+            "its own mass is the ceiling when the branch it hangs from is wider"
+        );
+    }
+
     /// Every validation rule must actually fire. A rule nobody has seen fail is a rule that
     /// might be checking the wrong field, and these are the only thing standing between an
     /// editable table (`F-SKEL-5`) and a tree the design does not permit.
@@ -1255,7 +1522,7 @@ mod tests {
         /// and the edit itself.
         type Case = (&'static str, &'static str, fn(&mut Table));
 
-        let cases: [Case; 6] = [
+        let cases: [Case; 12] = [
             ("recursion", "A3", |t| t.recursion.max = 9_000),
             ("recursion", "A3", |t| t.recursion.min = 0),
             ("branch_angle", "B2/B3", |t| t.branch_angle.max = 75_000),
@@ -1263,6 +1530,16 @@ mod tests {
             ("length_jitter", "D", |t| t.length_jitter.max = 900),
             // C1 — raise length's falloff until it overlaps width's.
             ("length_ratio", "C1", |t| t.length_ratio.max = 995),
+            // §8 — a per-segment bend larger than a branching angle is not a bias.
+            ("tropism", "§8", |t| t.tropism.max = 90_000),
+            ("ground", "§8", |t| t.ground.lift = 90_000),
+            // A band inside the horizontal makes a column; one at straight down never fires.
+            ("ground", "§8", |t| t.ground.engage = 40_000),
+            ("ground", "§8", |t| t.ground.engage = 179_000),
+            // The hysteresis itself: release must sit strictly inside engage.
+            ("ground", "§8", |t| t.ground.release = t.ground.engage),
+            // F-SKEL-3 — an axiom longer than twice its width has become the trunk.
+            ("basal_aspect", "F-SKEL-3", |t| t.trunk.basal_aspect = 2_400),
         ];
 
         for (row, decision, break_it) in cases {
