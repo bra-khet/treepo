@@ -1550,6 +1550,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "treepo-store"
+version = "0.1.0"
+dependencies = [
+ "corpus",
+ "gix",
+ "treepo-model",
+ "treepo-vcs",
+]
+
+[[package]]
 name = "treepo-vcs"
 version = "0.1.0"
 dependencies = [
@@ -1650,6 +1660,7 @@ dependencies = [
  "corpus",
  "treepo-det",
  "treepo-model",
+ "treepo-store",
  "treepo-vcs",
 ]
 

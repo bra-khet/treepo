@@ -1,0 +1,36 @@
+[package]
+name = "treepo-store"
+description = "Application-data persistence: repository identity, the store layout, and versioned atomic manifest I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# A much smaller `gix` than `treepo-vcs` needs, and deliberately so. This crate reads two
+# things from a repository — its remotes and its root commit — and nothing else. No blob
+# diffing, no status, no attributes, no mailmap. Naming the minimum is what keeps a later
+# "while we're here" read from quietly appearing in the crate that decides where data lives.
+[dependencies]
+treepo-model = { workspace = true }
+
+gix = { version = "0.86", default-features = false, features = [
+  "revision",             # F-MAN-3 tier 2 — the root-commit walk
+  "sha1",                 # object hashing — gix does not build without a hash backend
+  "max-performance-safe", # perf without a C dependency
+] }
+
+# Fixtures for the three identity tiers: `multi-remote` (tier 1), `no-remote` (tier 2), and
+# `empty` (tier 3). Dev-only, as in treepo-vcs — it shells out to `git`, which the product
+# never does (R1, architecture D3).
+#
+# `treepo-vcs` is here for the same reason and only that reason: the product resolves identity
+# from what `discover` found, and a test that opened repositories its own way would not be
+# testing that composition. `dep-guard` reads normal and build edges only, so this does not
+# widen what the crate actually depends on.
+[dev-dependencies]
+corpus = { path = "../../tools/corpus" }
+treepo-vcs = { workspace = true }
+
+[lints]
+workspace = true

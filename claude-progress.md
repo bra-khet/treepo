@@ -4,6 +4,7 @@
 > for the file tree and decisions. This file records only where the build actually is.
 
 **Last updated:** 2026-07-27 · **Phase 0 complete and closed** · **Phase 1 complete and closed**
+· **Phase 2 in progress**
 
 ---
 
@@ -504,6 +505,96 @@ The clone is deliberately complete — no `--depth`, no `--filter=blob:none`. A 
 would measure a truncated history and a blobless one would fetch objects *during* the timed
 pass, putting network latency inside a figure about local I/O.
 
+---
+
+## Phase 2 — store & repository identity
+
+| Deliverable | Status |
+|---|---|
+| `crates/treepo-store/{paths,resolve}.rs` (`F-MAN-2`, `F-MAN-3`) | **done** — three tiers, 29 tests |
+| `tests/identity.rs` (`F-MAN-3`, `AC-MAN-4`/`5` identity half) | **done** — 10 tests |
+| `crates/treepo-store/manifest_io.rs` (`F-MAN-6`/`7`, `AC-MAN-1`/`3`) | not started |
+| `F-CORP-3`: `two-clones`, `read-only` fixtures | **missing — see below** |
+
+`treepo-store` takes a much smaller `gix` than `treepo-vcs` does: 114 packages against 131, no
+`blob-diff`, no `status`, no `attributes`, no `mailmap`. It reads two things from a repository —
+remotes and the root commit — and naming that minimum is what keeps a later "while we're here"
+read from appearing in the crate that decides where a user's data lives.
+
+### Identity resolution — the decisions
+
+**Ordering is the whole design, and it is tested by inversion.** A fork shares its upstream's
+root commit and must not share its store, which is only true because tier 1 beats tier 2. The
+test suite was verified the way the `compile_fail` gates and the signals dictionary were:
+tier 2 was moved above tier 1 and four tests failed with legible messages before it was
+reverted.
+
+**Raw remote URLs do not leave `resolve.rs`.** `https://x-access-token:ghp_…@github.com/o/r` is
+what a CI checkout leaves in `.git/config`, and users paste tokens by hand too. `F-MAN-3`
+already asks for credentials to be stripped; the reason it matters is not the one the PRD
+gives. `Resolution` carries only normalized URLs, so no code path runs from `.git/config` to
+`identity.json`, a store directory name, or a shared package (`F-MAN-11`).
+
+**The port is dropped, and that follows from dropping the scheme.** `F-MAN-3` names scheme,
+credentials, trailing slash and `.git`, and says nothing about ports. Keeping one would undo
+the rest — `ssh://git@host:22/foo` and `https://host/foo` are one repository reached two ways,
+and the point of stripping the scheme is that the route is not the identity.
+
+**Lowercasing the path has a stated cost.** Two repositories on a case-sensitive host differing
+only in case share a store. That is the PRD's rule and the right trade — `.../Foo/Bar/` and
+`.../foo/bar` are the same repository far more often than they are two, and GitHub, GitLab and
+Bitbucket all agree — but the failure, if it ever happens, will look inexplicable, so it is
+written down.
+
+**A shallow clone is refused tier 2 rather than approximated.** Its oldest commit is a boundary,
+not a root; keying on it would give a repository one identity today and another the moment
+somebody unshallows it, silently orphaning the store. It falls to tier 3 with the reason
+recorded. In practice a shallow clone has an `origin` and never gets that far.
+
+**Tier 2 walks every reference, not HEAD.** Identity is a property of the repository, not of
+what is checked out — walking from HEAD would give one identity on `main` and another on an
+orphan branch, and switching branches would orphan the store.
+
+**Tier 1 does not compute a root commit, deliberately.** It costs a full graph walk, and paying
+it on every open of every repository with a remote would put a T3 repository's *identity
+resolution alone* into seconds against `NFR-4`'s 5 s cold launch. `F-MAN-5`'s relink index
+wants root commits for every repository; the place to collect them is `log_pass`, which walks
+the graph once anyway. Recorded here because the tempting fix is the expensive one.
+
+**Tier 3 canonicalizes rather than lowercases.** `canonicalize` absolutizes, resolves symlinks
+so a directory reached two ways is one identity, and on case-insensitive filesystems returns
+the on-disk casing — case folding applied by the filesystem that knows whether it applies.
+Doing it by hand would fold case on Linux too, where `~/src/Repo` and `~/src/repo` are two
+directories. Invalid UTF-8 in a path is percent-escaped rather than converted lossily: every
+invalid sequence maps to the same replacement character, so a lossy conversion would give two
+sibling directories one store.
+
+**Two bugs the tests found, neither by reading.** `file:///srv/git/app` lost its leading slash
+and collided with a relative remote spelled `srv/git/app`; and `file:///C:/src/app` did not
+match `C:\src\app`, which is the same directory and the exact form `tools/corpus` clones
+through on Windows.
+
+### `readonly-audit` now covers resolution
+
+Resolution is the first thing an open does, and `AC-MAN-2` is about opening a repository — so
+it runs inside the census, in the product's own order (association, identity, extraction). It
+also reads a repository in two ways nothing else does, config and a full graph walk, and a pass
+that reads in a new way is the kind that acquires a write. **16 fixtures, 0 writes**, and the
+report now names each fixture's tier, which doubles as a readable check that the resolver
+behaves sensibly on every shape in the corpus.
+
+### `F-CORP-3` is not complete, and Phase 1 recorded otherwise
+
+`F-CORP-3` names five fixtures. Three exist — `no-remote`, `multi-remote`, `empty`. Two do not:
+
+- **two clones of one remote at different paths** (`AC-MAN-4`). `tests/identity.rs` builds this
+  case itself with `corpus::Builder`, which proves the resolution half now. The shared fixture
+  belongs with `manifest_io`, where the other half — the second open skipping extraction — is
+  testable end to end.
+- **a read-only repository** (restricted permissions or a read-only mount). This one is about
+  `AC-MAN-2` and `F-ASSOC-7` rather than identity, and it has real platform weight: `chmod` on
+  unix, ACLs on Windows, and a fixture builder that must be able to clean up after itself.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -526,9 +617,11 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phase 1 is closed.** Phase 2 is the store and repository identity: `crates/treepo-store/**`
-and `tests/identity.rs`, against `AC-MAN-1` and `AC-MAN-3`–`5`. The `F-CORP-3` fixtures it needs
-already exist — `no-remote`, `multi-remote`, `empty`, and the two-clones-of-one-remote case.
+**Phase 2, second sprint: `manifest_io.rs`** — `F-MAN-6` (schema version, regenerate rather
+than best-effort parse), `F-MAN-7` (temp file then rename), and with them `AC-MAN-1`
+(delete-then-regenerate is byte-identical) and `AC-MAN-3` (killed mid-write leaves the previous
+manifest valid). It brings the first writes in the crate, the postcard dependency architecture
+E2 chose, and the `two-clones` corpus fixture that closes the persistence half of `AC-MAN-4`.
 
 ### `LICENSE-THIRD-PARTY.md` — closed 2026-07-27
 

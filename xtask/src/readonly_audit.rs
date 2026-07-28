@@ -12,9 +12,15 @@
 //!
 //! # What it does
 //!
-//! For every corpus fixture: take a complete census of the directory, run every extraction
-//! pass Phase 1 has, take the census again, and compare. A census records each path's kind,
-//! length, content hash, and modification time; a difference in any of them is a write.
+//! For every corpus fixture: take a complete census of the directory, resolve its identity
+//! and run every extraction pass, take the census again, and compare. A census records each
+//! path's kind, length, content hash, and modification time; a difference in any of them is a
+//! write.
+//!
+//! Identity resolution (`F-MAN-3`) is included because `AC-MAN-2` is about *opening* a
+//! repository, and resolution is the first thing an open does. It also reads a repository in
+//! two ways nothing else here does — config, and a full graph walk from every reference — and
+//! a pass that reads a repository in a new way is exactly the kind that acquires a write.
 //!
 //! # The observer must not share code with the observed
 //!
@@ -168,7 +174,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         let verdict = if found.is_empty() { "clean" } else { "WRITES" };
         let summary = match &outcome {
             Ok(report) => format!(
-                "extracted {}, {}, {} dirty",
+                "{:?} identity, extracted {}, {}, {} dirty",
+                report.tier,
                 count(u64::try_from(report.records).unwrap_or(u64::MAX), "path"),
                 count(u64::from(report.commits), "commit"),
                 report.dirty
@@ -246,6 +253,7 @@ struct Extraction {
     records: usize,
     commits: u32,
     dirty: usize,
+    tier: treepo_model::identity::IdentityTier,
 }
 
 /// Runs the whole Phase 1 pipeline over one repository.
@@ -261,6 +269,16 @@ fn extract(root: &Path) -> Result<Extraction, String> {
     use treepo_vcs::{FilterSet, HistoryOptions, SignalDictionary, StatusOptions, WalkOptions};
 
     let target = treepo_vcs::discover(root).map_err(|e| format!("discover: {e}"))?;
+
+    // Identity resolution, in the product's own order: association, then which repository
+    // this is, then extraction. It reads remotes from config and — for a repository with no
+    // remote — walks the commit graph to its root, so it is a repository read like any other
+    // and belongs under the same census. `resolved_at` is 0 because a clock reading here
+    // would make the audit's own output depend on when it ran.
+    let identity = treepo_store::resolve(target.root(), target.repository(), 0)
+        .map_err(|e| format!("resolve: {e}"))?
+        .identity;
+
     let filter = FilterSet::built_in();
     let catalogue = Catalogue::built_in();
 
@@ -302,6 +320,7 @@ fn extract(root: &Path) -> Result<Extraction, String> {
         records: structure.records.len(),
         commits: history.commit_count,
         dirty: dirty.paths.len(),
+        tier: identity.tier,
     })
 }
 

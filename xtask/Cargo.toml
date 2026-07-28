@@ -18,6 +18,7 @@ publish.workspace = true
 [dependencies]
 treepo-det = { workspace = true }
 treepo-model = { workspace = true }
+treepo-store = { workspace = true }
 treepo-vcs = { workspace = true }
 
 # The fixtures to audit. Dev-time only, exactly as in treepo-vcs's dev-dependencies: it shells
