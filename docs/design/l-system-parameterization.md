@@ -1,8 +1,8 @@
 # L-System Parameterization Design
 **Design Document — Supplemental Living Section**  
-**Version:** 0.1  
+**Version:** 0.2  
 **Status:** Active draft  
-**Last updated:** 2026-07-26  
+**Last updated:** 2026-07-28  
 **Project name:** treepo *(locked 2026-07-27 — [`../CONSTITUTION.md`](../CONSTITUTION.md) §10 R5)*  
 
 This document is the authoritative reference for how L-systems are parameterized and driven by the Feature System in treepo. It expands the high-level statements in [`design-outline.md`](design-outline.md) and [`visual-construction.md`](visual-construction.md), and is intended to be usable both by humans and by agents when deriving concrete mapping tables.
@@ -17,7 +17,7 @@ The L-system is responsible **only for the structural skeleton** of the world-tr
 
 - Topology (which limbs exist and how they connect)
 - Geometry of those limbs (length, thickness, angles, recursion)
-- The hybrid trunk (minimal basal axiom + overlapping primary limbs)
+- The hybrid trunk (a support column grown from primary internodes; see `visual-construction.md` v2.1)
 
 Everything else — materials, age/churn expression, enrichment (treehouses, platforms, scars), workers, particles, glow — lives in later layers (Semantic Annotation → Enrichment → Thrive). Age and churn therefore influence the *skeleton* only weakly or not at all; they dominate the material and animation layers. This separation is deliberate and already recorded in the Feature System and Outline.
 
@@ -91,8 +91,20 @@ These are the knobs that matter for treepo. Ranges are practical starting points
 | **Thickness / width reduction** | Controlled by `!` and width parameters (q, e) | Taper rate. Slower taper = heavier limbs near base (critical for overlapping trunk mass). | Size primitives + mild age bonus for old mass |
 | **Stochasticity / noise** | 0.0–0.4 (angle & length jitter) | Orderly vs wild. High values + high churn/skew produce alien/overgrown silhouettes. | Churn, hierarchy skew, language diversity, lack of conventional folders |
 | **Tropism / bias** | None → mild upward → size-driven droop | Preferred growth direction. Extreme size disparity can produce visible “weight”. | Size disparity, optional activity heat |
-| **Axiom / basal segment** | Short, data-driven length & radius | The minimal starter segment that primary limbs grow from. | Global root mass / number of primary limbs |
+| **Axiom / support column** | Data-driven; a collar plus one internode per primary | The trunk the primary limbs leave *along*. Width at any height is the support still carried there. | Global root mass / number of primary limbs |
 | **Termination threshold** | Small length or depth limit | Prevents infinite or microscopic branching. | Practical readability + performance |
+
+**Axiom, revised 2026-07-28.** This row read "short, data-driven length & radius — the minimal
+starter segment that primary limbs grow from", and the implementation took it literally: one
+short segment with every primary leaving its tip. The first silhouettes showed the base as an
+oversized seed, because a point gives a limb nowhere to leave *from*. The axiom is now the chain
+of internodes the primaries induce, standing on a flared collar — see
+[`visual-construction.md`](visual-construction.md) v2.1. "Data-driven" and "no arbitrary trunk"
+are unchanged; "minimal" now describes the **collar** rather than the whole axis.
+
+The `trunk.fan` row moves with it. It was both lateral spread *and* the trunk's height budget —
+under co-origin the overlap that was the trunk ended where the fan pulled two limbs apart — and
+the two readings could not be tuned independently. It is now lateral character only.
 
 **Important separation**  
 Age and churn do **not** primarily rewrite these structural parameters. They act on material families, glow, particle rates, scarring, and Thrive animation (see Feature System Interaction Physics). Only mild, optional influence (e.g., high recent churn slightly raising local stochasticity) is considered at the skeleton level.
@@ -187,7 +199,7 @@ No final tables are required before the first skeleton exists. The Feature Syste
 ## 7. Relationship to Other Documents & Engine
 
 - [**Feature System**](feature-system.md) supplies the primitive vector and the Interaction Physics that interpret age/churn, ownership, etc.
-- [**Core Visual Construction**](visual-construction.md) defines the hybrid trunk (basal axiom + overlapping primary limbs) and the four-layer generative stack.
+- [**Core Visual Construction**](visual-construction.md) defines the hybrid trunk (a pipe column grown from primary internodes) and the four-layer generative stack.
 - [**Engine Architecture (Grow vs Thrive)**](engine-architecture.md) owns when the L-system is re-run (only inside Grow) and guarantees the resulting skeleton is treated as stable by Thrive.
 - **Hierarchical path-hash seeds** guarantee that the same logical subtree always produces the same geometry.
 

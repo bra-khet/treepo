@@ -1,9 +1,9 @@
-//! The hybrid trunk — `F-SKEL-3`, `F2`, `AC-SKEL-2`.
+//! The trunk column — `F-SKEL-3`, `F2`, `AC-SKEL-2`.
 //!
 //! [`grow`] is the product's entry point: a [`Manifest`] in, a [`Skeleton`] out. Everything
 //! [`compose`](crate::lsystem::compose) does happens beneath what this module builds.
 //!
-//! # Why the trunk is hybrid, and what that costs
+//! # Why there is a trunk at all, and why it is not a constant
 //!
 //! `design/visual-construction.md` settled this against two alternatives and recorded why.
 //! A **dedicated trunk** — a tall central column the limbs attach to — makes the trunk a
@@ -12,18 +12,45 @@
 //! compatibility, redraw stability, and readable silhouettes: with no axiom there is nothing
 //! for the productions to start from, and nothing that stays put when the repository changes.
 //!
-//! The hybrid takes the axiom from one and the mass from the other:
+//! The hybrid takes the axiom from one and the mass from the other, and this module is its
+//! second construction. The first was **co-origin**: one minimal basal segment, every primary
+//! leaving its tip, and the trunk was purely their overlap. The arithmetic held and the
+//! picture did not. Two limbs `θ` apart separate at `(w₁+w₂)/(4·sin(θ/2))`, which reduces to
+//! `1/(packing × fan)` stem-widths *however many limbs there are* — so a wide fan left half a
+//! stem-width of trunk, and `tools/m0-silhouette` drew an oversized seed with rays coming out
+//! of it. A point is not a support column: the limbs had nowhere to leave *from*.
 //!
-//! * a **minimal basal segment**, a real L-system axiom, short and data-driven;
-//! * **primary limbs** from the top-level directories, fanned narrowly enough that their
-//!   base widths overlap;
-//! * the **visual trunk** is that overlap. Nothing draws a trunk; the trunk is what several
-//!   thick limbs leaving one point look like.
+//! # The pipe column
 //!
-//! The cost is stated plainly because it will look like a defect one day: **a repository with
-//! one top-level directory has almost no trunk.** There is nothing to overlap. That is the
-//! construction working as designed — the trunk depicts breadth at the root, and a repository
-//! with no breadth there has none to depict.
+//! The axis is grown by the primaries that need to leave it rather than pre-sized.
+//!
+//! * A **collar** at the foot, flared into the roots, carrying every primary at once.
+//! * One **internode** per primary — the vertical room that limb needs to exist as volume
+//!   rather than as a ray. It is the insertion zone, and the limb departs at its top.
+//! * The **width at any height is the support still carried there**: below the first
+//!   departure that is everything, and each departure takes its own share away. Each internode
+//!   tapers across the drop, so the narrowing happens *through* the joint, which is where a
+//!   real trunk's wood diverges.
+//! * Above the last departure nothing is left to carry, so the column ends. The innermost
+//!   primary leaves last and nearly vertical, and reads as the leader continuing.
+//!
+//! The overlap the first construction relied on has not gone anywhere — the limbs still leave
+//! packed tightly enough to fuse, and later enrichment molds that into bark. What is new is
+//! that the column has **height and volume of its own**, so there is something for them to
+//! fuse *onto*.
+//!
+//! Nothing draws an *arbitrary* trunk, which is the part of the original decision worth
+//! keeping. The column exists only because primaries need somewhere to leave from. A
+//! repository with one top-level directory gets one internode and a thin column; an empty one
+//! gets no internodes at all.
+//!
+//! # Which primary leaves where
+//!
+//! Fan position is **path order**, so a directory gaining bytes never slides sideways
+//! (`AC-GROW-4`). Departure *height* is then the outermost fan position first, working inward.
+//! Two things fall out: the column does not lean, because the sides alternate as the order
+//! walks in; and the last thing to leave is the most vertical, so the trunk hands off to a
+//! leader instead of stopping in mid-air.
 //!
 //! # `F2`: fewer, thicker limbs
 //!
@@ -38,24 +65,25 @@
 //! grouping candidates. A rule that describes itself, rather than a second number to tune
 //! against the first.
 //!
-//! A group is a *stem*, not a container: the same shape as the basal axiom, one level down.
-//! Its members fan from its tip exactly as the primaries fan from the basal tip, so `F2` and
-//! `F-SKEL-3` are one mechanism used twice rather than two that must be kept consistent.
+//! A group is a *column*, not a container: the same construction as the trunk, one level
+//! down — [`column`] is called with the group's members as its primaries. `F2` and `F-SKEL-3`
+//! are one mechanism used twice rather than two that must be kept consistent.
 //! [`NodeRole::Group`] is deliberately not [`NodeRole::Aggregate`] — a group draws what it
 //! holds, and conflating them would report drawn paths as compressed.
 //!
 //! # `AC-SKEL-2`: a seed and a root cluster, never a lonely trunk
 //!
-//! An empty repository has no primary limbs, so it has no overlap, so it has no trunk — and
-//! that falls out of the construction rather than needing a special case. What it does have
-//! is the root-mass cluster, which every tree has, and a basal segment that stays at the
-//! table's floor because its length is a proportion of its own width and there is nothing
-//! here to be wide about. The result is a seed sitting in its roots, which is what the design
-//! asks for and what a dedicated trunk could never have produced.
+//! An empty repository has no primary limbs, so it claims no internodes, so it has no column —
+//! and that falls out of the construction rather than needing a special case. What it does
+//! have is the root-mass cluster, which every tree has, and a collar that stays at the table's
+//! floor because its length is a proportion of its own width and there is nothing here to be
+//! wide about. The result is a seed sitting in its roots, which is what the design asks for
+//! and what a dedicated trunk could never have produced.
 
 use crate::lsystem::compose::{self, Context, Site};
 use crate::params::{SkeletonInputs, Table, TrunkParams};
 use alloc::vec::Vec;
+use core::cmp::Reverse;
 use treepo_det::{Angle, Fx, Seed, sin_cos};
 use treepo_model::{Manifest, NodeId, NodeRole, PathRecord, Point, RepoPath, Segment, Skeleton};
 
@@ -65,6 +93,19 @@ use treepo_model::{Manifest, NodeId, NodeRole, PathRecord, Point, RepoPath, Segm
 /// knob. At 140° the outermost node sits 70° either side of vertical — splayed wide, but
 /// still below the horizon, so no root can be mistaken for a limb pointing the wrong way.
 const ROOT_SPREAD: Angle = Angle::from_millidegrees(140_000);
+
+/// How much of its fan offset a primary keeps at the moment it leaves the column.
+///
+/// The knot. A limb that departs at its full fan angle reads as a ray from a point however
+/// much room the internode gave it; one that leaves closer to the axis and opens out as it
+/// goes has part of its first stretch fused into the column, which is what an insertion looks
+/// like. The remainder is not lost — the limb's own branching and tropism carry it outward
+/// over the following segments.
+///
+/// A constant rather than a table row on purpose. The design document offers it as a row "only
+/// if the eye needs it", and one number that nobody has yet had a reason to move is better
+/// left where it can be read than promoted to something that must be tuned.
+const KNOT_HOLD: Fx = Fx::from_ratio(7, 10);
 
 /// Grows a repository's whole skeleton — the entry point (`F-SKEL-1`).
 ///
@@ -80,8 +121,10 @@ pub fn grow(manifest: &Manifest, table: &Table) -> Skeleton {
     let trunk = table.trunk_params(&inputs);
     let seed = manifest.seed_for(&root);
 
-    // The basal node is the repository itself, so a click anywhere on the trunk resolves to
-    // the repository rather than to nothing.
+    // The basal node is the repository itself, so a click anywhere on the column resolves to
+    // the repository rather than to nothing. The whole column is one node drawing many
+    // segments — an axis divided into internodes is still one axis, and giving each internode
+    // a node of its own would report the repository several times over.
     let basal = skeleton.push_node(
         None,
         Point::ORIGIN,
@@ -91,36 +134,30 @@ pub fn grow(manifest: &Manifest, table: &Table) -> Skeleton {
     );
 
     let primaries = assign_primaries(manifest, table, &root, trunk.group_below);
-    let width = stem_width(table, &primaries, trunk.packing);
-    // Length from width, not from a row of its own: the stem is as wide as what it carries,
-    // so tying its length to its width is what keeps a broad repository's axiom a short stem
-    // rather than a disc, and a bare one's a seed.
-    let tip = Point::new(Fx::ZERO, trunk.basal_length(width));
 
-    skeleton.extend_segments([Segment {
-        start: Point::ORIGIN,
-        end: tip,
-        base_width: width,
-        // Near-cylindrical rather than tapered: the limbs leave the tip still overlapping,
-        // and a basal segment that narrowed first would pinch the trunk exactly where the
-        // mass is supposed to be.
-        tip_width: width,
-        node: basal,
-        generation: 0,
-    }]);
-
-    root_cluster(&mut skeleton, basal, &seed, &root, &trunk, width);
+    // Placed before the column so the roots keep the low node indices their position implies,
+    // and sized from the pipe rather than from the flared foot: the flare is the collar
+    // widening *into* these, so measuring it against them would count it twice.
+    root_cluster(
+        &mut skeleton,
+        basal,
+        &seed,
+        &root,
+        &trunk,
+        pipe_width(table, &trunk, combined_width(table, &primaries)),
+    );
 
     let mut ctx = Context::new(manifest, table, &mut skeleton);
-    fan_out(
+    column(
         &mut ctx,
         basal,
         Site {
-            position: tip,
+            position: Point::ORIGIN,
             heading: Angle::ZERO,
-            carried: Some(width),
+            // Nothing upstream: the trunk is as wide as what it carries and no wider.
+            carried: None,
         },
-        trunk.fan,
+        &trunk,
         &primaries,
         1,
     );
@@ -243,27 +280,41 @@ fn gather(ordered: Vec<&PathRecord>, threshold: u64, capacity: usize) -> Vec<Vec
     runs
 }
 
-/// How wide a stem is: its limbs' combined base width, packed.
+/// The combined base width of everything one primary carries — a group counts its members.
 ///
-/// `F-SKEL-3`'s trunk mass, arithmetically. Summing the limbs' own widths rather than reading
-/// a table row is what makes the trunk a consequence of what it carries — a repository that
-/// grows a heavy new top-level directory thickens at the base because the limb is thick, not
-/// because a separate number was tuned to agree.
-fn stem_width(table: &Table, primaries: &[Primary<'_>], packing: Fx) -> Fx {
-    let combined = primaries
+/// Summing the limbs' own widths rather than reading a table row is what makes the trunk a
+/// consequence of what it carries: a repository that grows a heavy new top-level directory
+/// thickens at the base because the limb is thick, not because a separate number was tuned to
+/// agree.
+fn primary_width(table: &Table, primary: &Primary<'_>) -> Fx {
+    primary
+        .records()
         .iter()
-        .flat_map(Primary::records)
         .map(|record| {
             let inputs = SkeletonInputs::from_record(record, &table.scales);
             table.limb_params(&inputs).base_width
         })
-        .fold(Fx::ZERO, Fx::add);
+        .fold(Fx::ZERO, Fx::add)
+}
 
-    // An empty repository has no limbs and therefore no trunk to be wide. The seed still
-    // needs a width to be drawn at, and the width the table gives a limb with every driver
-    // at zero is the honest floor — anything else would be a constant invented here.
-    let floor = table.limb_params(&SkeletonInputs::default()).base_width;
-    combined.mul(packing).max(floor)
+/// What every primary carries, added up.
+fn combined_width(table: &Table, primaries: &[Primary<'_>]) -> Fx {
+    primaries
+        .iter()
+        .map(|primary| primary_width(table, primary))
+        .fold(Fx::ZERO, Fx::add)
+}
+
+/// How wide a column carrying `combined` is drawn — packed, soft-capped, and floored.
+///
+/// An empty repository has no limbs and therefore no column to be wide. The seed still needs
+/// a width to be drawn at, and the width the table gives a limb with every driver at zero is
+/// the honest floor — anything else would be a constant invented here. The same floor is what
+/// keeps the top of a column from tapering to nothing once the last primary has left.
+fn pipe_width(table: &Table, trunk: &TrunkParams, combined: Fx) -> Fx {
+    trunk
+        .support(combined)
+        .max(table.limb_params(&SkeletonInputs::default()).base_width)
 }
 
 /// Places the root-mass cluster at the base (`AC-SKEL-2`).
@@ -276,10 +327,17 @@ fn root_cluster(
     width: Fx,
 ) {
     let count = trunk.root_cluster.max(1);
-    // Root nodes are shorter and thicker than the basal segment: they read as mass at the
+    // Three quarters of the buttress's width, which clears its edge by a quarter and no more.
+    // Measured against the flared foot rather than against the collar's length, which is the
+    // correction the column forced: the old rule made a root a fraction of a short axiom, and
+    // once the foot flared they were drawn entirely inside it — the first pictures showed a
+    // black bulb with a grey smudge in the middle where the root cluster was supposed to be.
+    // Setting them to the full foot width fixed that and overshot into a starfish.
+    //
+    // Still short and thick beside a limb, which is what keeps them reading as mass at the
     // base rather than as branches pointing the wrong way.
-    let length = trunk.basal_length(width).mul(Fx::from_ratio(3, 4));
-    let node_width = width.mul(Fx::from_ratio(2, 5)).max(Fx::EPSILON);
+    let length = trunk.flared(width).mul(Fx::from_ratio(3, 4));
+    let node_width = width.mul(Fx::from_ratio(1, 4)).max(Fx::EPSILON);
 
     for index in 0..count {
         let heading = spread(Angle::HALF, ROOT_SPREAD, index, count);
@@ -307,42 +365,145 @@ fn root_cluster(
     }
 }
 
-/// Fans primary limbs from a stem's tip, and grows each.
-///
-/// `from.carried` is the stem's own width, so a limb leaving it inherits the falloff exactly
-/// as a limb leaving another limb does — the basal axiom and an `F2` stem are branches, and a
-/// branch is the thing a graft narrows against.
-fn fan_out(
-    ctx: &mut Context<'_>,
-    stem: NodeId,
-    from: Site,
-    spread_angle: Angle,
-    primaries: &[Primary<'_>],
-    level: u8,
-) {
-    let count = u16::try_from(primaries.len()).unwrap_or(u16::MAX);
-    for (index, primary) in primaries.iter().enumerate() {
-        let at = Site {
-            heading: spread(
-                from.heading,
-                spread_angle,
-                u16::try_from(index).unwrap_or(u16::MAX),
-                count,
-            ),
-            ..from
-        };
-        match primary {
-            Primary::One(record) => {
-                compose::place(ctx, &record.path, Some(stem), at, level);
-            }
-            Primary::Group(members) => place_group(ctx, stem, at, members, level),
-        }
-    }
+/// Where one primary leaves the column, worked out before anything is placed.
+struct Insertion {
+    /// Which primary this is — its place in the fan, in path order.
+    primary: usize,
+    /// The point on the axis it leaves from: the top of the internode it claimed.
+    position: Point,
+    /// The heading it leaves on, already pulled back toward the axis by the knot.
+    heading: Angle,
+    /// The column's width just below the join, which is the branch it grafts onto.
+    carried: Fx,
 }
 
-/// Places one `F2` group: a short stem, with its members fanning from its tip.
+/// Grows a support column and everything that leaves it, returning its width at the foot.
 ///
-/// The basal axiom's construction, one level down — see the module header on why that is one
+/// The construction the module header describes, and the only one: the trunk calls it with the
+/// repository's primaries, and an `F2` group calls it with its members.
+///
+/// Two passes, and the order matters for legibility rather than for correctness. The column's
+/// own geometry is settled first so its segments land contiguously and a reader of
+/// `skeleton.segments()` sees an axis rather than an axis interleaved with three subtrees.
+fn column(
+    ctx: &mut Context<'_>,
+    node: NodeId,
+    from: Site,
+    trunk: &TrunkParams,
+    primaries: &[Primary<'_>],
+    level: u8,
+) -> Fx {
+    let table = ctx.table();
+    let shares: Vec<Fx> = primaries
+        .iter()
+        .map(|primary| primary_width(table, primary))
+        .collect();
+    let combined = shares.iter().copied().fold(Fx::ZERO, Fx::add);
+
+    let mut pipe = pipe_width(table, trunk, combined);
+    let mut foot = trunk.flared(pipe);
+    // A column leaving a branch cannot be wider than the branch it leaves. Both ends are
+    // clamped: without the first a group stem could buttress out past the trunk it grows on.
+    if let Some(carried) = from.carried {
+        foot = foot.min(carried);
+        pipe = pipe.min(foot);
+    }
+    let floor = table.limb_params(&SkeletonInputs::default()).base_width;
+
+    let (sin, cos) = sin_cos(from.heading);
+    let advance =
+        |at: Point, length: Fx| Point::new(at.x.add(sin.mul(length)), at.y.add(cos.mul(length)));
+
+    // The collar: everything is still carried here, and the foot flares into the roots.
+    let mut at = from.position;
+    let mut tip = advance(at, trunk.basal_length(pipe));
+    let mut segments: Vec<Segment> = Vec::with_capacity(primaries.len() + 1);
+    segments.push(Segment {
+        start: at,
+        end: tip,
+        base_width: foot,
+        tip_width: pipe,
+        node,
+        generation: 0,
+    });
+    at = tip;
+
+    // Outermost fan position first, working inward — see the module header. Ties by index so
+    // the two halves of a symmetric pair have a settled order rather than a sort's whim.
+    let count = u16::try_from(primaries.len()).unwrap_or(u16::MAX);
+    let mut order: Vec<usize> = (0..primaries.len()).collect();
+    order.sort_by_key(|&index| {
+        (
+            Reverse(offset_rank(u16::try_from(index).unwrap_or(u16::MAX), count)),
+            index,
+        )
+    });
+
+    let mut insertions: Vec<Insertion> = Vec::with_capacity(order.len());
+    let mut remaining = combined;
+    let mut width = pipe;
+    for &index in &order {
+        remaining = remaining.sub(shares[index]).max(Fx::ZERO);
+        // `min(width)` because the floor can hold the width up while `remaining` still falls,
+        // and a column that widened as its limbs left would be a funnel.
+        let above = pipe_width(table, trunk, remaining).min(width).max(floor);
+
+        tip = advance(at, trunk.internode_length(width.sub(above)));
+        // Tapered across the internode rather than stepped at its top: the drop belongs to
+        // the joint, which is where the wood actually divides.
+        segments.push(Segment {
+            start: at,
+            end: tip,
+            base_width: width,
+            tip_width: above,
+            node,
+            generation: 0,
+        });
+
+        insertions.push(Insertion {
+            primary: index,
+            position: tip,
+            heading: knotted(
+                from.heading,
+                spread(
+                    from.heading,
+                    trunk.fan,
+                    u16::try_from(index).unwrap_or(u16::MAX),
+                    count,
+                ),
+            ),
+            // The width just below the join. `grafted_onto` narrows from here, so a limb
+            // leaving the column inherits the falloff exactly as a limb leaving another limb
+            // does — a column is a branch, and a branch is what a graft narrows against.
+            carried: width,
+        });
+
+        at = tip;
+        width = above;
+    }
+
+    ctx.skeleton().extend_segments(segments);
+
+    for insertion in insertions {
+        let site = Site {
+            position: insertion.position,
+            heading: insertion.heading,
+            carried: Some(insertion.carried),
+        };
+        match &primaries[insertion.primary] {
+            Primary::One(record) => {
+                compose::place(ctx, &record.path, Some(node), site, level);
+            }
+            Primary::Group(members) => place_group(ctx, node, site, members, level),
+        }
+    }
+
+    foot
+}
+
+/// Places one `F2` group: a column of its own, with its members leaving it.
+///
+/// The trunk's construction one level down — see the module header on why that is one
 /// mechanism rather than two.
 fn place_group(
     ctx: &mut Context<'_>,
@@ -364,20 +525,6 @@ fn place_group(
     let trunk = ctx.table().trunk_params(&SkeletonInputs::default());
     let held: Vec<Primary<'_>> = members.iter().copied().map(Primary::One).collect();
 
-    // A group stem is a branch leaving another branch, so it narrows at its own graft like
-    // any limb would. Without this the trunk could sprout a stem wider than itself.
-    let mut width = stem_width(ctx.table(), &held, trunk.packing);
-    if let Some(carried) = at.carried {
-        width = width.min(carried);
-    }
-
-    let (sin, cos) = sin_cos(at.heading);
-    let length = trunk.basal_length(width);
-    let tip = Point::new(
-        at.position.x.add(sin.mul(length)),
-        at.position.y.add(cos.mul(length)),
-    );
-
     let node = ctx.skeleton().push_node(
         Some(parent),
         at.position,
@@ -388,27 +535,8 @@ fn place_group(
             members: members.iter().map(|record| record.path.clone()).collect(),
         },
     );
-    ctx.skeleton().extend_segments([Segment {
-        start: at.position,
-        end: tip,
-        base_width: width,
-        tip_width: width,
-        node,
-        generation: 0,
-    }]);
 
-    fan_out(
-        ctx,
-        node,
-        Site {
-            position: tip,
-            heading: at.heading,
-            carried: Some(width),
-        },
-        trunk.fan,
-        &held,
-        level,
-    );
+    column(ctx, node, at, &trunk, &held, level);
 }
 
 /// The `index`th of `count` headings spread evenly across `spread` either side of `centre`.
@@ -422,6 +550,31 @@ fn spread(centre: Angle, spread: Angle, index: u16, count: u16) -> Angle {
     let offset = i64::from(spread.to_bits()) * (2 * i64::from(index) - i64::from(count - 1))
         / (2 * i64::from(count - 1));
     centre + Angle::from_bits(offset as u32)
+}
+
+/// How far off centre the `index`th of `count` fan positions sits, in half-steps.
+///
+/// The departure order, and only the order — the magnitude is never converted to an angle, so
+/// it needs no units. Symmetric by construction: the two ends of a fan rank equally and leave
+/// at consecutive heights, which is what keeps the column from leaning.
+fn offset_rank(index: u16, count: u16) -> u32 {
+    if count <= 1 {
+        return 0;
+    }
+    (2 * i32::from(index) - i32::from(count - 1)).unsigned_abs()
+}
+
+/// A departure heading pulled back toward the axis it leaves — the knot.
+///
+/// See [`KNOT_HOLD`]. The pull is proportional to the offset, so the centre limb is untouched
+/// and the outermost is bent most, which is the right way round: a limb leaving at 70° has the
+/// most to gain from spending its first stretch inside the trunk.
+fn knotted(axis: Angle, departure: Angle) -> Angle {
+    let offset = departure.to_bits().wrapping_sub(axis.to_bits()) as i32;
+    // i128 because the offset can be most of a turn and `KNOT_HOLD` most of 2³²; the product
+    // is past i64 well before either is unreasonable.
+    let held = (i128::from(offset) * i128::from(KNOT_HOLD.to_bits())) >> 32;
+    axis + Angle::from_bits(held as u32)
 }
 
 /// `total × share`, as whole bytes.
@@ -477,12 +630,21 @@ mod tests {
             .fold(Fx::ZERO, Fx::max)
     }
 
-    /// The basal axiom as `(length, width)`, read off the skeleton.
+    /// How far it reaches sideways, either way.
+    fn half_width(skeleton: &Skeleton) -> Fx {
+        skeleton
+            .segments()
+            .iter()
+            .map(|segment| segment.end.x.abs().max(segment.start.x.abs()))
+            .fold(Fx::ZERO, Fx::max)
+    }
+
+    /// The trunk column's own segments, foot first.
     ///
-    /// Read rather than recomputed from the table, deliberately: the axiom's length is a rule
-    /// over the stem's width now, and a test that re-evaluated that rule would agree with the
-    /// code by construction instead of measuring it.
-    fn basal_stem(skeleton: &Skeleton) -> (Fx, Fx) {
+    /// Read off the skeleton rather than recomputed from the table, deliberately: every rule
+    /// this module applies is a function of the column's width, and a test that re-evaluated
+    /// those rules would agree with the code by construction instead of measuring it.
+    fn spine(skeleton: &Skeleton) -> Vec<&Segment> {
         let basal = skeleton
             .nodes()
             .iter()
@@ -491,14 +653,59 @@ mod tests {
         skeleton
             .segments()
             .iter()
-            .find(|segment| segment.node == basal.id)
-            .map(|segment| (segment.end.y.sub(segment.start.y), segment.base_width))
-            .expect("the basal node draws exactly one segment")
+            .filter(|segment| segment.node == basal.id)
+            .collect()
     }
 
-    /// Just the axiom's length.
-    fn axiom(skeleton: &Skeleton) -> Fx {
-        basal_stem(skeleton).0
+    /// The column as `(height, width at the foot)`.
+    fn trunk_column(skeleton: &Skeleton) -> (Fx, Fx) {
+        let spine = spine(skeleton);
+        let top = spine
+            .iter()
+            .map(|segment| segment.end.y)
+            .fold(Fx::ZERO, Fx::max);
+        (top, spine[0].base_width)
+    }
+
+    /// Just the column's height.
+    fn column_height(skeleton: &Skeleton) -> Fx {
+        trunk_column(skeleton).0
+    }
+
+    /// Where each primary leaves the column, lowest first.
+    fn departures(skeleton: &Skeleton) -> Vec<Fx> {
+        let basal = skeleton.nodes()[0].id;
+        let mut heights: Vec<Fx> = skeleton
+            .nodes()
+            .iter()
+            .filter(|node| {
+                node.parent == Some(basal) && !matches!(node.role, NodeRole::RootMass { .. })
+            })
+            .map(|node| node.origin.y)
+            .collect();
+        heights.sort();
+        heights
+    }
+
+    /// A table with the fan pinned, so a test can vary it without the drivers interfering.
+    fn at_fan(millidegrees: i32) -> Table {
+        let mut table = Table::built_in();
+        table.trunk.fan.base = millidegrees;
+        table.trunk.fan.min = millidegrees;
+        table.trunk.fan.max = millidegrees;
+        table
+            .validate()
+            .expect("a pinned fan is still a valid table");
+        table
+    }
+
+    /// `count` equally-sized top-level directories, each well above the `F2` threshold.
+    fn equal_primaries(count: usize) -> Manifest {
+        let files: Vec<alloc::string::String> = (0..count)
+            .map(|i| alloc::format!("dir{i:02}/main.rs"))
+            .collect();
+        let listed: Vec<(&str, u64)> = files.iter().map(|name| (name.as_str(), 10_000)).collect();
+        manifest_of(&listed)
     }
 
     /// `AC-SKEL-2`, both halves: an empty repository shows a seed and a root cluster, and it
@@ -513,20 +720,22 @@ mod tests {
         assert_eq!(groups, 0);
         assert!(roots >= 1, "a root cluster is not optional");
 
-        // The whole thing is no taller than the basal axiom, which with no limbs to be wide
-        // about stays at the table's floor. There is nothing here that reads as a trunk.
-        let basal = axiom(&skeleton);
+        // No primaries, so no internodes, so the column is its collar and nothing else — and
+        // with nothing to be wide about that collar sits at the table's floor. There is
+        // nothing here that reads as a trunk.
+        assert_eq!(spine(&skeleton).len(), 1, "a seed claims no internodes");
+        let collar = column_height(&skeleton);
         assert!(
-            height(&skeleton) <= basal,
-            "an empty repository grew to {:?}, past its own basal segment {:?}",
+            height(&skeleton) <= collar,
+            "an empty repository grew to {:?}, past its own collar {:?}",
             height(&skeleton),
-            basal
+            collar
         );
     }
 
     /// And the contrast that makes the previous test mean something.
     #[test]
-    fn a_populated_repository_grows_far_past_its_basal_segment() {
+    fn a_populated_repository_grows_far_past_its_column() {
         let manifest = manifest_of(&[
             ("src/main.rs", 5_000),
             ("src/lib.rs", 4_000),
@@ -534,20 +743,20 @@ mod tests {
             ("tests/it.rs", 800),
         ]);
         let skeleton = grow(&manifest, &table());
-        let basal = axiom(&skeleton);
+        let column = column_height(&skeleton);
 
         assert!(
-            height(&skeleton) > basal.mul(Fx::from_int(3)),
-            "a real repository must grow well past its axiom: {:?} vs {:?}",
+            height(&skeleton) > column.mul(Fx::from_int(2)),
+            "a real repository must carry a crown well past its trunk: {:?} vs {:?}",
             height(&skeleton),
-            basal
+            column
         );
     }
 
     /// `F-SKEL-3`: the trunk is what its limbs make it. More and heavier top-level content
     /// means a wider base, without any row being tuned to say so.
     #[test]
-    fn the_basal_segment_widens_with_what_it_carries() {
+    fn the_column_widens_with_what_it_carries() {
         let narrow = grow(&manifest_of(&[("only/a.rs", 1_000)]), &table());
         let broad = grow(
             &manifest_of(&[
@@ -559,142 +768,318 @@ mod tests {
             &table(),
         );
 
-        let basal_width = |skeleton: &Skeleton| skeleton.segments()[0].base_width;
         assert!(
-            basal_width(&broad) > basal_width(&narrow),
+            trunk_column(&broad).1 > trunk_column(&narrow).1,
             "four heavy limbs must produce a wider base than one: {:?} vs {:?}",
-            basal_width(&broad),
-            basal_width(&narrow)
+            trunk_column(&broad).1,
+            trunk_column(&narrow).1
         );
     }
 
-    /// How far above the basal tip the primary limbs are still overlapping — the height of
-    /// the trunk, since the overlap *is* the trunk.
+    /// The pipe, and the whole reason the column is grown rather than pre-sized: the width at
+    /// any height is the support still carried there, so it drops as each primary leaves.
     ///
-    /// Two limbs leaving one point `θ` apart are `2·d·sin(θ/2)` apart at distance `d`, so
-    /// they stop overlapping once that exceeds their combined half-width: `d = (w₁+w₂) /
-    /// (4·sin(θ/2))`. The trunk ends at the first adjacent pair to separate.
-    fn trunk_height(skeleton: &Skeleton) -> Fx {
+    /// Three claims. The segments join without a step, so the axis is one solid taper and not
+    /// a stack of blocks; no segment ever widens, in either direction; and the column really
+    /// does narrow, so this is a pipe rather than a cylinder that happens to be in pieces.
+    ///
+    /// Sabotage: give every internode `tip_width: width` and the third assertion fails.
+    #[test]
+    fn the_column_narrows_as_each_primary_leaves() {
+        let skeleton = grow(&equal_primaries(6), &table());
+        let spine = spine(&skeleton);
+
+        assert_eq!(
+            spine.len(),
+            7,
+            "a collar and one internode per primary: {spine:?}"
+        );
+
+        for pair in spine.windows(2) {
+            assert_eq!(
+                pair[1].base_width, pair[0].tip_width,
+                "the column steps between {:?} and {:?} instead of joining",
+                pair[0], pair[1]
+            );
+        }
+        for segment in &spine {
+            assert!(
+                segment.tip_width <= segment.base_width,
+                "a column segment widened on the way up: {segment:?}"
+            );
+        }
+        assert!(
+            spine.last().unwrap().tip_width < spine[0].base_width,
+            "the column never narrowed: {:?} at the foot, {:?} at the top",
+            spine[0].base_width,
+            spine.last().unwrap().tip_width
+        );
+    }
+
+    /// The other half of the rework: primaries leave *along* the column, not from one point.
+    ///
+    /// This is the failure the first silhouettes showed. Co-origin gave every primary the same
+    /// departure, so the base was a point with rays coming out of it however thick the numbers
+    /// made it — an oversized seed. Each primary now claims vertical room of its own.
+    #[test]
+    fn primaries_leave_along_the_column_rather_than_from_one_point() {
+        let skeleton = grow(&equal_primaries(5), &table());
+        let departures = departures(&skeleton);
+
+        assert_eq!(departures.len(), 5);
+        for pair in departures.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "two primaries left from the same height: {departures:?}"
+            );
+        }
+        assert!(
+            departures[0] > Fx::ZERO,
+            "the lowest primary must still clear the collar: {departures:?}"
+        );
+    }
+
+    /// Which primary leaves where, and why the column does not lean.
+    ///
+    /// Fan position is path order; departure height is outermost first, working inward. So the
+    /// two ends of the fan leave lowest, the sides alternate as the order walks in, and the
+    /// centre — which an odd count places exactly on the axis — leaves last. That last one is
+    /// the leader, and it is what keeps the trunk from stopping in mid-air.
+    #[test]
+    fn the_outermost_primaries_leave_lowest_and_the_leader_leaves_last() {
+        let skeleton = grow(&equal_primaries(5), &at_fan(90_000));
         let basal = skeleton.nodes()[0].id;
-        let mut primaries: Vec<&treepo_model::SkeletonNode> = skeleton
+
+        let mut primaries: Vec<(i32, Fx)> = skeleton
             .nodes()
             .iter()
             .filter(|node| {
                 node.parent == Some(basal) && !matches!(node.role, NodeRole::RootMass { .. })
             })
+            // Left of centre is a wrapped-negative angle, so read the signed offset from up.
+            .map(|node| (node.heading.to_bits() as i32, node.origin.y))
             .collect();
-        // Left of centre is a wrapped-negative angle, so order by signed offset from up.
-        primaries.sort_by_key(|node| node.heading.to_bits() as i32);
+        assert_eq!(primaries.len(), 5);
+        primaries.sort_by_key(|&(heading, _)| heading);
 
-        let width_of = |node: &treepo_model::SkeletonNode| {
-            skeleton
-                .segments()
-                .iter()
-                .find(|segment| segment.node == node.id)
-                .map_or(Fx::ZERO, |segment| segment.base_width)
-        };
-
-        let mut lowest = Fx::MAX;
-        for pair in primaries.windows(2) {
-            let separation = pair[1].heading - pair[0].heading;
-            let (half_sin, _) = sin_cos(Angle::from_bits(separation.to_bits() / 2));
-            let combined = width_of(pair[0]).add(width_of(pair[1]));
-            let breaks = combined
-                .checked_div(half_sin.mul(Fx::from_int(4)))
-                .unwrap_or(Fx::MAX);
-            lowest = lowest.min(breaks);
+        let leader = primaries[2];
+        assert_eq!(leader.0, 0, "an odd fan puts its middle limb on the axis");
+        for (heading, height) in &primaries {
+            if *heading == 0 {
+                continue;
+            }
+            assert!(
+                *height < leader.1,
+                "a limb at {heading} left at {height:?}, above the leader's {:?}",
+                leader.1
+            );
         }
-        lowest
+
+        // And the further off centre, the lower — the outer pair below the inner pair.
+        assert!(primaries[0].1 < primaries[1].1, "left side out of order");
+        assert!(primaries[4].1 < primaries[3].1, "right side out of order");
     }
 
-    /// The axiom is a stem at every scale, because its length is a rule over its own width.
+    /// `AC-SKEL-2`'s counterpart at the other end, and the shape the rework was for: a
+    /// multi-primary repository stands on a column, and it stays a column at every scale.
     ///
-    /// It used to be an absolute row while the stem's width was the sum of its limbs' widths,
-    /// so a broad repository got a stem many limb-widths across and a fifth of a limb-length
-    /// long. That draws as a disc, and `m0-silhouette` is where it was finally seen.
+    /// The old construction had this backwards. Its axiom was capped at twice its own width
+    /// *because* a longer one would have out-reached the overlap that was doing the trunk's
+    /// work — so the base could only ever be stubby, and a broad repository drew a disc. The
+    /// column carries its own height, so the assertion inverts: taller than it is wide, and
+    /// still not a pole.
     ///
-    /// Two claims, and the pair is what makes it a *stem*: the axiom lengthens with the mass
-    /// it carries, and it never stops being stubby. Sabotage: pin `basal_length` to a
-    /// constant again and the first assertion fails.
+    /// Sabotage: set `internode_aspect` to its floor and the first bound fails at both scales.
     #[test]
-    fn the_basal_axiom_stays_a_stem_however_broad_the_repository() {
+    fn the_column_keeps_its_proportions_however_broad_the_repository() {
         let slim = grow(
             &manifest_of(&[("core/a.rs", 10_000), ("docs/b.md", 9_000)]),
             &table(),
         );
-
         // Twelve equal top-level directories: each is well above `group_below`, so every one
-        // earns a primary limb and the stem has twelve widths to add up.
-        let files: Vec<(alloc::string::String, u64)> = (0..12)
-            .map(|i| (alloc::format!("dir{i:02}/main.rs"), 10_000))
-            .collect();
-        let listed: Vec<(&str, u64)> = files.iter().map(|(n, b)| (n.as_str(), *b)).collect();
-        let broad = grow(&manifest_of(&listed), &table());
+        // earns a primary limb and the column has twelve widths to add up.
+        let broad = grow(&equal_primaries(12), &table());
 
-        let (slim_length, slim_width) = basal_stem(&slim);
-        let (broad_length, broad_width) = basal_stem(&broad);
+        let (slim_height, slim_foot) = trunk_column(&slim);
+        let (broad_height, broad_foot) = trunk_column(&broad);
 
         assert!(
-            broad_width > slim_width,
-            "twelve primaries must make a wider stem than two: {broad_width:?} vs {slim_width:?}"
+            broad_foot > slim_foot,
+            "twelve primaries must make a wider column than two: {broad_foot:?} vs {slim_foot:?}"
         );
         assert!(
-            broad_length > slim_length,
-            "a wider stem must get a longer axiom, or it draws as a disc: {broad_length:?} \
-             against {slim_length:?}"
+            broad_height > slim_height,
+            "and a taller one, or the extra mass went nowhere: {broad_height:?} against \
+             {slim_height:?}"
         );
 
-        // `F-SKEL-3`'s "minimal", as a shape: stubby at both scales, and never flat at either.
-        for (length, width, name) in [
-            (slim_length, slim_width, "slim"),
-            (broad_length, broad_width, "broad"),
+        for (height, foot, name) in [
+            (slim_height, slim_foot, "slim"),
+            (broad_height, broad_foot, "broad"),
         ] {
             assert!(
-                length < width.mul(Fx::from_int(2)),
-                "the {name} axiom is longer than twice its width — that is a trunk"
+                height > foot,
+                "the {name} column is wider than it is tall — that is a disc, {height:?} \
+                 against {foot:?}"
             );
             assert!(
-                length.mul(Fx::from_int(4)) > width,
-                "the {name} axiom is under a quarter of its own width — that is a disc"
+                height < foot.mul(Fx::from_int(4)),
+                "the {name} column is four times its own width — that is a pole, {height:?} \
+                 against {foot:?}"
             );
         }
     }
 
-    /// `F-SKEL-3`'s central claim, measured: the trunk is the overlap of the primary limbs,
-    /// and the fan is what controls it. Nothing draws a trunk, so if the overlap does not
-    /// extend past the axiom there is no trunk however good the numbers look.
+    /// The foot is the widest thing in the tree, which is what "planted" means.
+    ///
+    /// Two rules meet here and both are needed: the flare widens the collar into the roots,
+    /// and the pipe narrows everything above it. Without the flare the base is a cylinder
+    /// standing on a line; without the pipe the whole column is as wide as the base and the
+    /// crown appears to sprout from a chimney.
     #[test]
-    fn the_fan_controls_how_far_the_trunk_extends() {
-        let repository = manifest_of(&[
-            ("alpha/a.rs", 10_000),
-            ("beta/b.rs", 10_000),
-            ("gamma/c.rs", 10_000),
-            ("delta/d.rs", 10_000),
-        ]);
-
-        let at_fan = |millidegrees: i32| {
-            let mut table = Table::built_in();
-            table.trunk.fan.base = millidegrees;
-            table.trunk.fan.min = millidegrees;
-            table.trunk.fan.max = millidegrees;
-            table
-                .validate()
-                .expect("a pinned fan is still a valid table");
-            let skeleton = grow(&repository, &table);
-            (trunk_height(&skeleton), axiom(&skeleton))
-        };
-
-        let (narrow, axiom) = at_fan(30_000);
-        let (wide, _) = at_fan(150_000);
+    fn the_foot_is_the_widest_part_of_the_tree() {
+        let skeleton = grow(&equal_primaries(4), &table());
+        let spine = spine(&skeleton);
+        let foot = spine[0].base_width;
 
         assert!(
-            narrow > wide,
-            "widening the fan must shorten the trunk: {narrow:?} at 30°, {wide:?} at 150°"
+            foot > spine[0].tip_width,
+            "the collar must flare into its roots: {foot:?} to {:?}",
+            spine[0].tip_width
+        );
+        for segment in skeleton.segments() {
+            assert!(
+                segment.base_width <= foot,
+                "{segment:?} is wider than the foot of the trunk, {foot:?}"
+            );
+        }
+    }
+
+    /// The fan's new job, and the retirement of its old one.
+    ///
+    /// It used to be both lateral character and the trunk's height budget: the overlap that
+    /// *was* the trunk ended where the fan pulled two limbs apart, so a wide fan meant a short
+    /// trunk and neither reading could be tuned without the other. The column's height comes
+    /// from the internodes, so the coupling is gone — exactly, not approximately.
+    ///
+    /// Sabotage: derive an internode's length from the fan and the first assertion fails.
+    #[test]
+    fn the_fan_spreads_the_crown_without_touching_the_trunk() {
+        let repository = equal_primaries(4);
+        let narrow = grow(&repository, &at_fan(30_000));
+        let wide = grow(&repository, &at_fan(150_000));
+
+        assert_eq!(
+            trunk_column(&narrow),
+            trunk_column(&wide),
+            "the fan must not move the column by one bit"
         );
         assert!(
-            wide > axiom,
-            "even at its widest the overlap must outlast the axiom, or there is no trunk \
-             at all: {wide:?} against an axiom of {axiom:?}"
+            half_width(&wide) > half_width(&narrow),
+            "but it must still spread the crown: {:?} at 150°, {:?} at 30°",
+            half_width(&wide),
+            half_width(&narrow)
+        );
+    }
+
+    /// `P6` at the base: a broader repository draws a wider trunk, and never proportionally.
+    ///
+    /// Both halves matter. Drop the ordering and a monorepo stops reading as bigger than a
+    /// small library, which is dishonest; keep it strictly proportional and sixteen top-level
+    /// directories draw a telephone pole, which is illegible. The soft cap above
+    /// `support_knee` is the projection between them.
+    ///
+    /// Sixteen equal directories carry about 3.3 times the combined limb width of four — each
+    /// is a smaller share of its parent, so it is not a clean four — and that is the figure
+    /// the second bound is set against. Sabotage: delete the knee from
+    /// `TrunkParams::support` and the base scales past it.
+    #[test]
+    fn a_broader_repository_thickens_at_the_base_without_scaling_with_it() {
+        let foot = |count: usize| trunk_column(&grow(&equal_primaries(count), &table())).1;
+
+        let (four, sixteen, thirty_two) = (foot(4), foot(16), foot(32));
+
+        assert!(
+            sixteen > four && thirty_two > sixteen,
+            "more top-level breadth must always read as a wider base: {four:?}, {sixteen:?}, \
+             {thirty_two:?}"
+        );
+        assert!(
+            sixteen < four.mul(Fx::from_ratio(5, 2)),
+            "sixteen primaries drew {sixteen:?} against four's {four:?} — the base is \
+             tracking the mass instead of projecting it"
+        );
+    }
+
+    /// `F2` and `F-SKEL-3` are one mechanism used twice: a group stem is a column too, with
+    /// its members leaving it exactly as the primaries leave the trunk.
+    #[test]
+    fn a_group_stem_is_a_column_of_its_own() {
+        let mut files: Vec<(alloc::string::String, u64)> =
+            vec![("core/big.rs".to_string(), 1_000_000)];
+        files.extend((0..8).map(|i| (alloc::format!("side{i}/small.rs"), 500)));
+        let listed: Vec<(&str, u64)> = files.iter().map(|(n, b)| (n.as_str(), *b)).collect();
+        let skeleton = grow(&manifest_of(&listed), &table());
+
+        let groups: Vec<&treepo_model::SkeletonNode> = skeleton
+            .nodes()
+            .iter()
+            .filter(|node| matches!(node.role, NodeRole::Group { .. }))
+            .collect();
+        assert!(!groups.is_empty(), "the fixture must produce a group");
+
+        for group in groups {
+            let stem: Vec<&Segment> = skeleton
+                .segments()
+                .iter()
+                .filter(|segment| segment.node == group.id)
+                .collect();
+            assert!(
+                stem.len() >= 2,
+                "a group stem is a collar plus one internode per member, not one block: \
+                 {stem:?}"
+            );
+            for pair in stem.windows(2) {
+                assert_eq!(
+                    pair[1].base_width, pair[0].tip_width,
+                    "a group stem must be as continuous as the trunk"
+                );
+            }
+
+            // And its members leave it at different heights, for the same reason.
+            let mut heights: Vec<Fx> = skeleton
+                .nodes()
+                .iter()
+                .filter(|node| node.parent == Some(group.id))
+                .map(|node| node.origin.y)
+                .collect();
+            heights.sort();
+            assert!(heights.len() > 1, "a group of one is just a limb");
+            assert!(
+                heights[0] < *heights.last().unwrap(),
+                "a group's members left from one point: {heights:?}"
+            );
+        }
+    }
+
+    /// One top-level directory is the case the construction is weakest on, and it is worth
+    /// saying out loud what it does: a short column with one insertion, and the limb carries
+    /// on from there. Better than the old model's nothing at all, and still not a monument.
+    #[test]
+    fn a_single_primary_gets_a_short_column_rather_than_none() {
+        let skeleton = grow(&manifest_of(&[("only/a.rs", 10_000)]), &table());
+        let spine = spine(&skeleton);
+
+        assert_eq!(spine.len(), 2, "a collar and one internode");
+        let (column, foot) = trunk_column(&skeleton);
+        assert!(
+            column < foot.mul(Fx::from_int(2)),
+            "one primary has almost nothing to be tall about: {column:?} against {foot:?}"
+        );
+        assert!(
+            height(&skeleton) > column.mul(Fx::from_int(4)),
+            "and the crown must still dwarf it: {:?} against {column:?}",
+            height(&skeleton)
         );
     }
 

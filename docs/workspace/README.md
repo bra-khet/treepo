@@ -25,3 +25,4 @@ implement from one.
 | Five original `*-draft.md` design documents | 2026-07-26 | `../design/` |
 | `engine-architecture-grow-staging-supplement.md` | 2026-07-27 | `../design/engine-architecture.md` v0.3; outline §4; `../PRD.md` v1.2 (`F-ASSOC-6`, `F-GROW-2`/`4`/`6`–`7`/`11`–`13`); `.planning` D11 + Phases 6–7/11–12 |
 | `LICENSE-THIRD-PARTY.md` | 2026-07-27 | `/LICENSE-THIRD-PARTY.md` (repo root; MPL-2.0 attribution for `uluru`, verified against `Cargo.lock`) |
+| `trunk-pipe-rework.md` | 2026-07-28 | `../design/visual-construction.md` v2.1 (hybrid trunk → pipe column via primary internodes). Draft retained in place, marked superseded, with the implementation's departures from it recorded — the reasoning is the record of why the first construction was replaced. |

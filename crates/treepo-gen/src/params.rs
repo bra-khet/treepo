@@ -101,13 +101,14 @@ const BUILT_IN_RON: &str = include_str!("../../../assets/params/lsystem.ron");
 ///
 /// Version 2 adds `branch_capacity`, the composition threshold. Version 3 adds the [`trunk`]
 /// section. Version 4 adds `tropism` and the [`ground`] band, and replaces the trunk's
-/// `basal_length` row with an aspect rule. Bumped rather than accepted silently each time,
-/// because an older table parses perfectly while lacking a row that changes what the tree
-/// looks like.
+/// `basal_length` row with an aspect rule. Version 5 turns the trunk into a pipe column:
+/// `flare`, `internode_aspect`, `internode_min`, `support_knee` and `support_beyond` join the
+/// [`trunk`] section. Bumped rather than accepted silently each time, because an older table
+/// parses perfectly while lacking a row that changes what the tree looks like.
 ///
 /// [`trunk`]: TrunkTable
 /// [`ground`]: GroundTable
-pub const TABLE_VERSION: u32 = 4;
+pub const TABLE_VERSION: u32 = 5;
 
 /// Children-per-node used as each [`BranchingHistogram`] bucket's representative value.
 ///
@@ -271,33 +272,84 @@ impl LimbParams {
     }
 }
 
-/// The hybrid trunk's knobs for one repository — the output of [`Table::trunk_params`].
+/// The trunk column's knobs for one repository — the output of [`Table::trunk_params`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrunkParams {
-    /// The basal axiom's length as a multiple of its own width — see
+    /// The collar's length as a multiple of the column's width — see
     /// [`TrunkTable::basal_aspect`]. Read through [`basal_length`](Self::basal_length).
     pub basal_aspect: Fx,
-    /// The shortest a basal axiom may be, whatever the aspect rule works out to.
+    /// The shortest a collar may be, whatever the aspect rule works out to.
     pub basal_min: Fx,
-    /// Total angular spread of the limbs leaving a stem.
+    /// How much wider the foot of the collar is than the pipe above it — see
+    /// [`TrunkTable::flare`]. Read through [`flared`](Self::flared).
+    pub flare: Fx,
+    /// An internode's length as a multiple of the support that leaves at its top — see
+    /// [`TrunkTable::internode_aspect`]. Read through
+    /// [`internode_length`](Self::internode_length).
+    pub internode_aspect: Fx,
+    /// The shortest an internode may be, whatever the aspect rule works out to.
+    pub internode_min: Fx,
+    /// Total angular spread of the limbs leaving a column.
     pub fan: Angle,
     /// How many root-mass nodes sit at the base.
     pub root_cluster: u16,
-    /// What share of its limbs' combined width a stem occupies, in `0..=1`.
+    /// What share of its limbs' combined width a column occupies, in `0..=1`.
     pub packing: Fx,
+    /// Combined limb width above which further mass counts only in part — see
+    /// [`TrunkTable::support_knee`]. Read through [`support`](Self::support).
+    pub support_knee: Fx,
+    /// How much of the excess above the knee still counts, in `0..=1`.
+    pub support_beyond: Fx,
     /// The share of the repository below which a top-level entry is grouped (`F2`).
     pub group_below: Fx,
 }
 
 impl TrunkParams {
-    /// How long a stem `width` wide should be.
+    /// How wide a column carrying `combined` raw limb width is.
+    ///
+    /// Packed, so the limbs it supports overlap into it rather than sitting beside it, and
+    /// soft-capped, so a monorepo with forty top-level entries does not draw a telephone pole.
+    /// Above [`support_knee`](Self::support_knee) only
+    /// [`support_beyond`](Self::support_beyond) of the excess counts — piecewise linear, and
+    /// still strictly increasing, because a repository that grows must still read as having
+    /// grown. `P6`: legibility bounds how much of the mass is *shown*, and nothing about the
+    /// mass itself changes.
+    #[must_use]
+    pub fn support(&self, combined: Fx) -> Fx {
+        let counted = if combined > self.support_knee {
+            self.support_knee
+                .add(combined.sub(self.support_knee).mul(self.support_beyond))
+        } else {
+            combined
+        };
+        counted.mul(self.packing)
+    }
+
+    /// How long the collar below the first departure should be, for a column `width` wide.
     ///
     /// The rule rather than a number, so `grow` and `place_group` cannot disagree about it —
-    /// an `F2` group stem is the basal axiom one level down, and the two being the same
+    /// an `F2` group stem is the trunk column one level down, and the two being the same
     /// function is what keeps that true.
     #[must_use]
     pub fn basal_length(&self, width: Fx) -> Fx {
         width.mul(self.basal_aspect).max(self.basal_min)
+    }
+
+    /// How much vertical room a primary taking `drop` of the column's width needs to leave.
+    ///
+    /// Measured against the support that departs rather than against a length of its own, so
+    /// the internodes sum to an aspect of the column's own width: a column keeps its
+    /// proportions whether it carries three primaries or thirty, and the count decides only
+    /// how the height is divided up.
+    #[must_use]
+    pub fn internode_length(&self, drop: Fx) -> Fx {
+        drop.mul(self.internode_aspect).max(self.internode_min)
+    }
+
+    /// The column's width at the ground, where the buttress is widest.
+    #[must_use]
+    pub fn flared(&self, width: Fx) -> Fx {
+        width.mul(self.flare)
     }
 }
 
@@ -658,57 +710,120 @@ pub struct Table {
     pub trunk: TrunkTable,
 }
 
-/// The hybrid trunk's parameters — `F-SKEL-3`, `F2`, and `AC-SKEL-2`.
+/// The trunk column's parameters — `F-SKEL-3`, `F2`, and `AC-SKEL-2`.
 ///
-/// `design/visual-construction.md` settles the trunk on a hybrid: a *minimal* basal segment
-/// that is a real L-system axiom, with the visible trunk mass emerging from primary limbs
-/// overlapping near the origin. Pure "stack independent branches" was rejected there for
-/// L-system compatibility, redraw stability, and readable silhouettes.
+/// # The hybrid, revised
 ///
-/// So the numbers here divide in two. [`basal_aspect`](Self::basal_aspect) is the *minimal*
-/// part — stubby, and it stays stubby. [`packing`](Self::packing) and [`fan`](Self::fan) are
-/// the *emergent* part: how tightly the primary limbs are bunched, which is what actually
-/// produces the trunk a viewer sees.
+/// `design/visual-construction.md` settles the trunk on a hybrid rather than on a dedicated
+/// column every repository shares, and that decision stands. What changed is *how* the mass
+/// becomes a column. The first construction was co-origin: one short basal segment, every
+/// primary leaving its tip, and the trunk was purely their overlap. Its arithmetic worked and
+/// its silhouette did not — the overlap a fan of `F` radians leaves is `1/(packing × F)` of a
+/// stem-width regardless of how many limbs there are, so a wide fan left the base half a
+/// stem-width of trunk and the result read as an oversized seed rather than as something
+/// planted.
+///
+/// The column is grown instead. Each primary claims an **internode** — the vertical room it
+/// needs to leave — and the axis is the chain of them. Below the first departure the column
+/// carries every primary; each departure drops that primary's share; and the whole thing sits
+/// on a flared collar. Nothing draws an *arbitrary* trunk: the column exists only because
+/// primaries need somewhere to leave from, so an empty repository still has none.
+///
+/// So the numbers divide three ways. [`basal_aspect`](Self::basal_aspect) and
+/// [`flare`](Self::flare) shape the collar; [`internode_aspect`](Self::internode_aspect) sets
+/// how much room a departure claims, and therefore how tall the column is;
+/// [`packing`](Self::packing), [`support_knee`](Self::support_knee) and
+/// [`support_beyond`](Self::support_beyond) turn carried limb width into a drawn one.
+/// [`fan`](Self::fan) is left doing lateral work only.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrunkTable {
-    /// The basal axiom's length as a per-mille of its own width — an aspect ratio.
+    /// The collar's length as a per-mille of the column's width — an aspect ratio.
     ///
     /// This was a [`Row`] with an absolute range, and it fought [`packing`](Self::packing) and
-    /// lost. A stem is as wide as its limbs' combined base widths, so a repository with eight
-    /// top-level entries produced a stem near eight limb-widths across while the row held its
-    /// length under one limb-length. The two numbers were each internally consistent and
+    /// lost. A column is as wide as its limbs' combined base widths, so a repository with
+    /// eight top-level entries produced one near eight limb-widths across while the row held
+    /// its length under one limb-length. The two numbers were each internally consistent and
     /// jointly described a disc.
     ///
     /// An aspect ratio cannot have that argument with anything, and it is closer to what
     /// `F-SKEL-3` actually asks for — "length/radius driven by total root mass / primary limb
-    /// count" already says the axiom's *length* is mass-driven, and the stem's width is where
-    /// that mass is already summed up.
+    /// count" already says the length is mass-driven, and the column's width is where that
+    /// mass is already summed up.
     ///
-    /// "Minimal" is then a statement about shape rather than about absolute size:
-    /// [`Table::validate`] caps this at 2000, so the axiom is never more than twice as long as
-    /// it is wide. A repository with one top-level entry still gets almost no trunk, because
-    /// there is almost nothing to be wide about — which is the hybrid trunk's whole claim.
+    /// The collar is *below the first departure*, so it stays stubby on purpose:
+    /// [`Table::validate`] caps it at twice the width. Height comes from the internodes above
+    /// it, which is the part that scales with what the repository actually carries.
     pub basal_aspect: i32,
-    /// The shortest the basal axiom may be, per mille of a world unit.
+    /// The shortest the collar may be, per mille of a world unit.
     ///
     /// A floor rather than a target: it is what an almost-empty repository's seed is drawn at,
     /// where the aspect rule has almost no width to work from.
     pub basal_min: i32,
-    /// How much of the combined limb width a stem occupies, per mille.
+    /// How much wider the foot of the collar is than the pipe above it, per mille.
     ///
-    /// A stem carries limbs whose base widths sum to some total. At `1000` it is as wide as
+    /// A pure pipe is a stack of cylinders and reads as machined. The flare is the buttress —
+    /// the widening where a real trunk meets its roots — and it is drawn as an honest taper on
+    /// the collar segment rather than as a render-time trick, because the skeleton is what
+    /// Grow, picking and the digests all read.
+    ///
+    /// `1000` is no flare at all, and [`Table::validate`] refuses less: a trunk that narrows
+    /// toward the ground is one that has already fallen over.
+    pub flare: i32,
+    /// How much vertical room a departing primary claims, per mille of the support it takes
+    /// with it.
+    ///
+    /// This is the row that decides whether a tree has a trunk. A primary needs somewhere to
+    /// *be* as it leaves — a point fan gives it nowhere, which is what made the old base read
+    /// as a seed with rays coming out of it.
+    ///
+    /// Measured against the support that departs rather than in world units, so the internodes
+    /// sum to an aspect of the column's own width and a column keeps its proportions at every
+    /// scale. Thirty primaries divide the same height into more, shorter internodes rather than
+    /// stacking thirty full-length blocks.
+    pub internode_aspect: i32,
+    /// The shortest an internode may be, per mille of a world unit.
+    ///
+    /// Held below the shortest limb the table can produce, for the reason
+    /// [`basal_min`](Self::basal_min) is: an insertion zone that out-reaches the limb it makes
+    /// room for has stopped being a joint and become a branch of its own.
+    pub internode_min: i32,
+    /// How much of the combined limb width a column occupies, per mille.
+    ///
+    /// A column carries limbs whose base widths sum to some total. At `1000` it is as wide as
     /// all of them laid side by side — limbs that touch but do not overlap. Below that they
-    /// overlap, and the overlap *is* the trunk mass (`F-SKEL-3`). Above 1000 the stem would be
-    /// wider than what it carries, which is a trunk with the limbs stuck on rather than a
-    /// trunk made of them.
+    /// overlap, and that overlap is still where the trunk's *surface* comes from (`F-SKEL-3`).
+    /// Above 1000 the column would be wider than what it carries, which is a trunk with the
+    /// limbs stuck on rather than one made of them.
     pub packing: i32,
-    /// Total angular spread of the limbs leaving a stem, millidegrees.
+    /// Combined limb width above which further mass counts only in part, per mille of a world
+    /// unit.
     ///
-    /// Narrow keeps them overlapping into trunk mass and reads as columnar; wide separates
-    /// them into distinct limbs and reads as spreading. This is the trunk-scale companion to
-    /// `B2/B3`'s per-fork branching angle, and it is separate because the two do different
-    /// work: this decides whether there is a trunk at all.
+    /// Even with a grown column, a width strictly proportional to the sum of what it carries
+    /// makes a forty-directory monorepo draw a telephone pole. `F2` already reduces the count;
+    /// this bounds the width of what survives it.
+    ///
+    /// Not a ceiling — see [`support_beyond`](Self::support_beyond). `P6`: legibility bounds
+    /// how much of the mass is shown, and honesty keeps the ordering, so a bigger repository
+    /// still draws a wider base.
+    pub support_knee: i32,
+    /// How much of the width above [`support_knee`](Self::support_knee) still counts, per
+    /// mille.
+    ///
+    /// [`Table::validate`] refuses zero. A hard cap would make every large repository draw the
+    /// same base, which is the constant trunk `design/visual-construction.md` rejected arriving
+    /// by another route.
+    pub support_beyond: i32,
+    /// Total angular spread of the limbs leaving a column, millidegrees.
+    ///
+    /// Lateral character: how far the crown reaches sideways, and the trunk-scale companion to
+    /// `B2/B3`'s per-fork branching angle.
+    ///
+    /// It used to be the trunk's height budget as well — under the co-origin construction the
+    /// overlap that *was* the trunk ended where the fan pulled two limbs apart, so widening the
+    /// fan shortened the trunk. The column removed that coupling, and this row now does one
+    /// job. `AC-SKEL-1`'s wilder repository can spread as far as it likes without losing its
+    /// base.
     pub fan: Row,
     /// How many root-mass nodes sit at the base, in whole nodes.
     ///
@@ -915,53 +1030,98 @@ impl Table {
             });
         }
 
-        // F-SKEL-3 — the basal segment is minimal, and a table may not make it otherwise.
-        // The bound is stated against the shortest limb the table can produce: a basal
-        // segment longer than that is no longer a starter the limbs grow from, it is the
-        // trunk, and `AC-SKEL-2`'s empty repository becomes the lonely trunk the design
-        // rejects.
-        // F-SKEL-3 — the basal segment is minimal, and a table may not make it otherwise.
+        // F-SKEL-3 — the collar sits below the first departure, and it stays stubby.
         //
-        // Stated as an aspect rather than as an absolute length, which is the correction this
-        // sprint made. An absolute cap fought `packing`: the stem's width is the sum of its
-        // limbs' widths, so a broad repository produced one many limb-widths across while the
-        // cap held its length under a single limb-length, and the axiom drew as a disc. The
-        // design document already says the axiom's length is driven by root mass, and the
-        // stem's width is where that mass has been summed.
+        // Stated as an aspect rather than as an absolute length. An absolute cap fought
+        // `packing`: the column's width is the sum of its limbs' widths, so a broad repository
+        // produced one many limb-widths across while the cap held its length under a single
+        // limb-length, and the base drew as a disc. The design document already says the
+        // length is driven by root mass, and the column's width is where that mass has been
+        // summed.
         //
-        // So "minimal" means stubby: never more than twice as long as it is wide. A stem that
-        // is *long* has stopped being a starter the limbs grow from and become the trunk,
-        // whatever its absolute size, and `AC-SKEL-2`'s empty repository is still a seed
-        // because there is nothing there to be wide about.
+        // The column's *height* is not this row's business — the internodes above supply it.
+        // A collar longer than twice its own width would be a decorative pole under the first
+        // branch, which is the dedicated trunk arriving by the back door.
         if self.trunk.basal_aspect < 1 || self.trunk.basal_aspect > 2000 {
             return Err(TableError::Decision {
                 row: "basal_aspect",
                 decision: "F-SKEL-3",
-                detail: "the basal axiom is minimal — it may be at most twice as long as it is \
-                         wide, or the trunk stops emerging from its limbs",
+                detail: "the collar is minimal — it may be at most twice as long as it is \
+                         wide, or the column stops being grown by its primaries",
             });
         }
 
         // The floor is what an almost-empty repository's seed is drawn at, so it is held below
-        // the shortest limb the table can produce for the reason the old absolute cap was: at
-        // the floor, a stem out-reaching a limb would be a lonely trunk.
+        // the shortest limb the table can produce: at the floor, a collar out-reaching a limb
+        // would be the lonely trunk `AC-SKEL-2` rejects.
         if self.trunk.basal_min < 1 || self.trunk.basal_min > self.base_length.min {
             return Err(TableError::Decision {
                 row: "basal_min",
                 decision: "F-SKEL-3",
-                detail: "the basal axiom's floor is positive and below the shortest limb the \
+                detail: "the collar's floor is positive and below the shortest limb the \
                          table can produce",
             });
         }
 
-        // A stem wider than the limbs it carries is a trunk with limbs attached, which is the
+        // A trunk that narrows toward the ground is one that has already fallen over, and a
+        // foot several times the pipe is a mound rather than a buttress.
+        if !(1000..=3000).contains(&self.trunk.flare) {
+            return Err(TableError::Decision {
+                row: "flare",
+                decision: "F-SKEL-3",
+                detail: "the collar's foot is between one and three times the pipe above it — \
+                         never narrower, or the trunk stands on a point",
+            });
+        }
+
+        // The insertion zone is measured in the departing limb's own thickness. Past a few
+        // multiples the column stops being a trunk with knots in it and becomes a ladder of
+        // thin rungs, which is the Lego stack the pipe model exists to avoid.
+        if self.trunk.internode_aspect < 1 || self.trunk.internode_aspect > 8000 {
+            return Err(TableError::Decision {
+                row: "internode_aspect",
+                decision: "F-SKEL-3",
+                detail: "an internode is the room one primary needs to leave, at most eight \
+                         times the support it takes with it",
+            });
+        }
+        if self.trunk.internode_min < 1 || self.trunk.internode_min > self.base_length.min {
+            return Err(TableError::Decision {
+                row: "internode_min",
+                decision: "F-SKEL-3",
+                detail: "an internode's floor is positive and below the shortest limb the \
+                         table can produce, or the joint out-reaches the branch",
+            });
+        }
+
+        // A column wider than the limbs it carries is a trunk with limbs attached, which is the
         // construction `design/visual-construction.md` rejected.
         if self.trunk.packing < 1 || self.trunk.packing > 1000 {
             return Err(TableError::Decision {
                 row: "packing",
                 decision: "F-SKEL-3",
-                detail: "a stem occupies between a thousandth and all of its limbs' combined \
-                         width; trunk mass comes from their overlap, not from the stem",
+                detail: "a column occupies between a thousandth and all of its limbs' combined \
+                         width; the trunk's surface comes from their overlap, not from the \
+                         column alone",
+            });
+        }
+
+        // P6 — the projection that keeps a monorepo off the telephone pole. `beyond` at zero
+        // is a hard ceiling, and a hard ceiling makes every large repository draw the same
+        // base: the constant trunk, arriving by another route. Honesty keeps the ordering.
+        if self.trunk.support_knee < 1 {
+            return Err(TableError::Decision {
+                row: "support_knee",
+                decision: "P6",
+                detail: "the knee is a positive width — below it, carried mass counts in full",
+            });
+        }
+        if !(1..=1000).contains(&self.trunk.support_beyond) {
+            return Err(TableError::Decision {
+                row: "support_beyond",
+                decision: "P6",
+                detail: "mass past the knee must still count for something, or a bigger \
+                         repository stops drawing a bigger base",
             });
         }
 
@@ -1052,9 +1212,14 @@ impl Table {
         TrunkParams {
             basal_aspect: per_mille(self.trunk.basal_aspect),
             basal_min: per_mille(self.trunk.basal_min),
+            flare: per_mille(self.trunk.flare),
+            internode_aspect: per_mille(self.trunk.internode_aspect),
+            internode_min: per_mille(self.trunk.internode_min),
             fan: Angle::from_millidegrees(self.trunk.fan.evaluate(inputs)),
             root_cluster: u16::try_from(self.trunk.root_cluster.evaluate(inputs)).unwrap_or(1),
             packing: per_mille(self.trunk.packing),
+            support_knee: per_mille(self.trunk.support_knee),
+            support_beyond: per_mille(self.trunk.support_beyond),
             group_below: per_mille(self.trunk.group_below),
         }
     }
@@ -1522,7 +1687,7 @@ mod tests {
         /// and the edit itself.
         type Case = (&'static str, &'static str, fn(&mut Table));
 
-        let cases: [Case; 12] = [
+        let cases: [Case; 17] = [
             ("recursion", "A3", |t| t.recursion.max = 9_000),
             ("recursion", "A3", |t| t.recursion.min = 0),
             ("branch_angle", "B2/B3", |t| t.branch_angle.max = 75_000),
@@ -1538,8 +1703,21 @@ mod tests {
             ("ground", "§8", |t| t.ground.engage = 179_000),
             // The hysteresis itself: release must sit strictly inside engage.
             ("ground", "§8", |t| t.ground.release = t.ground.engage),
-            // F-SKEL-3 — an axiom longer than twice its width has become the trunk.
+            // F-SKEL-3 — a collar longer than twice its width has become the trunk.
             ("basal_aspect", "F-SKEL-3", |t| t.trunk.basal_aspect = 2_400),
+            // A trunk narrower at the ground than above it has already fallen over.
+            ("flare", "F-SKEL-3", |t| t.trunk.flare = 900),
+            ("flare", "F-SKEL-3", |t| t.trunk.flare = 3_500),
+            // An insertion zone many times the branch it makes room for is a ladder rung.
+            ("internode_aspect", "F-SKEL-3", |t| {
+                t.trunk.internode_aspect = 9_000;
+            }),
+            ("internode_min", "F-SKEL-3", |t| {
+                t.trunk.internode_min = t.base_length.min + 1;
+            }),
+            // P6 — a hard ceiling makes every large repository draw the same base, which is
+            // the constant trunk the construction rejected, arriving by another route.
+            ("support_beyond", "P6", |t| t.trunk.support_beyond = 0),
         ];
 
         for (row, decision, break_it) in cases {

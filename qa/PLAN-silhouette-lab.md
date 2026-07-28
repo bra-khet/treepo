@@ -54,11 +54,14 @@ See [`README.md`](README.md) for the authoritative folder layout and finding JSO
 
 ---
 
-## Structural fixes (forced order) — S1–S3
+## Structural fixes (forced order) — S1–S3b
 
 1. **Width falloff across the composition boundary** — child limb start width must inherit taper from parent geometry, not only table `base_width`.
 2. **Upward tropism as data beside droop** — table row + apply so multi-generation headings stay upright.
 3. **Reconcile `basal_length` with `stem_width`** — rule so multi-primary roots are short stems, not pancakes; AC-SKEL-2 still holds.
+3b. **Trunk column** — S3 made the base *consistent* and it still read as an oversized seed, because the co-origin construction gives a primary nowhere to leave *from*. Replaced by a pipe-model support column grown as primary internodes; `docs/workspace/trunk-pipe-rework.md`, promoted into `design/visual-construction.md` v2.1.
+
+That S3 → S3b sequence is the forced order working as intended, and worth recording: the number was inconsistent *and* the model was wrong, and only fixing the number is what showed which. The plan's own warning — that sliding one row cannot fix a construction — applied one level deeper than it was written for.
 
 ## Lab + campaign — S4–S7
 
@@ -74,9 +77,10 @@ See [`README.md`](README.md) for the authoritative folder layout and finding JSO
 | Sprint | Scope | Status |
 |--------|--------|--------|
 | **S0** | `qa/` contract: README, subjects, gitignore, this plan | **done** 2026-07-28 |
-| **S1** | Compose-boundary width inheritance | pending |
-| **S2** | Tropism row + apply | pending |
-| **S3** | Basal vs stem rule + validate | pending |
+| **S1** | Compose-boundary width inheritance | **done** 2026-07-28 (`4d01807`) |
+| **S2** | Tropism row + apply | **done** 2026-07-28 (`4d01807`) |
+| **S3** | Basal vs stem rule + validate | **done** 2026-07-28 (`4d01807`) |
+| **S3b** | Trunk column: pipe support + primary internodes | **done** 2026-07-28 |
 | **S4** | HTML lab MVP | pending |
 | **S5** | AC-SKEL-1 subject pair | pending |
 | **S6** | Tuning campaign via lab | pending |

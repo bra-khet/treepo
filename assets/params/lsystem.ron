@@ -67,7 +67,7 @@
 // driver would re-shape `docs/` because somebody touched `src/`, which loses `AC-GROW-4` and
 // makes a Grow unreadable.
 (
-    version: 4,
+    version: 5,
 
     // What the raw counts are measured against. These are absolute constants rather than
     // maxima taken over the manifest, and deliberately so: normalizing against the
@@ -246,57 +246,125 @@
         skew_abs: -2,
     )),
 
-    // ── F-SKEL-3, F2 — the hybrid trunk ─────────────────────────────────────────────────
-    // `design/visual-construction.md` settles the trunk as a hybrid: a *minimal* basal
-    // segment that is a real L-system axiom, with the visible trunk mass emerging from the
-    // primary limbs overlapping near the origin. Nothing here draws a trunk. The trunk is
-    // what several thick limbs leaving one point look like.
+    // ── F-SKEL-3, F2 — the trunk column ─────────────────────────────────────────────────
+    // `design/visual-construction.md` settles the trunk as a hybrid rather than as a
+    // dedicated column every repository shares, and that stands. What changed is how the
+    // mass becomes a column.
     //
-    // Stated because it will one day look like a defect: a repository with one top-level
-    // directory has almost no trunk. There is nothing to overlap. The trunk depicts breadth
-    // at the root, and a repository with none has none to depict.
+    // The first construction was co-origin: one minimal basal segment, every primary leaving
+    // its tip, and the trunk was purely their overlap. The arithmetic was right and the
+    // picture was wrong. Two limbs `θ` apart separate at `(w1+w2)/(4·sin(θ/2))`, which works
+    // out to `1/(packing × fan)` stem-widths of overlap *however many limbs there are* — so a
+    // wide fan left half a stem-width of trunk, the base had no vertical room in it, and
+    // `m0-silhouette` drew an oversized seed with rays coming out of it.
+    //
+    // The column is grown instead. Each primary claims an **internode** — the vertical room
+    // it needs to leave — and the axis is the chain of them, standing on a flared collar.
+    // Below the first departure the column carries every primary; each departure drops that
+    // primary's share; above the last there is nothing left to carry and the column ends.
+    //
+    // Nothing here draws an *arbitrary* trunk, which is the part of the original decision
+    // that matters: the column exists only because primaries need somewhere to leave from.
+    // A repository with one top-level directory gets one internode and almost no column, and
+    // an empty one gets none at all — still a seed in its roots (`AC-SKEL-2`).
     //
     // These rows are evaluated against the *root's* drivers, so they answer to the
     // repository rather than to any one directory. Note that the root's `mass` is always
     // zero — mass is a share of the parent's bytes, and the root has no parent — so a row
     // here that leans on `mass` is leaning on nothing.
     trunk: (
-        // The basal axiom's length, as a per-mille of its own width. An aspect ratio, not a
-        // length — 1400 means "forty per cent longer than it is wide".
+        // The collar — the buttressed segment below the first departure. Its length is a
+        // per-mille of the column's own width: an aspect ratio, not a length.
         //
-        // This was an absolute row, and it fought `packing` and lost. A stem is as wide as
-        // its limbs' base widths summed, so a repository with eight top-level entries got a
-        // stem eight limb-widths across while the row held its length under one limb-length.
-        // Both numbers were reasonable; together they described a disc, and that is what the
+        // This was an absolute row, and it fought `packing` and lost. A column is as wide as
+        // its limbs' base widths summed, so a repository with eight top-level entries got one
+        // eight limb-widths across while the row held its length under one limb-length. Both
+        // numbers were reasonable; together they described a disc, and that is what the
         // renderer drew.
         //
         // An aspect ratio cannot disagree with the width, and `F-SKEL-3` already says the
-        // axiom's "length/radius [is] driven by total root mass / primary limb count" — the
-        // stem's width is precisely where that mass has been added up.
+        // "length/radius [is] driven by total root mass / primary limb count" — the column's
+        // width is precisely where that mass has been added up.
         //
-        // "Minimal" is then a shape rather than a size: `validate` caps this at 2000, so the
-        // axiom is never more than twice as long as it is wide, at any scale. A repository
-        // with one top-level directory still gets almost no trunk, because it has almost no
-        // width to be long in proportion to.
-        basal_aspect: 380,
+        // The collar stays stubby on purpose and `validate` caps it at 2000. Height is the
+        // internodes' job, and a long collar under the first branch would be the dedicated
+        // trunk this construction rejected.
+        //
+        // This one number is settled by two pictures pulling opposite ways, which is worth
+        // recording because it will look arbitrary otherwise. It is a *ratio*, so an empty
+        // repository and a monorepo get the same collar shape. Raise it and `empty.png` stops
+        // being a seed and becomes a pill — `AC-SKEL-2`'s lonely trunk, in miniature. Lower it
+        // and a populated base is wider than it is tall, and the renderer's round caps turn
+        // that into an egg. 1600 gave a good trunk and a bad seed; 400 the reverse; 900 is
+        // where both read.
+        basal_aspect: 900,
 
         // The floor, in per mille of a world unit — what an almost-empty repository's seed is
         // drawn at, where there is no width for the aspect rule to work from. Held below the
-        // shortest limb the table can produce, for the reason the old absolute cap existed:
-        // at the floor a stem out-reaching a limb would be the lonely trunk again.
+        // shortest limb the table can produce: at the floor a collar out-reaching a limb
+        // would be the lonely trunk again.
         basal_min: 90,
 
-        // How much of its limbs' combined base width a stem occupies, per mille. At 1000 the
-        // limbs would touch without overlapping; below it they overlap, and the overlap is
-        // the trunk. Above 1000 would be a trunk with limbs stuck on rather than one made of
-        // them, and the loader refuses it.
+        // How much wider the foot of the collar is than the pipe above it, per mille. 1350
+        // means "the buttress is thirty-five per cent wider than the trunk".
+        //
+        // A pure pipe is a stack of cylinders and reads as machined. This is the widening
+        // where a trunk meets its roots, and it is drawn as a real taper on the collar
+        // segment — the skeleton is what Grow, picking and the digests read, so a flare that
+        // existed only in the renderer would not be in the tree at all.
+        //
+        // 1000 is no flare, and the loader refuses less: a trunk that narrows toward the
+        // ground has already fallen over.
+        flare: 1350,
+
+        // How much vertical room a departing primary claims, per mille of the support it
+        // takes with it. This is the row that decides whether a tree has a trunk.
+        //
+        // A limb needs somewhere to *be* as it leaves. A point fan gives it nowhere, and that
+        // absence is what the first silhouettes showed as a seed. Measured against the
+        // support that departs rather than in world units, so the internodes sum to an aspect
+        // of the column's own width: the column keeps its proportions whether it carries
+        // three primaries or thirty, and the count decides only how the height is divided.
+        //
+        // Column height is therefore roughly `(basal_aspect + internode_aspect) × width`.
+        // At 2000, and with the collar above, a trunk stands about two of its own foot-widths
+        // tall before the last limb clears it, which is where a deciduous crown starts.
+        internode_aspect: 2000,
+
+        // The floor, per mille of a world unit — held below the shortest limb the table can
+        // produce, or a joint would out-reach the branch it makes room for.
+        internode_min: 140,
+
+        // How much of its limbs' combined base width a column occupies, per mille. At 1000
+        // the limbs would touch without overlapping; below it they overlap, and that overlap
+        // is still where the trunk's surface comes from. Above 1000 would be a trunk with
+        // limbs stuck on rather than one made of them, and the loader refuses it.
         packing: 720,
 
-        // Total angular spread of the limbs leaving a stem. This is the trunk-scale
-        // companion to B2/B3's per-fork angle, and it is a separate row because it does
-        // different work: narrow keeps the primaries overlapping into trunk mass, wide
-        // separates them into distinct limbs. It is the single strongest control over
-        // whether a repository reads as columnar or as spreading.
+        // ── P6, the projection ──────────────────────────────────────────────────────────
+        // Combined limb width past which further mass counts only in part, and how much of
+        // it counts. Below the knee the column is strictly proportional to what it carries;
+        // above it, each extra unit of limb width adds `support_beyond` of itself.
+        //
+        // Without this a forty-directory monorepo draws a telephone pole — `F2` reduces how
+        // many primaries there are, but not how wide the survivors sum to. This is
+        // cartographic projection rather than a lie about the data: `support_beyond` is
+        // strictly positive and the loader insists on it, so a bigger repository always draws
+        // a wider base. What is bounded is how fast, not whether.
+        //
+        // The knee sits a little above where four ordinary top-level directories land, so
+        // small and medium repositories are untouched by it.
+        support_knee: 1200,
+        support_beyond: 300,
+
+        // Total angular spread of the limbs leaving a column — lateral character, and the
+        // trunk-scale companion to B2/B3's per-fork angle.
+        //
+        // This used to be the trunk's height budget too: under the co-origin construction the
+        // overlap that *was* the trunk ended where the fan pulled two limbs apart, so
+        // widening the fan shortened the trunk and the two readings fought. The column
+        // removed the coupling and this row now does one job, which is why `max` can stay
+        // wide — `AC-SKEL-1`'s wilder repository spreads further without losing its base.
         fan: (base: 62000, min: 24000, max: 150000, per: (
             bushiness: 40000,
             skew_abs: 26000,

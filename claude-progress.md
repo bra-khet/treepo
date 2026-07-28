@@ -907,6 +907,13 @@ appeared at depth 11, past A3's cap of 5". Both reverted.
 
 ### The hybrid trunk — nothing draws a trunk
 
+> **Superseded 2026-07-28 by "The trunk column" below.** The co-origin construction this
+> section describes — every primary leaving one basal tip, the trunk being purely their
+> overlap — was replaced after its first silhouettes. What survives unchanged: the trunk's
+> width is not a parameter, the mass comes from what the limbs carry, and nothing draws an
+> arbitrary trunk. Kept as written because the reasoning is why the replacement is shaped the
+> way it is.
+
 `treepo_gen::grow` is now the product's entry point: a `Manifest` in, a `Skeleton` out.
 
 `design/visual-construction.md` settled the trunk against two alternatives. A **dedicated
@@ -1127,6 +1134,78 @@ So the axiom is as long as the current fan permits, and that is why the base sti
 squat. Narrowing `trunk.fan` is one row and it is a separate family — the next tuning pass, not
 this one.
 
+## The trunk column — finding 4 was not the fan
+
+The next pass did not narrow the fan. The arithmetic above is correct and its conclusion was
+wrong, and the reason is worth keeping.
+
+`1/(packing × F)` is independent of the limb count. That is the tell, and I read it as "the fan
+is the lever" when what it actually says is **there is no lever**. Whatever the fan does, the
+overlap a point fan leaves is a fixed multiple of the stem's own width — so the base can be
+made a little taller relative to itself, and never given any *volume*. Narrowing the fan would
+have bought a slightly less squat seed and cost `AC-SKEL-1` its sprawl.
+
+The human read of the pictures got there first and by a different route: the base looked like
+an **oversized seed** — the same glyph as `AC-SKEL-2`'s empty repository, scaled up. Not a
+tuning complaint. A primary leaving a single tip has nowhere to leave *from*.
+
+### The pipe column
+
+`docs/workspace/trunk-pipe-rework.md` specified the replacement and it is now
+`design/visual-construction.md` v2.1. A **collar** at the foot, flared into the roots; one
+**internode** per primary — the vertical room that limb needs to exist as volume rather than as
+a ray; and the **width at any height is the support still carried there**, so each departure
+drops its own share and each internode tapers across the drop. Above the last departure nothing
+is left to carry and the column ends, which is why an empty repository still has none.
+
+Three things in the design that were not obvious before building it:
+
+* **Internode length is an aspect of the support that departs**, not a length in world units.
+  The internodes then sum to an aspect of the column's own width, so a column has the same
+  proportions carrying three primaries or thirty and the count only decides how the height is
+  divided. The draft's suggested "uniform floor plus a mild scale" makes a thirty-primary
+  column thirty blocks tall.
+* **Departure order is as load-bearing as departure height.** Fan position is path order, so a
+  directory gaining bytes never slides sideways. Departure height is then outermost-first,
+  working inward — the sides alternate so the column does not lean, and the innermost primary
+  leaves last and nearly vertical, so the trunk hands off to a leader rather than stopping in
+  mid-air.
+* **The width is a projection** (`P6`). `F2` bounds how many primaries survive but not what
+  they sum to, and a linear column made a monorepo a telephone pole. Support past
+  `support_knee` counts at `support_beyond`; `validate` refuses zero there, because a hard
+  ceiling makes every large repository draw the same base — the constant trunk, arriving by the
+  back door.
+
+### Two pictures the arithmetic did not predict
+
+**The roots were drawn inside the trunk.** The old rule made a root a fraction of the collar's
+*length*; once the foot flared, the whole cluster fitted inside it and `empty.png` was a black
+bulb with a grey smudge in the middle. Roots are now three quarters of the flared foot's
+*width*, which clears its edge by a quarter. Setting them to the full width first produced a
+starfish, which is in the comment.
+
+**`basal_aspect` is contested by two subjects at once, and cannot satisfy both by being
+right.** It is a ratio, so `empty` and a monorepo get the same collar *shape*. At 1600 a
+populated base is a proper cone and `empty.png` is a pill — `AC-SKEL-2`'s lonely trunk in
+miniature. At 400 `empty` is a seed and a populated collar is four times wider than it is tall,
+which the renderer's round caps turn into an egg. 900 is where both read, and the number is
+commented in the table with that argument rather than left looking arbitrary.
+
+### What the gate said
+
+Six invariants, each verified by breaking the code and watching the named test fail: the soft
+cap (`a_broader_repository_thickens_at_the_base_without_scaling_with_it`), the fan's
+decoupling (`the_fan_spreads_the_crown_without_touching_the_trunk`), the pipe drop and the
+column's continuity (`the_column_narrows_as_each_primary_leaves`), departures along the axis
+(`primaries_leave_along_the_column_rather_than_from_one_point`, which the first attempt at a
+sabotage did *not* catch — shifting every departure down one internode leaves them distinct),
+the internodes carrying the height (`the_column_keeps_its_proportions_however_broad_the_repository`),
+and the flare (`the_foot_is_the_widest_part_of_the_tree`).
+
+`cargo xtask determinism` is unchanged at `39681da8…` — it hashes primitives and seeds, not
+skeletons, which is exactly the gap the next sprint closes. The skeleton digests every fixture
+reports through `m0-silhouette` all moved, and that is the intended geometry change.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -1149,15 +1228,16 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**The pipeline is complete, there are pictures of it, and three of the four findings those
-pictures produced are closed.** Trees taper root to twig, stand up, keep clear of the ground,
-and stand on a stem rather than a disc.
+**The pipeline is complete, there are pictures of it, and all four findings those pictures
+produced are closed.** Trees taper root to twig, stand up, keep clear of the ground, and stand
+on a column with volume in it — a flared foot, primaries leaving along the axis with room to
+leave, and a leader continuing where the last one departs.
 
-Next in the same loop is **`trunk.fan`** — finding 4, and the row that bounds finding 3. The
-arithmetic above says the overlap that makes a trunk is `stem_width/(packing × fan)`, so a fan
-of 150° leaves half a stem-width of it and a fan under 80° leaves more than one. Narrowing
-`max` toward 95–100° keeps ±50° of sprawl for `AC-SKEL-1`'s wilder repository while giving
-every tree a base that reads as a base. One row, and then look again.
+The structural track is therefore done, and what remains in this loop is **numbers**, one
+family at a time in the lab (`qa/PLAN-silhouette-lab.md` S4 onward). The two the pictures
+already nominate: the crown is lopsided on wide fans, with one long bare arm and no weight
+above it; and the fan itself is now free to be retuned as pure lateral character, which it was
+never able to be while it was also the trunk's height budget.
 
 Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
 `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
