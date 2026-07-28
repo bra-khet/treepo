@@ -1,0 +1,31 @@
+[package]
+name = "m0-silhouette"
+description = "M0's debug renderer: lines and thickness only, so the parameter table can be tuned by looking at real repositories."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# In tools/ rather than crates/ for the same reason `corpus` is: `cargo xtask dep-guard`
+# polices the generative set under crates/, and a debug renderer has no business in it. This
+# one also *needs* to be outside — it writes files, reads the clock's worth of nothing, and
+# will happily use floats if it ever wants to. `treepo-gen` can do none of those things.
+[dependencies]
+treepo-det = { workspace = true }
+treepo-model = { workspace = true }
+treepo-gen = { workspace = true }
+treepo-store = { workspace = true }
+treepo-vcs = { workspace = true }
+
+# The fixtures to draw. Dev-time only; it shells out to `git`, which the product never does.
+corpus = { path = "../corpus" }
+
+# No external dependencies, deliberately — including no PNG encoder. `src/png.rs` is ninety
+# lines because a PNG's zlib stream is allowed to be *stored* (uncompressed) blocks, and this
+# writes files nobody keeps. Pulling an image crate into the workspace to save those ninety
+# lines would put a decoder, a filter bank, and a compressor into `cargo deny`'s report for a
+# debug tool. See the module docs in src/png.rs.
+
+[lints]
+workspace = true

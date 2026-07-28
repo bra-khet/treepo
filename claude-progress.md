@@ -733,7 +733,8 @@ weight: `chmod` on unix, ACLs on Windows, and a builder that can clean up after 
 | `crates/treepo-gen/src/lsystem/compose.rs` (`F-SKEL-2`, `F-SKEL-7`, `A3`) | **done** — 12 tests |
 | `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`, `AC-SKEL-2`) | **done** — 13 tests |
 | `crates/treepo-gen/src/aggregate.rs` (container *forms*) | Phase 4 — see below |
-| `tools/m0-silhouette/**`, `tests/determinism.rs` | next |
+| `tools/m0-silhouette/**` (M0's debug renderer) | **done** — 17 tests |
+| `tests/determinism.rs` | next |
 
 `treepo-gen` is 14 packages against `treepo-vcs`'s 131 — `ron` and `serde` and nothing else.
 It is `no_std` for the same reason `treepo-det` and `treepo-model` are: it makes the
@@ -959,6 +960,77 @@ is no taller than the axiom. A dedicated trunk could not have produced it.
 Sabotage-verified: making `spread` ignore the fan left every limb collinear, and the trunk-height
 test failed with both fans reading `Fx::MAX` — never separating, therefore never measuring.
 
+## `tools/m0-silhouette` — the first look at a tree
+
+```
+cargo run -p m0-silhouette                     # every corpus fixture
+cargo run -p m0-silhouette -- --path .         # any repository on disk
+cargo run -p m0-silhouette -- --pin ripgrep    # a pinned tier repository (--fetch to clone)
+cargo run -p m0-silhouette -- --table other.ron
+```
+
+Extraction → `grow` → an indexed PNG per repository, plus a `.txt` sidecar carrying the world
+extent the fitted view throws away and the full skeleton digest. 15 of the 16 corpus fixtures
+draw; `bare` refuses, in PRD §6's own words, which is the right answer rather than a gap.
+
+**No dependencies, including no PNG encoder.** A PNG's IDAT is a zlib stream, zlib streams may
+be built from *stored* blocks, and a stored block is a length, its complement, and the bytes.
+That is ninety lines in `src/png.rs`, against pulling a decoder, a filter bank and a compressor
+into `cargo deny`'s report so a debug tool can write files nobody keeps. The cost is stated and
+bounded: a 1024×1024 frame lands near 1 MB instead of 40 kB, in `target/`.
+
+**The rasterizer is integer-only although nothing forces it to be.** `N3` binds `crates/`, not
+`tools/`. It is `i64`/`i128` anyway because that makes the *PNG bytes* comparable across
+platforms, not just the numbers behind them — `AC-DET-2` becomes a check anyone can run without
+a debugger: same file, same bytes, three machines.
+
+### `--table` is `AC-SKEL-4`, and it cost one flag
+
+Load a parameter table at run time, draw, compare. `F-SKEL-5` made the criterion nearly free,
+exactly as the PRD predicted. The loader still validates, so a table edited into nonsense is
+refused by name rather than drawn as a strange tree.
+
+### An aggregate had no geometry, so it was invisible
+
+`compose` pushes an `Aggregate` node and **no segments** — correctly: the container's visual
+*form* is Phase 4 enrichment by explicit decision. But a container that draws nothing is, to the
+eye, exactly the truncation `P6` forbids, in the one picture built to check it is not one. So
+the renderer marks them, inventing nothing: a disc as wide as the branch that ends there, a
+width the skeleton already stated.
+
+Worth recording *how* this was missed. `each_role_reaches_the_canvas_in_its_own_ink` passed —
+against a hand-built skeleton whose aggregate had a segment. The fixture was more generous than
+the pipeline. `a_grown_container_is_marked_even_though_it_has_no_geometry` now grows one
+instead, and asserts both halves: that aggregates still carry no geometry, and that they are
+still marked. If Phase 4 gives containers real geometry, that test fails and says so.
+
+### What the pictures say — four findings, none of them code
+
+This is §6 step 4, and it is the whole reason the tool exists. `lsystem.ron` is coherent,
+validated and defended by 58 tests, and the tests can only prove a table is *self-consistent*.
+
+1. **Nothing tapers across the composition boundary.** `C1`'s width falloff applies *inside* an
+   L-system instance; a child limb then draws a fresh `base_width` from the table. So a limb
+   four levels out is as thick as one hanging off the trunk, and `single-author` renders at one
+   uniform weight throughout. Structural, not a number: the falloff has to cross the boundary.
+2. **The basal axiom is a pancake wherever there are many primaries.** `stem_width` is the sum
+   of the primaries' base widths, packed, while `validate` caps `basal_length` at the shortest
+   limb the table can produce. treepo's own repository has eight top-level entries — a stem
+   ~1150 wide and ~150 long, which draws as a disc. The two rows are internally consistent and
+   inconsistent with each other.
+3. **No upward tropism.** `branch_angle` at 36° over up to five generations, plus the
+   composition fan, walks headings to horizontal and past it. §8 of the parameterization
+   document already names tropism as an addition that does not break the contract.
+4. **Consequently the tree does not stand up.** `treepo.png` radiates from a black disc;
+   `single-author` grows diagonally out of frame. `deep-nesting` is the one that reads properly
+   as a tree, and it reads properly because it is narrow — which is findings 2 and 3 restated.
+
+`AC-SKEL-2` **passes by eye**: `empty.png` is a dark seed sitting in a splayed slate root
+cluster, no trunk. `A3` and `F-SKEL-7` are visible in `deep-nesting.png` — a >15-level fixture
+capped at five with two terracotta containers holding what is past the cap. **`AC-SKEL-1` cannot
+be judged yet**, and not because the tool is missing anything: the corpus has no clean-versus-
+messy pair at comparable size. It needs the T1 pin (`ripgrep`) or a fixture built for it.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -981,22 +1053,29 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**The generative pipeline is complete end to end.** `treepo_gen::grow(&manifest, &table)`
-produces a whole `Skeleton` — roots, trunk, limbs, containers — and every structural end
-condition of Phase 3 except the ones that need a picture is met and tested.
+**The pipeline is complete end to end and there are pictures of it.** `treepo_gen::grow` →
+`m0-silhouette` → a PNG, deterministically, for any repository on disk.
 
-Next is **`tools/m0-silhouette/`**: line-and-thickness PNGs for every corpus fixture. It is
-what closes `AC-SKEL-1` and `AC-SKEL-2` **by eye** rather than only by metric, and it is the
-point at which §6's prescribed workflow finally starts — lock a row, draw real repositories,
-adjust one parameter family at a time. Worth saying plainly: `lsystem.ron` is coherent,
-validated, and defended by 58 tests, and **nobody has yet looked at a tree.** Every number in
-it is a hypothesis.
+Next is **the tuning sprint**, which is what M0 was always for. Four findings are written up
+above; §6 says one parameter family at a time, and the order that follows from them is:
 
-Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which is what
-turns `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across
-three platforms. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in `cargo xtask budget` against
-the existing pins; composition is bounded by construction (capacity × level cap), but bounded
-is not measured.
+1. **Carry the width falloff across the composition boundary** (finding 1). Structural, so it
+   goes first — every later judgement about thickness is made against it.
+2. **Tropism** (finding 3). `lsystem.ron` already has `droop`, which bends *downward*; an
+   upward bias is the same mechanism with the opposite sign and belongs beside it as data.
+3. **Reconcile `basal_length` with `stem_width`** (finding 2). Probably a rule rather than a
+   number — a stem's length tied to its own width — and `validate` is where it is stated.
+
+Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
+`AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
+platforms. The tool's per-run skeleton digest is the same hash, so the probe is mostly moving
+code that already exists into the gate. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in
+`cargo xtask budget` against the existing pins; composition is bounded by construction
+(capacity × level cap), but bounded is not measured.
+
+`AC-SKEL-1` needs a corpus pair it does not have: two repositories of similar size, one clean
+and conventional, one high-skew and mixed-language. Either fetch the T1 pin or add the pair to
+`tools/corpus`. Until then the criterion has nothing to be judged against.
 
 Carried forward, neither blocking:
 
