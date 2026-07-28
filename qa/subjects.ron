@@ -1,0 +1,27 @@
+// Default multi-subject gallery for silhouette judgment (§6 + M0).
+//
+// Used by a future `m0-silhouette lab` and as the checklist for manual CLI sessions.
+// Names under `corpus:` match tools/corpus shape names. `path:` is any repository on disk
+// relative to the workspace root (or absolute). `pin:` names a tools/corpus pin.
+//
+// AC-SKEL-1 needs a clean-vs-messy pair at comparable size — not present yet (plan S5).
+
+(
+    version: 1,
+    subjects: [
+        // AC-SKEL-2: seed + root cluster, not a lonely trunk.
+        (id: "empty", corpus: "empty", covers: "AC-SKEL-2"),
+
+        // Small conventional synthetic — orderly half of AC-SKEL-1 until a true pair exists.
+        (id: "single-author", corpus: "single-author", covers: "clean-ish synthetic; taper / fan checks"),
+
+        // Narrow deep hierarchy — already reads as a tree; A3 / F-SKEL-7 containers visible.
+        (id: "deep-nesting", corpus: "deep-nesting", covers: "A3 cap; F-SKEL-7 containers"),
+
+        // Many top-level entries → multi-primary stem (pancake repro until S3).
+        (id: "self", path: ".", covers: "multi-primary basal stem; real layout"),
+
+        // Optional: uncomment when pins are present under target/corpus-pinned.
+        // (id: "ripgrep", pin: "ripgrep", covers: "clean T1 pin; AC-SKEL-1 candidate"),
+    ],
+)

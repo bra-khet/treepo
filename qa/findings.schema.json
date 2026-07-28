@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://treepo.local/qa/findings.schema.json",
+  "title": "Silhouette finding export",
+  "description": "One tuned parameter (or structural note) plus judgment and image references for agent handoff.",
+  "type": "object",
+  "required": [
+    "session",
+    "family",
+    "parameter",
+    "verdict",
+    "chosen_render",
+    "notes"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "session": {
+      "type": "string",
+      "description": "Session directory name under qa/sessions/."
+    },
+    "family": {
+      "type": "string",
+      "description": "§5 decision-menu family: A, B, C, D, E, Trunk, Scales, or Structural.",
+      "examples": ["A", "B", "C", "D", "E", "Trunk", "Scales", "Structural"]
+    },
+    "parameter": {
+      "type": "string",
+      "description": "Focused field, e.g. width_ratio.base or compose-width-inherit.",
+      "examples": ["width_ratio.base", "branch_angle.base", "tropism.base"]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["prefer", "reject", "blocked", "needs_code"]
+    },
+    "chosen_render": {
+      "type": "string",
+      "description": "Relative path from the session root, e.g. renders/0014."
+    },
+    "chosen_subjects": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Map of subject id → relative PNG path."
+    },
+    "table_diff_summary": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "from": {},
+          "to": {}
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "description": "Human judgment: why this setting wins across the strip."
+    },
+    "rejected_renders": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "structural_prereqs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Named structural fixes this judgment assumes (e.g. compose-width-inherit)."
+    }
+  }
+}
