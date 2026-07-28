@@ -235,6 +235,35 @@ impl OwnershipPrimitives {
         }
     }
 
+    /// Rebuilds ownership from the parts the accessors below expose.
+    ///
+    /// **For `treepo-store` reading a manifest back, and nothing else.**
+    /// [`from_line_counts`](Self::from_line_counts) derives `dominant` and `bus_factor` from
+    /// the counts precisely so the three cannot disagree, and this constructor is the one
+    /// place that trust is suspended — a caller could hand over a dominant author holding a
+    /// two-percent share. It exists because the manifest stores the derived values rather
+    /// than the counts they came from: keeping a per-path count map alongside the share map
+    /// would add a second `OrderedMap` to all eighty thousand records at T3, and the
+    /// derivation rounds to parts-per-million, so recomputing from shares would not be exact
+    /// either.
+    ///
+    /// `ownership_survives_a_round_trip_through_its_parts` holds this to being exactly the
+    /// inverse of `from_line_counts`.
+    #[must_use]
+    pub fn from_stored(
+        shares: OrderedMap<AuthorKey, AuthorShare>,
+        recency: OrderedMap<AuthorKey, i64>,
+        dominant: Option<AuthorKey>,
+        bus_factor: u16,
+    ) -> Self {
+        Self {
+            shares,
+            recency,
+            dominant,
+            bus_factor,
+        }
+    }
+
     /// `author_count` — how many contributors touched this path.
     #[must_use]
     pub fn author_count(&self) -> u32 {
@@ -295,6 +324,31 @@ mod tests {
     fn ownership(counts: &[(AuthorKey, u64)]) -> OwnershipPrimitives {
         let map: OrderedMap<AuthorKey, u64> = counts.iter().copied().collect();
         OwnershipPrimitives::from_line_counts(&map, OrderedMap::new())
+    }
+
+    /// `from_stored` must be exactly the inverse of the accessors, or a manifest read back
+    /// is a different repository from the one that was written (`AC-MAN-1`).
+    ///
+    /// The three cases are the three shapes the derivation can produce: a clear winner, an
+    /// exact tie with no dominant author, and nothing attributed at all.
+    #[test]
+    fn ownership_survives_a_round_trip_through_its_parts() {
+        let cases = [
+            Vec::from([(author(1), 900u64), (author(2), 100)]),
+            Vec::from([(author(1), 500u64), (author(2), 500)]),
+            Vec::new(),
+        ];
+
+        for counts in cases {
+            let original = ownership(&counts);
+            let rebuilt = OwnershipPrimitives::from_stored(
+                original.shares().map(|(&k, &v)| (k, v)).collect(),
+                original.recency().map(|(&k, &v)| (k, v)).collect(),
+                original.dominant_author(),
+                original.bus_factor_proxy(),
+            );
+            assert_eq!(original, rebuilt, "counts: {counts:?}");
+        }
     }
 
     #[test]

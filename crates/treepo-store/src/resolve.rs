@@ -249,6 +249,26 @@ pub fn resolve(
     })
 }
 
+/// The root of a manifest's per-path seed tree, for a resolved identity (`P2`).
+///
+/// `treepo-model` leaves this open — "what it is derived *from* is `treepo-store`'s decision
+/// in Phase 2 — root commit and repository identity behave differently for a fork, which is a
+/// product question rather than a model one". This is that decision.
+///
+/// **Keyed on the identity.** Two clones of one remote share an identity, so they grow the
+/// same tree — which is `F-MAN-4`'s "the same repository is the same tree" made visible rather
+/// than merely stored. A fork shares its upstream's root commit but not its identity, so it
+/// looks different, which is the answer `F-MAN-3`'s tier order already gives.
+///
+/// **The visible consequence:** a repository that gains a remote moves from tier 3 or 2 to
+/// tier 1, so its identity changes, so its tree changes. That is the same event that moves it
+/// to a new store directory and regenerates its manifest, so the two agree — but somebody will
+/// one day add an `origin`, watch their tree change shape, and want to know why.
+#[must_use]
+pub fn root_seed(identity: &RepoIdentity) -> treepo_det::Seed {
+    treepo_model::Manifest::root_seed_for(&identity.key)
+}
+
 /// Every remote, in name order, with its URL normalized.
 ///
 /// Read from config rather than through `gix::Remote` so that `url.<base>.insteadOf` rewrites

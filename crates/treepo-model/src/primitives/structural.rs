@@ -57,6 +57,15 @@ impl BranchingHistogram {
         &self.buckets
     }
 
+    /// Rebuilds a histogram from counts [`buckets`](Self::buckets) produced.
+    ///
+    /// For `treepo-store` reading a manifest back. Everything else observes and merges,
+    /// which is what keeps the counts consistent with what was actually walked.
+    #[must_use]
+    pub const fn from_buckets(buckets: [u32; Self::BUCKETS]) -> Self {
+        Self { buckets }
+    }
+
     /// How many nodes were observed in total.
     #[must_use]
     pub fn total(&self) -> u64 {
@@ -112,6 +121,14 @@ impl DepthProfile {
     #[must_use]
     pub fn levels(&self) -> &[u32] {
         &self.levels
+    }
+
+    /// Rebuilds a profile from counts [`levels`](Self::levels) produced.
+    ///
+    /// For `treepo-store` reading a manifest back; everything else absorbs children.
+    #[must_use]
+    pub fn from_levels(levels: alloc::vec::Vec<u32>) -> Self {
+        Self { levels }
     }
 
     /// The centre of mass, in relative depth levels.
@@ -228,6 +245,30 @@ impl StructuralPrimitives {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two rebuilding constructors must be exact inverses of their accessors, or a
+    /// manifest read back describes a different tree from the one written (`AC-MAN-1`).
+    #[test]
+    fn branching_and_depth_survive_a_round_trip_through_their_parts() {
+        let mut histogram = BranchingHistogram::default();
+        for children in [0, 1, 4, 7, 40] {
+            histogram.observe(children);
+        }
+        assert_eq!(
+            histogram,
+            BranchingHistogram::from_buckets(*histogram.buckets())
+        );
+
+        let mut profile = DepthProfile::leaf();
+        profile.absorb_child(&DepthProfile::leaf());
+        assert_eq!(
+            profile,
+            DepthProfile::from_levels(profile.levels().to_vec())
+        );
+        // And the empty case, which is what a manifest holds for most files.
+        let empty = DepthProfile::default();
+        assert_eq!(empty, DepthProfile::from_levels(empty.levels().to_vec()));
+    }
 
     #[test]
     fn branching_buckets_group_the_long_tail() {

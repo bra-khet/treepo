@@ -6,15 +6,18 @@
 //! moves must keep its directory (`AC-MAN-5`), and a fork must not inherit its upstream's
 //! (PRD §6). [`resolve`] answers that; [`paths`] turns the answer into a path.
 //!
-//! # Nothing in this crate writes
+//! # What writes, and what cannot
 //!
-//! Not yet, and the split is deliberate. Identity resolution and store addressing are pure
-//! enough to test exhaustively — a normalized URL is a function of a string, and a store path
-//! is a function of an identity. Creating directories and writing files is `manifest_io`,
-//! where atomicity (`F-MAN-7`) and schema versioning (`F-MAN-6`) are the whole problem.
-//! Keeping them apart means `AC-MAN-2`'s zero-write property holds here by construction: the
-//! only filesystem call in the crate is the `canonicalize` that tier 3 needs, and the only
-//! environment reads are the ones `F-MAN-2` names.
+//! [`resolve`] and [`paths`] write nothing, and the split is deliberate: a normalized URL is a
+//! function of a string and a store path is a function of an identity, so both are testable
+//! exhaustively without a filesystem. Their only filesystem call is the `canonicalize` tier 3
+//! needs. [`manifest_io`] is where bytes land, and everything difficult about that —
+//! atomicity (`F-MAN-7`), schema versioning (`F-MAN-6`) — is confined to it.
+//!
+//! Nothing anywhere in the crate writes into the *working tree*. Every path it constructs is
+//! rooted at [`StoreRoot`], which is application data (`F-MAN-1`, `AC-MAN-2`); the repository
+//! is opened read-only and only ever read from. `cargo xtask readonly-audit` runs identity
+//! resolution over every corpus fixture for exactly this reason.
 //!
 //! # The identity is not a secret, but it is one-way
 //!
@@ -27,8 +30,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod manifest_io;
 pub mod paths;
 pub mod resolve;
 
+pub use manifest_io::{ReadError, Staged, WriteError, read, stage, write};
 pub use paths::{LayoutError, RepositoryStore, StoreRoot};
 pub use resolve::{Resolution, ResolveError, Skipped, normalize_url, resolve};

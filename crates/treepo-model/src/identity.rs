@@ -115,6 +115,17 @@ impl AuthorKey {
     pub const fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }
+
+    /// Rebuilds a key from bytes [`as_bytes`](Self::as_bytes) produced.
+    ///
+    /// For `treepo-store` reading a manifest back, as [`LanguageId::new`] is
+    /// (`crate::manifest`). There is no other legitimate caller: the key is *defined* as a
+    /// hash of a normalized email, and minting one from arbitrary bytes elsewhere would
+    /// produce a contributor no commit can ever match.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
 }
 
 impl fmt::Debug for AuthorKey {
@@ -248,6 +259,14 @@ mod tests {
         let rendered = alloc::format!("{key:?}");
         assert!(rendered.starts_with("AuthorKey("));
         assert!(!rendered.contains("example"));
+    }
+
+    /// `AC-MAN-1`: a contributor read back from a manifest must be the same contributor.
+    #[test]
+    fn author_keys_survive_a_round_trip_through_their_bytes() {
+        let key = AuthorKey::from_email(b"ada@example.com");
+        assert_eq!(key, AuthorKey::from_bytes(*key.as_bytes()));
+        assert_ne!(key, AuthorKey::from_bytes([0; 16]));
     }
 
     #[test]

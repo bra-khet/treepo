@@ -12,6 +12,9 @@ publish.workspace = true
 # diffing, no status, no attributes, no mailmap. Naming the minimum is what keeps a later
 # "while we're here" read from quietly appearing in the crate that decides where data lives.
 [dependencies]
+# `Fx`, `Seed`, `OrderedMap` and `OrderedSet` all cross the manifest boundary, so the codec
+# has to name their types even though it only moves their bytes around.
+treepo-det = { workspace = true }
 treepo-model = { workspace = true }
 
 gix = { version = "0.86", default-features = false, features = [
@@ -19,6 +22,15 @@ gix = { version = "0.86", default-features = false, features = [
   "sha1",                 # object hashing — gix does not build without a hash backend
   "max-performance-safe", # perf without a C dependency
 ] }
+
+# The manifest encoding architecture D9/E2 chose. postcard has no field names, no padding and
+# no options that change the bytes, which is what makes `AC-MAN-1`'s byte-identical
+# requirement a property of the format rather than of how carefully it is called.
+#
+# serde derives on the mirror types in `manifest_io::stored`, never on `treepo-model` — see
+# that module for why. `treepo-det` keeps its zero-dependency claim intact as a result.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
 
 # Fixtures for the three identity tiers: `multi-remote` (tier 1), `no-remote` (tier 2), and
 # `empty` (tier 3). Dev-only, as in treepo-vcs — it shells out to `git`, which the product

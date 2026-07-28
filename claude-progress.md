@@ -513,8 +513,9 @@ pass, putting network latency inside a figure about local I/O.
 |---|---|
 | `crates/treepo-store/{paths,resolve}.rs` (`F-MAN-2`, `F-MAN-3`) | **done** — three tiers, 29 tests |
 | `tests/identity.rs` (`F-MAN-3`, `AC-MAN-4`/`5` identity half) | **done** — 10 tests |
-| `crates/treepo-store/manifest_io.rs` (`F-MAN-6`/`7`, `AC-MAN-1`/`3`) | not started |
-| `F-CORP-3`: `two-clones`, `read-only` fixtures | **missing — see below** |
+| `crates/treepo-store/manifest_io.rs` (`F-MAN-6`/`7`, `AC-MAN-1`/`3`) | **done** — 13 tests |
+| `tests/persistence.rs` (`AC-MAN-1`, `AC-MAN-4`, `F-MAN-8`) | **done** — 5 tests |
+| `F-CORP-3`: `read-only` fixture | **missing — see below** |
 
 `treepo-store` takes a much smaller `gix` than `treepo-vcs` does: 114 packages against 131, no
 `blob-diff`, no `status`, no `attributes`, no `mailmap`. It reads two things from a repository —
@@ -583,17 +584,89 @@ that reads in a new way is the kind that acquires a write. **16 fixtures, 0 writ
 report now names each fixture's tier, which doubles as a readable check that the resolver
 behaves sensibly on every shape in the corpus.
 
-### `F-CORP-3` is not complete, and Phase 1 recorded otherwise
+### `manifest_io` — the stored schema is not the model
 
-`F-CORP-3` names five fixtures. Three exist — `no-remote`, `multi-remote`, `empty`. Two do not:
+`treepo-model` does **not** derive serde. `manifest_io::stored` mirrors it as plain data —
+integers, strings, vectors — and serde derives on that. Three reasons, all of which were the
+reason rather than a rationalization afterwards:
 
-- **two clones of one remote at different paths** (`AC-MAN-4`). `tests/identity.rs` builds this
-  case itself with `corpus::Builder`, which proves the resolution half now. The shared fixture
-  belongs with `manifest_io`, where the other half — the second open skipping extraction — is
-  testable end to end.
-- **a read-only repository** (restricted permissions or a read-only mount). This one is about
-  `AC-MAN-2` and `F-ASSOC-7` rather than identity, and it has real platform weight: `chmod` on
-  unix, ACLs on Windows, and a fixture builder that must be able to clean up after itself.
+- **`treepo-det` keeps its zero-dependency claim.** `Manifest` holds a `Seed`, an `OrderedMap`
+  and an `OrderedSet`, all defined there. Deriving serde on `Manifest` means deriving it on
+  those, and `dep-guard` asserts `treepo-det` has exactly **one** package in its graph. It
+  still does; `treepo-store` went 114 → 119.
+- **`schema_version` now describes a type that exists to be the schema.** With serde on the
+  model, adding a field silently changes the on-disk encoding and nothing prompts a version
+  bump. Here, changing what is stored means editing a type whose only purpose is to be stored.
+- **`N4` survives.** `AuthorShare` implements neither `Ord` nor `Serialize`; the mirror stores
+  parts-per-million and the model stays exactly as strict as it was.
+
+The cost is a conversion each way, and it is paid down by **destructuring**: every conversion
+binds its source's fields by name, so a new field in `treepo-model` stops the file compiling
+rather than quietly not being persisted. Four types cannot be destructured because their fields
+are private — `OwnershipPrimitives`, `BranchingHistogram`, `DepthProfile`, and the two tables —
+and each now has a round-trip test in `treepo-model` next to it. `OwnershipPrimitives::from_stored`
+is the one place the "derived values cannot disagree with their inputs" discipline is suspended,
+and it says so.
+
+**`F-MAN-6`: the version is in the file header, not only in the sidecar.** "Regenerate rather
+than best-effort parse" has to be decidable *before* the body reaches a decoder, so
+`manifest.bin` starts with an 11-byte magic and a fixed-width `u32`. `manifest-meta.json`
+carries the version too, because `N2` promises a user can see what treepo holds — but nothing
+reads it. A file a person can edit must not be able to talk the loader into misparsing a
+manifest.
+
+**`F-MAN-7`: staged, then committed.** `stage` writes and `sync_all`s both files under
+temporary names; `Staged::commit` renames them. Dropping a `Staged` deletes the temporaries,
+which is "cancellation never leaves one" as a destructor rather than a discipline. The sidecar
+is renamed **first** and the manifest **last**, so the manifest's rename is the single instant
+the store changes. `sync_all` is load-bearing: without it the rename can be durable while the
+contents are not, and a power cut leaves `manifest.bin` present and empty — the state `F-MAN-7`
+exists to prevent, reached by a shorter route than a partial write.
+
+**`AC-MAN-3` is tested with `mem::forget`.** A killed process runs no destructor, so forgetting
+a `Staged` is an exact model of one: the temporary is left behind and the previous manifest is
+still what `read` returns. Dropping normally is the cancellation case and is a separate test.
+
+**The golden digest is the encoding gate.** postcard writes fields in declaration order with no
+names, so reordering one is a format change that compiles and looks harmless.
+`the_encoding_has_a_golden_digest` hashes a fully-populated manifest's body; any change to the
+schema fails it, which forces the `SCHEMA_VERSION` bump `F-MAN-6` requires rather than leaving
+it to whoever made the change to remember.
+
+Verified by sabotage, as usual: `bus_factor` was made to serialize as zero. Three tests failed
+— the golden digest, the populated round-trip, and the mid-write test — and
+`encoding_is_a_function_of_the_manifest_alone` correctly **passed**, because a dropped field is
+still deterministic. `AC-MAN-1` and round-trip fidelity are different properties and need
+different tests; that is now demonstrated rather than assumed.
+
+**JSON is written by hand.** The sidecar is nine scalars treepo never reads back, so a
+serializer would be a dependency bought entirely for output twenty lines can produce. When a
+later phase needs to *read* `config.json` or `settings.json` (`F-SET-*`), that is the moment to
+add one.
+
+### The root seed is keyed on the identity
+
+`treepo-model` deliberately left this open — "what it is derived *from* is `treepo-store`'s
+decision in Phase 2". It is `resolve::root_seed`, and it hangs the seed tree off the identity
+key. Two clones of one remote therefore grow the *same tree*, which is `F-MAN-4`'s "the same
+repository is the same tree" made visible rather than merely stored; a fork shares its
+upstream's root commit but not its identity, so it looks different. The visible consequence:
+adding an `origin` to a local-only repository moves it from tier 2 to tier 1, so its tree
+changes shape. That is the same event that moves it to a new store directory, so the two agree
+— but someone will one day do it and want to know why.
+
+### Two gaps found, both recorded rather than quietly patched
+
+**Nothing composes a `Manifest`.** Phase 1 produced `Structure` and `History` and stopped;
+`tests/persistence.rs` assembles them in about fifteen lines of field copies. That is enough
+for `AC-MAN-1`, whose question is about the *primitives* and those come from the real passes.
+It is not enough for the product, and the composition belongs in `treepo-vcs`, whose own module
+documentation already claims to be "turning a repository into a `Manifest`".
+
+**`F-CORP-3`'s read-only fixture still does not exist.** Restricted permissions or a read-only
+mount. It is about `AC-MAN-2` and `F-ASSOC-7` rather than identity, and it carries real platform
+weight: `chmod` on unix, ACLs on Windows, and a builder that can clean up after itself. The
+`two-clones` case is now covered — `tests/persistence.rs` builds it — so this is the last one.
 
 ## Agent hygiene
 
@@ -617,11 +690,14 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phase 2, second sprint: `manifest_io.rs`** — `F-MAN-6` (schema version, regenerate rather
-than best-effort parse), `F-MAN-7` (temp file then rename), and with them `AC-MAN-1`
-(delete-then-regenerate is byte-identical) and `AC-MAN-3` (killed mid-write leaves the previous
-manifest valid). It brings the first writes in the crate, the postcard dependency architecture
-E2 chose, and the `two-clones` corpus fixture that closes the persistence half of `AC-MAN-4`.
+Every Phase 2 end condition is met. What remains before the phase can be called closed is
+`identity.json` — `F-MAN-2` lists it in the store layout and `F-MAN-3` says it records "both
+the resolved key and which tier produced it, so a user can see why two checkouts did or did not
+share a store". `Resolution` already carries exactly that; nothing writes it yet. It is a short
+sprint on top of the atomic writer that now exists, and it closes `N2`'s inspectability promise
+for the one file a person would actually open.
+
+After that, Phase 3 — skeleton generation, and **M0 exit**.
 
 ### `LICENSE-THIRD-PARTY.md` — closed 2026-07-27
 
