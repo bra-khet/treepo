@@ -1,0 +1,25 @@
+[package]
+name = "treepo-gen"
+description = "Pure skeleton generation: the parameter table, the L-system, and the hybrid trunk. No bevy, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+treepo-det = { workspace = true }
+treepo-model = { workspace = true }
+
+# `F-SKEL-5`: the parameter table is data, so this crate parses one. Same format and same
+# version as `treepo-vcs` reads its dictionaries in — Bevy speaks RON natively from Phase 5,
+# so one asset format covers the whole product.
+#
+# `default-features = false` on both: this crate is `no_std`, and RON's default feature set
+# pulls `std`. What it costs is nothing this crate uses — the built-in table arrives through
+# `include_str!` and a caller-supplied one arrives as a `&str`, so nothing here opens a file.
+ron = { version = "0.12", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true

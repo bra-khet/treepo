@@ -1589,6 +1589,16 @@ name = "treepo-det"
 version = "0.1.0"
 
 [[package]]
+name = "treepo-gen"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
+ "treepo-det",
+ "treepo-model",
+]
+
+[[package]]
 name = "treepo-model"
 version = "0.1.0"
 dependencies = [

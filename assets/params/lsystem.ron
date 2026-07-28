@@ -1,0 +1,186 @@
+// The skeleton parameter table — `F-SKEL-4`, `F-SKEL-5`,
+// `design/l-system-parameterization.md`.
+//
+// Read by `treepo-gen::params`. This file is the v0.1 mapping row from §5 of that document,
+// made concrete. Editing it changes every silhouette treepo draws, with no rebuild
+// (`AC-SKEL-4`), which is the entire point of `F-SKEL-5` — §6 says these parameters are
+// settled by looking at real silhouettes and adjusting one family at a time, and that is
+// only workable if adjusting one costs an edit.
+//
+// # The row this file implements
+//
+//     A3 + B2/B3 + C1 + D1&D3 + E3 + F2 + G1
+//
+// §5 recommends `A3 + B2/B3 + C1 + D1 + E3 + F2 + G1`. Two notes on the difference:
+//
+// * `D1` is widened to `D1 + D3`. `D1` is "noise rises sharply with churn + skew", and `G1`
+//   takes churn out of that pair — leaving hierarchy skew as the only route to the alien,
+//   overgrown look the design asks for. `AC-SKEL-1` requires a "high-skew, mixed-language,
+//   unconventional" repository to read as visibly wilder than a clean one, and
+//   mixed-language and unconventional are exactly what `D3` adds. `D1` as written cannot
+//   pass the criterion that tests it. §4's "Mess / Chaos Signals" paragraph already names
+//   all four signals together, so this corrects §5's shorthand rather than departing from
+//   the design. What survives of `D1` is its real content: the response is near-zero for a
+//   clean repository and rises sharply, not `D2`'s permanent shimmer.
+// * `F2` — grouping small top-level directories into fewer, thicker limbs — is a decision
+//   about which limbs exist, not about their geometry. It belongs to `trunk.rs` and no row
+//   here reads it.
+//
+// # Units: integers, never floats
+//
+// `N3` keeps floats out of anything reaching generated output, so every number here is an
+// integer in a stated unit. Same convention as `folder-signals.ron`, for the same reason.
+//
+// * **per mille** — ratios. `1000` is `1.0`. `750` reads as "0.75"; `750000` does not.
+// * **millidegrees** — angles. `36000` is 36°.
+// * **milli-levels** — recursion depth. `2600` is 2.6 generations, rounded on the way out.
+//
+// # How a row is read
+//
+// Each row is `base` plus, for every driver, that driver's value times its weight — then
+// clamped to `min..=max`. A driver runs `0..=1` (`skew` runs `-1..=1`), so a weight is the
+// contribution at full scale: `skew_abs: 10000` means a maximally skewed subtree adds 10°.
+//
+// The clamp is not a safety net. It is how a row states the range the parameter is allowed
+// to occupy, and it is what makes an edited file survivable rather than dangerous.
+//
+// # The drivers
+//
+// Nine, and the list is closed — `treepo-gen::params::Weights` refuses an unknown name
+// rather than ignoring it, so a misspelling here is a loud error instead of a weight that
+// silently does nothing.
+//
+// * `mass`          — subtree bytes as a proportion of the parent's.
+// * `depth`         — how deep the subtree runs, against `depth_full_scale`.
+// * `bushiness`     — mean children per node, against `bushiness_full_scale`.
+// * `skew`          — hierarchy skew, **signed**: negative is a chain, positive is a fan.
+// * `skew_abs`      — its magnitude: how far from ordinary, in either direction.
+// * `balance`       — how evenly size and depth spread across children. `1000` is even.
+// * `convention`    — the folder-convention weight (`F-EXT-5`). Zero if the name said nothing.
+// * `diversity`     — language mix, against `diversity_full_scale`.
+// * `fragmentation` — ownership spread, against `fragmentation_full_scale`. Zero without
+//                     history, which is what keeps `G1` true for a repository that has none.
+//
+// **No temporal driver exists, and that is `G1`.** Age and churn belong to the material and
+// Thrive layers. The sharp reason, beyond the row: churn windows are measured against the
+// repository's newest commit, so one commit anywhere moves every window at once. A churn
+// driver would re-shape `docs/` because somebody touched `src/`, which loses `AC-GROW-4` and
+// makes a Grow unreadable.
+(
+    version: 1,
+
+    // What the raw counts are measured against. These are absolute constants rather than
+    // maxima taken over the manifest, and deliberately so: normalizing against the
+    // repository would mean adding one deeply-nested file renormalized every limb and
+    // reshaped the whole tree. `AC-GROW-4` and `AC-DET-1` both forbid that.
+    //
+    // The trade is that they are a tuning liability — set `depth_full_scale` to 40 and every
+    // repository reads as equally shallow — which is why they are here to be seen.
+    scales: (
+        depth_full_scale: 8,           // an eight-deep subtree is as deep as it gets
+        bushiness_full_scale: 6,       // six children per node reads as maximally bushy
+        diversity_full_scale: 8,       // eight languages reads as maximally mixed
+        fragmentation_full_scale: 6,   // seven contributors to 80% reads as fully fragmented
+    ),
+
+    // §3's termination threshold, per mille of a world unit. One number for the tree: it
+    // exists to stop microscopic branching, and a limb allowed its own could grant itself an
+    // unbounded one.
+    min_length: 60,
+
+    // ── A3 ──────────────────────────────────────────────────────────────────────────────
+    // Hard-capped at 4–5 levels; content below the cap is aggregated into a proportional
+    // container (`F-SKEL-7`) rather than truncated, so the cap costs detail and not data.
+    // `max: 5000` is the cap itself and `treepo-gen` refuses a table that raises it.
+    //
+    // A2's softening is folded in through `mass`: a deep but tiny corner of the tree recurses
+    // less than a deep and heavy one.
+    recursion: (base: 2600, min: 1000, max: 5000, per: (
+        depth: 1800,
+        bushiness: 900,
+        mass: 400,
+    )),
+
+    // ── B2/B3 ───────────────────────────────────────────────────────────────────────────
+    // Medium by default (§5's B2, 30–55°), widening toward B3 as the structure becomes
+    // irregular. `skew` and `skew_abs` both appear, and they answer different questions:
+    // magnitude says how far from ordinary the subtree is, and the sign says which way — a
+    // fan spreads further than a chain of the same irregularity, because a chain wants to
+    // read as columnar.
+    //
+    // `balance` and `convention` pull the other way. An even, conventionally-named directory
+    // is the orderly, near-symmetric silhouette `AC-SKEL-1` asks a clean repository for.
+    branch_angle: (base: 36000, min: 18000, max: 58000, per: (
+        skew_abs: 14000,
+        skew: 4000,
+        diversity: 4000,
+        bushiness: 3000,
+        balance: -5000,
+        convention: -2500,
+    )),
+
+    // ── D1 & D3 ─────────────────────────────────────────────────────────────────────────
+    // The mess response, and the main lever for the alien look. Near-zero for a clean
+    // repository — `base` is small and `convention` and `balance` push it to the floor —
+    // and rising sharply once skew, language mix, or ownership spread appear.
+    //
+    // `max: 24000` is the ceiling the design implies rather than one chosen here: §3 puts
+    // stochasticity at 0.0–0.4 and the branching angle at up to 60°, so 0.4 × 60° = 24°.
+    angle_jitter: (base: 2000, min: 0, max: 24000, per: (
+        skew_abs: 10000,
+        diversity: 5000,
+        fragmentation: 3000,
+        convention: -1200,
+        balance: -800,
+    )),
+
+    // Same response in the length domain, in per mille, capped at §3's 0.4 directly.
+    length_jitter: (base: 60, min: 0, max: 400, per: (
+        skew_abs: 180,
+        diversity: 90,
+        fragmentation: 60,
+        convention: -40,
+        balance: -30,
+    )),
+
+    // ── C1 ──────────────────────────────────────────────────────────────────────────────
+    // Length falls off faster than thickness. The two ranges may not overlap — `treepo-gen`
+    // refuses a table where they do — because C1 has to hold for *every* limb and not on
+    // average: the overlapping trunk mass `F-SKEL-3` depends on is width outlasting length
+    // near the origin, and one limb tapering the other way punches a hole in it.
+    length_ratio: (base: 700, min: 560, max: 780, per: (
+        mass: 60,
+        balance: 40,
+        skew_abs: -50,
+        depth: -30,
+    )),
+
+    width_ratio: (base: 870, min: 800, max: 940, per: (
+        mass: 40,
+        depth: -20,
+        skew_abs: -25,
+    )),
+
+    // ── E3 ──────────────────────────────────────────────────────────────────────────────
+    // Size-driven droop: only heavy limbs sag, and the base is zero so a light one does not
+    // sag at all. Purely `mass`, because §3 gives tropism one driver — "extreme size
+    // disparity can produce visible weight" — and a droop responding to anything else would
+    // read as a bug rather than as weight.
+    droop: (base: 0, min: 0, max: 18000, per: (
+        mass: 12000,
+    )),
+
+    // ── Starting geometry ───────────────────────────────────────────────────────────────
+    // The first segment of each limb, per mille of a world unit. §4: larger subtrees produce
+    // longer and thicker primary limbs. `depth` lengthens rather than thickens, so a deep
+    // subtree reaches instead of bulking.
+    base_length: (base: 1000, min: 200, max: 3000, per: (
+        mass: 800,
+        depth: 200,
+    )),
+
+    base_width: (base: 200, min: 40, max: 800, per: (
+        mass: 260,
+        bushiness: 60,
+    )),
+)

@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-28 · **Phases 0, 1 and 2 complete and closed**
+**Last updated:** 2026-07-28 · **Phases 0, 1 and 2 closed; Phase 3 underway**
 
 ---
 
@@ -722,6 +722,99 @@ mount. It is about `AC-MAN-2` and `F-ASSOC-7` rather than identity, and it carri
 weight: `chmod` on unix, ACLs on Windows, and a builder that can clean up after itself. The
 `two-clones` case is now covered — `tests/persistence.rs` builds it — so this is the last one.
 
+## Phase 3 — skeleton generation (in progress)
+
+| Deliverable | Status |
+|---|---|
+| `crates/treepo-gen/src/params.rs` + `assets/params/lsystem.ron` (`F-SKEL-5`) | **done** — 17 tests |
+| `crates/treepo-gen/src/lsystem/{grammar,turtle,compose}.rs` (`F-SKEL-1`/`2`/`6`) | next |
+| `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`) | not started |
+| `crates/treepo-gen/src/aggregate.rs` (`F-SKEL-7`) | not started |
+| `tools/m0-silhouette/**`, `tests/determinism.rs` | not started |
+
+`treepo-gen` is 14 packages against `treepo-vcs`'s 131 — `ron` and `serde` and nothing else.
+It is `no_std` for the same reason `treepo-det` and `treepo-model` are: it makes the
+filesystem, `std::time` and `HashMap` unreachable from the crate every generated coordinate
+flows through, which is the architecture's "pure generation — no bevy, no I/O" expressed as
+something the compiler checks. `dep-guard` already listed it and picked it up on sight.
+
+### The v0.1 parameter row — `D1` revised, with evidence
+
+The end condition asks for `A3+B2/B3+C1+D1+E3+F2+G1` **confirmed or revised with recorded
+evidence**. Five of the seven are confirmed as written and implemented in
+`assets/params/lsystem.ron`. `F2` is not a geometry decision and belongs to `trunk.rs`.
+
+**`D1` is revised to `D1 + D3`, and `AC-SKEL-1` is the evidence.** `D1` is "noise rises
+sharply with churn + skew", and `G1` — also in the row — removes churn from that pair. That
+leaves hierarchy skew as the only route to the alien, overgrown silhouette the design wants.
+`AC-SKEL-1` asks for a "high-skew, **mixed-language**, **unconventional**" repository to read
+as visibly wilder than a clean one, and mixed-language and unconventional are precisely the
+two signals `D3` adds and `D1` does not carry. **`D1` as written cannot pass the acceptance
+criterion that tests it.** §4's "Mess / Chaos Signals" paragraph already names all four
+signals together, so this corrects §5's shorthand rather than departing from the design.
+
+`mixed_and_unconventional_reads_as_wilder_without_any_skew` is that argument as a test: two
+directories that agree exactly on skew, differing only in language mix and folder naming,
+must still produce different silhouettes. Under `D1` alone they would be bit-identical.
+
+What survives of `D1` is the half `D3` does not state — near-zero for a clean repository,
+rising sharply — and `a_clean_directory_is_near_deterministic` holds it to the bottom fifth
+of the jitter range rather than merely below the top, which is what rules out `D2`.
+
+### `G1` is enforced, not merely intended
+
+Age and churn do not reach the skeleton, and there is a sharper reason than the row saying
+so. Churn windows are measured against `Manifest::reference_time` — the newest commit in the
+**repository** — so one commit anywhere moves every path's window at once. Had churn fed
+branch angles or noise, committing to `src/` would have re-shaped `docs/`: every limb moving
+on every commit, which is `AC-GROW-4` lost outright and a Grow made unreadable. Age and churn
+belong to materials precisely because a material can change without the tree moving.
+
+`SkeletonInputs::from_record` destructures `PathRecord` so `temporal` is *named and
+discarded* in the reader's view rather than merely unread, and a new primitive category
+cannot be added to the model without someone deciding here whether the skeleton may see it.
+`no_temporal_primitive_reaches_the_skeleton` fills every temporal field with what a churning,
+ancient, bursty path would carry and requires the parameters not to move by one bit. Verified
+by sabotage, as usual: `recency_heat` was added to the ownership driver, the test failed
+naming `G1`, and it was reverted.
+
+### Three decisions worth finding again
+
+**The data/code seam is between "what the numbers mean" and "how strongly they show".**
+Primitives become nine normalized drivers in code, because "hierarchy skew is how chain-like
+against fan-like a subtree is" does not become a different sentence because a silhouette
+looked wrong. Drivers become parameters through a weighted sum in the file, because that is
+exactly what §6 says gets tuned. A table mapping raw byte counts to angles would need its
+reader to know what a typical byte count is; a table choosing between named presets would not
+survive "adjust one parameter family at a time".
+
+**Normalization is against absolute scales, never against the repository.** `Scales` holds
+the depth that reads as maximally deep and the language count that reads as maximally mixed.
+Had those been maxima over the manifest, adding one deeply-nested file would renormalize every
+limb and reshape the whole tree — `AC-GROW-4` and `AC-DET-1` both lost, in a way that would
+look like nondeterminism rather than like a decision. The cost is that the scales are a tuning
+liability, which is why they are in the file where they can be seen.
+
+**The table validates itself against the design document.** `F-SKEL-5` makes the table
+editable, which makes it editable into nonsense. Every rule §3 and §5 state is now a load-time
+error naming the decision it came from: `A3`'s cap cannot be raised, `B2/B3` stays inside
+15–60°, jitter stays inside §3's 0.0–0.4, and `C1` requires `length_ratio.max <
+width_ratio.min` — non-overlapping ranges, because "length falls off faster than thickness"
+has to hold for *every* limb and not on average, and the overlapping trunk mass `F-SKEL-3`
+depends on is width outlasting length near the origin. Quietly clamping instead would leave a
+user tuning a parameter that had stopped responding, which is worse than a refused file.
+`each_design_rule_refuses_the_edit_that_breaks_it` breaks all six in turn.
+
+`deny_unknown_fields` on the weights is part of the same argument: without it a typo'd driver
+name parses as a success and contributes nothing, so the user edits, reloads, sees no change,
+and concludes `AC-SKEL-4` is broken.
+
+**One test bug found by the test itself.** The misspelled-driver case patched the first
+`skew_abs:` in the RON text — which was an example inside a comment, so it asserted against
+an unmodified table and passed vacuously. It now asserts its target appears exactly once
+before patching it. Same failure shape as `readonly-audit`'s "an oracle pointed at the wrong
+repository agrees with itself perfectly".
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -744,12 +837,21 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phases 0, 1 and 2 are closed.** Manifest assembly is in place (`treepo_vcs::extract`). Next
-is **Phase 3 — skeleton generation, and M0 exit**:
-`crates/treepo-gen/src/{params,lsystem/**,trunk,aggregate}.rs`, `assets/params/lsystem.ron`,
-`tools/m0-silhouette/**`, against `AC-SKEL-1`–`4` and `AC-DET-1`/`2`. It is the phase the
-visual identity lives or dies in, and the one Phase 0's tri-platform trig determinism was built
-for.
+**Phase 3 is underway.** The parameter table is in; the L-system that consumes it is not.
+
+Next is `crates/treepo-gen/src/lsystem/` — `grammar.rs` (parametric + stochastic
+productions), `turtle.rs` (on `treepo_det::trig`, `F-SKEL-6`), and `compose.rs` (`F-SKEL-2`'s
+hierarchical composition, one instance per major limb seeded by its path hash). That is the
+sprint that turns `LimbParams` into segments and makes `F-SKEL-1`'s "pure function" claim
+testable. `trunk.rs` (`F-SKEL-3`, and `F2`'s limb grouping), `aggregate.rs` (`F-SKEL-7`) and
+`tools/m0-silhouette/` follow, and the silhouette tool is what closes `AC-SKEL-1` and `2` by
+eye as well as by metric.
+
+One thing to decide when `compose.rs` is written, deliberately left open: whether the number
+of children at a node comes from the directory structure or from a parameter. `F-SKEL-2` says
+each major limb runs its own instance seeded by its path hash, which points at structure; §2.2's
+classic production is binary. `params.rs` takes no position — none of its rows names a child
+count — and that is why.
 
 Carried forward, neither blocking:
 
