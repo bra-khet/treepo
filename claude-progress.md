@@ -731,9 +731,9 @@ weight: `chmod` on unix, ACLs on Windows, and a builder that can clean up after 
 | `crates/treepo-gen/src/lsystem/grammar.rs` (`F-SKEL-1`) | **done** — 7 tests |
 | `crates/treepo-gen/src/lsystem/turtle.rs` (`F-SKEL-6`) | **done** — 8 tests |
 | `crates/treepo-gen/src/lsystem/compose.rs` (`F-SKEL-2`, `F-SKEL-7`, `A3`) | **done** — 12 tests |
-| `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`) | next |
+| `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`, `AC-SKEL-2`) | **done** — 13 tests |
 | `crates/treepo-gen/src/aggregate.rs` (container *forms*) | Phase 4 — see below |
-| `tools/m0-silhouette/**`, `tests/determinism.rs` | not started |
+| `tools/m0-silhouette/**`, `tests/determinism.rs` | next |
 
 `treepo-gen` is 14 packages against `treepo-vcs`'s 131 — `ron` and `serde` and nothing else.
 It is `no_std` for the same reason `treepo-det` and `treepo-model` are: it makes the
@@ -904,6 +904,61 @@ Verified by sabotage twice. Turning aggregation into truncation failed six tests
 naming the vanished path outright. Removing the hierarchy cap failed the `A3` test with "a limb
 appeared at depth 11, past A3's cap of 5". Both reverted.
 
+### The hybrid trunk — nothing draws a trunk
+
+`treepo_gen::grow` is now the product's entry point: a `Manifest` in, a `Skeleton` out.
+
+`design/visual-construction.md` settled the trunk against two alternatives. A **dedicated
+trunk** makes the trunk a constant, so every repository shares a silhouette in the region a
+viewer looks at first. A **pure trunkless stack** was rejected for L-system compatibility and
+redraw stability — with no axiom there is nothing for the productions to start from. The
+hybrid takes the axiom from one and the mass from the other: a minimal basal segment, primary
+limbs fanned narrowly enough that their base widths overlap, and **the trunk is that overlap**.
+
+**The trunk's width is not a parameter.** A stem is as wide as its limbs' combined base widths,
+packed — so a repository that grows a heavy new top-level directory thickens at the base
+because the limb is thick, not because a number was tuned to agree. `packing` is the only knob,
+and the loader refuses a value above 1000: a stem wider than what it carries is a trunk with
+limbs stuck on, which is the construction that was rejected.
+
+**Stated because it will look like a defect one day:** a repository with one top-level
+directory has almost no trunk. There is nothing to overlap. The trunk depicts breadth at the
+root, and a repository without breadth there has none to depict.
+
+`the_fan_controls_how_far_the_trunk_extends` measures the claim rather than asserting it —
+two limbs `θ` apart separate at `d = (w₁+w₂)/(4·sin(θ/2))`, so the trunk's height is where the
+first adjacent pair parts. A narrow fan must give a taller trunk than a wide one, and even the
+widest must outlast the axiom. The first version of this test probed at a fixed distance and
+**passed at every fan setting** — it was measuring a point too close to the tip to discriminate.
+Replaced rather than kept.
+
+### `F2` and `F-SKEL-3` are one mechanism used twice
+
+A group is a *stem*, not a container: the same shape as the basal axiom, one level down, with
+its members fanning from its tip exactly as the primaries fan from the basal tip. So there is
+no second construction to keep consistent with the first.
+
+**How many groups is not a parameter.** A run of small entries closes once it is no longer
+small — by the same threshold that made its members candidates — or once it holds as much as a
+limb's `branch_capacity` allows. Without that second stop, a repository whose small entries are
+*all* negligible would gather every one onto a single stem, and "fewer, thicker limbs" would
+arrive at one limb with a fan of forty: the diagram `F2` exists to prevent, moved down a level.
+
+`NodeRole` gained `Group` and `RootMass`, and `Group` is deliberately **not** `Aggregate` —
+both gather several paths under one node, but only the aggregate replaces them. Conflating them
+would report drawn paths as compressed and make `F2` indistinguishable from `F-SKEL-7`.
+
+### `AC-SKEL-2` falls out rather than being special-cased
+
+An empty repository has no primary limbs, so no overlap, so no trunk. What it has is the
+root-mass cluster every tree has and a basal segment the table holds short — `validate` refuses
+a table whose basal segment could exceed the shortest limb it can produce. The result is a seed
+sitting in its roots, and the test asserts both halves: the cluster exists, and the whole thing
+is no taller than the axiom. A dedicated trunk could not have produced it.
+
+Sabotage-verified: making `spread` ignore the fan left every limb collinear, and the trunk-height
+test failed with both fans reading `Fx::MAX` — never separating, therefore never measuring.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -926,24 +981,22 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phase 3 is underway.** A manifest now composes into a `Skeleton`: parameters, productions,
-turtle, and the phase-aware composition rule are all in and green.
+**The generative pipeline is complete end to end.** `treepo_gen::grow(&manifest, &table)`
+produces a whole `Skeleton` — roots, trunk, limbs, containers — and every structural end
+condition of Phase 3 except the ones that need a picture is met and tested.
 
-Next is **`crates/treepo-gen/src/trunk.rs`** — `F-SKEL-3`'s hybrid basal axiom, sized from
-total root mass and primary limb count, plus `F2`'s grouping of small top-level directories
-into fewer, thicker limbs. It is what supplies the origin and heading `compose` currently
-takes from its caller, and what turns `AC-SKEL-2`'s empty repository from a single seed
-segment into the root cluster `design/visual-construction.md` asks for. It is also where the
-overlapping trunk mass that `C1` was tuned for actually appears.
+Next is **`tools/m0-silhouette/`**: line-and-thickness PNGs for every corpus fixture. It is
+what closes `AC-SKEL-1` and `AC-SKEL-2` **by eye** rather than only by metric, and it is the
+point at which §6's prescribed workflow finally starts — lock a row, draw real repositories,
+adjust one parameter family at a time. Worth saying plainly: `lsystem.ron` is coherent,
+validated, and defended by 58 tests, and **nobody has yet looked at a tree.** Every number in
+it is a hypothesis.
 
-Then `tools/m0-silhouette/` — line-and-thickness PNGs for every corpus fixture — which is what
-closes `AC-SKEL-1` and `AC-SKEL-2` **by eye** rather than only by metric, and is the point at
-which the v0.1 parameter row gets reviewed against real repositories as §6 prescribes. The
-numbers in `lsystem.ron` are coherent and validated, but no one has yet looked at a tree.
-
-`tests/determinism.rs` and the tri-platform skeleton-hash triple run (`AC-DET-1`/`2`) follow
-that, and `AC-SKEL-3`'s T3 budget wants a `skeleton` row in `cargo xtask budget` against the
-existing pins.
+Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which is what
+turns `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across
+three platforms. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in `cargo xtask budget` against
+the existing pins; composition is bounded by construction (capacity × level cap), but bounded
+is not measured.
 
 Carried forward, neither blocking:
 

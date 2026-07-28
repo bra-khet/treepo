@@ -99,6 +99,21 @@ pub struct Segment {
 }
 
 /// What a [`SkeletonNode`] stands for.
+///
+/// Four kinds, and the distinction that matters is *what each one draws*:
+///
+/// | Role | Stands for | Draws its contents |
+/// |---|---|---|
+/// | [`Limb`](Self::Limb) | one path | — |
+/// | [`Group`](Self::Group) | several paths | yes, each as its own limb (`F2`) |
+/// | [`Aggregate`](Self::Aggregate) | several paths | no — it *is* their representation (`F-SKEL-7`) |
+/// | [`RootMass`](Self::RootMass) | the repository's base | — |
+///
+/// [`Group`](Self::Group) and [`Aggregate`](Self::Aggregate) are the pair worth keeping
+/// apart. Both gather several paths under one node; only the aggregate replaces them.
+/// Collapsing the two would make `F2`'s "fewer, thicker limbs" indistinguishable from
+/// `F-SKEL-7`'s "this directory and all its contents", and every path inside a group would
+/// read as compressed when it is in fact drawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeRole {
     /// One repository path, rendered as its own limb.
@@ -106,18 +121,41 @@ pub enum NodeRole {
         /// The path this limb is.
         path: RepoPath,
     },
+    /// Several small siblings sharing one thicker stem — `F2`.
+    ///
+    /// The members are still drawn individually, as limbs hanging from this stem. What the
+    /// group buys is a base region carrying more mass in fewer limbs, which is where the
+    /// hybrid trunk's overlap comes from.
+    Group {
+        /// The limb whose children were grouped.
+        anchor: RepoPath,
+        /// The paths sharing this stem, in path order.
+        members: alloc::vec::Vec<RepoPath>,
+    },
     /// A proportional container standing for several paths at once (`F-SKEL-7`).
     Aggregate(AggregateNode),
+    /// One node of the root-boulder cluster at the base (`AC-SKEL-2`).
+    ///
+    /// It stands for the repository rather than for any path in it, which is why
+    /// `design/visual-construction.md` gives it the global signals to carry. It is also what
+    /// an empty repository consists of: a seed and a root cluster, never a lonely trunk.
+    RootMass {
+        /// The repository root, so every node answers `F-INSP-4` the same way.
+        anchor: RepoPath,
+        /// Which node of the cluster this is, counted from zero.
+        index: u16,
+    },
 }
 
 impl NodeRole {
-    /// The path this node is, or the limb an aggregate hangs from.
+    /// The path this node is, or the limb it hangs from.
     ///
-    /// What a "reveal in file manager" (`F-INSP-4`) resolves to for either kind.
+    /// What a "reveal in file manager" (`F-INSP-4`) resolves to, for every kind.
     #[must_use]
     pub const fn anchor(&self) -> &RepoPath {
         match self {
             Self::Limb { path } => path,
+            Self::Group { anchor, .. } | Self::RootMass { anchor, .. } => anchor,
             Self::Aggregate(aggregate) => &aggregate.anchor,
         }
     }
@@ -257,22 +295,30 @@ impl Skeleton {
                 .members
                 .iter()
                 .any(|member| path.starts_with(member)),
+            // A group draws its members as limbs of their own, so they are represented by
+            // those nodes and counting them here would double-count rather than add. A
+            // root-mass node stands for the repository, not for any path in it.
+            NodeRole::Group { .. } | NodeRole::RootMass { .. } => false,
         })
     }
 
     /// Every path the skeleton names directly: each limb, and each container's member roots.
     ///
     /// Not the same as everything it *represents* — see [`represents`](Self::represents).
+    /// Group members are absent for the same reason they are absent there: each is present
+    /// as a limb in its own right.
     pub fn accounted_roots(&self) -> impl Iterator<Item = &RepoPath> {
         self.nodes.iter().flat_map(|node| match &node.role {
             NodeRole::Limb { path } => AccountedPaths::One(core::iter::once(path)),
             NodeRole::Aggregate(aggregate) => AccountedPaths::Many(aggregate.members.iter()),
+            NodeRole::Group { .. } | NodeRole::RootMass { .. } => AccountedPaths::None,
         })
     }
 }
 
-/// The two shapes [`Skeleton::accounted_paths`] flattens, without boxing.
+/// The shapes [`Skeleton::accounted_roots`] flattens, without boxing.
 enum AccountedPaths<'a> {
+    None,
     One(core::iter::Once<&'a RepoPath>),
     Many(core::slice::Iter<'a, RepoPath>),
 }
@@ -282,6 +328,7 @@ impl<'a> Iterator for AccountedPaths<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
+            Self::None => None,
             Self::One(iter) => iter.next(),
             Self::Many(iter) => iter.next(),
         }

@@ -99,10 +99,12 @@ const BUILT_IN_RON: &str = include_str!("../../../assets/params/lsystem.ron");
 /// Separate from [`treepo_model::SCHEMA_VERSION`]: a manifest and a parameter table version
 /// independently, and a table edit must not invalidate a stored manifest.
 ///
-/// Version 2 adds `branch_capacity`, the composition threshold. Bumped rather than accepted
-/// silently because a version 1 table has no such row, and a table missing the row that
-/// decides when a limb aggregates would compose a different tree while parsing perfectly.
-pub const TABLE_VERSION: u32 = 2;
+/// Version 2 adds `branch_capacity`, the composition threshold. Version 3 adds the [`trunk`]
+/// section. Bumped rather than accepted silently each time, because an older table parses
+/// perfectly while lacking a row that changes what the tree looks like.
+///
+/// [`trunk`]: TrunkTable
+pub const TABLE_VERSION: u32 = 3;
 
 /// Children-per-node used as each [`BranchingHistogram`] bucket's representative value.
 ///
@@ -174,6 +176,21 @@ pub struct LimbParams {
     /// because a bushy, conventionally-named directory can carry more before it stops being
     /// readable than a lopsided one can.
     pub branch_capacity: u16,
+}
+
+/// The hybrid trunk's knobs for one repository — the output of [`Table::trunk_params`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrunkParams {
+    /// Length of the basal axiom. Short by construction; [`Table::validate`] keeps it so.
+    pub basal_length: Fx,
+    /// Total angular spread of the limbs leaving a stem.
+    pub fan: Angle,
+    /// How many root-mass nodes sit at the base.
+    pub root_cluster: u16,
+    /// What share of its limbs' combined width a stem occupies, in `0..=1`.
+    pub packing: Fx,
+    /// The share of the repository below which a top-level entry is grouped (`F2`).
+    pub group_below: Fx,
 }
 
 /// Every structural signal the skeleton is permitted to read, normalized.
@@ -508,6 +525,57 @@ pub struct Table {
     ///
     /// The composition threshold — see [`LimbParams::branch_capacity`].
     pub branch_capacity: Row,
+    /// The hybrid trunk — `F-SKEL-3`, `F2`.
+    pub trunk: TrunkTable,
+}
+
+/// The hybrid trunk's parameters — `F-SKEL-3`, `F2`, and `AC-SKEL-2`.
+///
+/// `design/visual-construction.md` settles the trunk on a hybrid: a *minimal* basal segment
+/// that is a real L-system axiom, with the visible trunk mass emerging from primary limbs
+/// overlapping near the origin. Pure "stack independent branches" was rejected there for
+/// L-system compatibility, redraw stability, and readable silhouettes.
+///
+/// So the numbers here divide in two. [`basal_length`](Self::basal_length) is the *minimal*
+/// part — short, and it stays short. [`packing`](Self::packing) and [`fan`](Self::fan) are
+/// the *emergent* part: how tightly the primary limbs are bunched, which is what actually
+/// produces the trunk a viewer sees.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrunkTable {
+    /// Length of the basal axiom, per mille of a world unit.
+    ///
+    /// The one number that must stay small. A basal segment long enough to read as a trunk on
+    /// its own would make `AC-SKEL-2`'s empty repository into exactly the lonely trunk the
+    /// design forbids, and would make every tree's trunk a constant rather than something its
+    /// limbs produce.
+    pub basal_length: Row,
+    /// How much of the combined limb width a stem occupies, per mille.
+    ///
+    /// A stem carries limbs whose base widths sum to some total. At `1000` it is as wide as
+    /// all of them laid side by side — limbs that touch but do not overlap. Below that they
+    /// overlap, and the overlap *is* the trunk mass (`F-SKEL-3`). Above 1000 the stem would be
+    /// wider than what it carries, which is a trunk with the limbs stuck on rather than a
+    /// trunk made of them.
+    pub packing: i32,
+    /// Total angular spread of the limbs leaving a stem, millidegrees.
+    ///
+    /// Narrow keeps them overlapping into trunk mass and reads as columnar; wide separates
+    /// them into distinct limbs and reads as spreading. This is the trunk-scale companion to
+    /// `B2/B3`'s per-fork branching angle, and it is separate because the two do different
+    /// work: this decides whether there is a trunk at all.
+    pub fan: Row,
+    /// How many root-mass nodes sit at the base, in whole nodes.
+    ///
+    /// The root-boulder cluster `design/visual-construction.md` puts at the base to carry
+    /// global signals, and the half of `AC-SKEL-2` that makes an empty repository read as a
+    /// seed rather than as nothing.
+    pub root_cluster: Row,
+    /// A top-level entry below this share of the repository is grouped, per mille.
+    ///
+    /// `F2`: "small top-level directories grouped into fewer, thicker limbs". Zero disables
+    /// grouping, which is `F1` — one primary limb per top-level directory.
+    pub group_below: i32,
 }
 
 impl Table {
@@ -568,6 +636,9 @@ impl Table {
             ("base_length", &self.base_length),
             ("base_width", &self.base_width),
             ("branch_capacity", &self.branch_capacity),
+            ("basal_length", &self.trunk.basal_length),
+            ("fan", &self.trunk.fan),
+            ("root_cluster", &self.trunk.root_cluster),
         ];
         for (name, row) in rows {
             if row.min > row.max || row.base < row.min || row.base > row.max {
@@ -660,6 +731,50 @@ impl Table {
             });
         }
 
+        // F-SKEL-3 — the basal segment is minimal, and a table may not make it otherwise.
+        // The bound is stated against the shortest limb the table can produce: a basal
+        // segment longer than that is no longer a starter the limbs grow from, it is the
+        // trunk, and `AC-SKEL-2`'s empty repository becomes the lonely trunk the design
+        // rejects.
+        if self.trunk.basal_length.max > self.base_length.min {
+            return Err(TableError::Decision {
+                row: "basal_length",
+                decision: "F-SKEL-3",
+                detail: "the basal axiom is minimal — it may not exceed the shortest limb the \
+                         table can produce, or the trunk stops emerging from its limbs",
+            });
+        }
+
+        // A stem wider than the limbs it carries is a trunk with limbs attached, which is the
+        // construction `design/visual-construction.md` rejected.
+        if self.trunk.packing < 1 || self.trunk.packing > 1000 {
+            return Err(TableError::Decision {
+                row: "packing",
+                decision: "F-SKEL-3",
+                detail: "a stem occupies between a thousandth and all of its limbs' combined \
+                         width; trunk mass comes from their overlap, not from the stem",
+            });
+        }
+
+        if self.trunk.group_below < 0 || self.trunk.group_below > 1000 {
+            return Err(TableError::Decision {
+                row: "group_below",
+                decision: "F2",
+                detail: "the grouping threshold is a share of the repository, in 0..=1000",
+            });
+        }
+
+        // A cluster of zero is an empty repository with nothing at all to show, which is the
+        // half of AC-SKEL-2 that says "a seed", not "nothing".
+        if self.trunk.root_cluster.min < 1 {
+            return Err(TableError::Decision {
+                row: "root_cluster",
+                decision: "AC-SKEL-2",
+                detail: "every tree has at least one root node — an empty repository shows a \
+                         seed and a root cluster, never nothing",
+            });
+        }
+
         if self.min_length <= 0 {
             return Err(TableError::Decision {
                 row: "min_length",
@@ -709,6 +824,22 @@ impl Table {
             base_length: per_mille(self.base_length.evaluate(inputs)),
             base_width: per_mille(self.base_width.evaluate(inputs)),
             branch_capacity: u16::try_from(self.branch_capacity.evaluate(inputs)).unwrap_or(1),
+        }
+    }
+
+    /// The trunk parameters for one repository (`F-SKEL-3`, `F2`).
+    ///
+    /// `inputs` are the *root's* drivers, so the basal axiom and the fan respond to the
+    /// repository as a whole — "sized from total root mass and primary limb count" — rather
+    /// than to any one directory.
+    #[must_use]
+    pub fn trunk_params(&self, inputs: &SkeletonInputs) -> TrunkParams {
+        TrunkParams {
+            basal_length: per_mille(self.trunk.basal_length.evaluate(inputs)),
+            fan: Angle::from_millidegrees(self.trunk.fan.evaluate(inputs)),
+            root_cluster: u16::try_from(self.trunk.root_cluster.evaluate(inputs)).unwrap_or(1),
+            packing: per_mille(self.trunk.packing),
+            group_below: per_mille(self.trunk.group_below),
         }
     }
 

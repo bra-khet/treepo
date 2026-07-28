@@ -67,7 +67,7 @@
 // driver would re-shape `docs/` because somebody touched `src/`, which loses `AC-GROW-4` and
 // makes a Grow unreadable.
 (
-    version: 2,
+    version: 3,
 
     // What the raw counts are measured against. These are absolute constants rather than
     // maxima taken over the manifest, and deliberately so: normalizing against the
@@ -204,4 +204,66 @@
         convention: 1,
         skew_abs: -2,
     )),
+
+    // ── F-SKEL-3, F2 — the hybrid trunk ─────────────────────────────────────────────────
+    // `design/visual-construction.md` settles the trunk as a hybrid: a *minimal* basal
+    // segment that is a real L-system axiom, with the visible trunk mass emerging from the
+    // primary limbs overlapping near the origin. Nothing here draws a trunk. The trunk is
+    // what several thick limbs leaving one point look like.
+    //
+    // Stated because it will one day look like a defect: a repository with one top-level
+    // directory has almost no trunk. There is nothing to overlap. The trunk depicts breadth
+    // at the root, and a repository with none has none to depict.
+    //
+    // These rows are evaluated against the *root's* drivers, so they answer to the
+    // repository rather than to any one directory. Note that the root's `mass` is always
+    // zero — mass is a share of the parent's bytes, and the root has no parent — so a row
+    // here that leans on `mass` is leaning on nothing.
+    trunk: (
+        // The one number that must stay small. `validate` refuses a table whose basal
+        // segment could exceed the shortest limb it can produce: a basal segment long
+        // enough to read as a trunk on its own makes every tree's trunk a constant, and
+        // makes `AC-SKEL-2`'s empty repository the lonely trunk the design rejects.
+        basal_length: (base: 150, min: 100, max: 190, per: (
+            bushiness: 30,
+            depth: 20,
+        )),
+
+        // How much of its limbs' combined base width a stem occupies, per mille. At 1000 the
+        // limbs would touch without overlapping; below it they overlap, and the overlap is
+        // the trunk. Above 1000 would be a trunk with limbs stuck on rather than one made of
+        // them, and the loader refuses it.
+        packing: 720,
+
+        // Total angular spread of the limbs leaving a stem. This is the trunk-scale
+        // companion to B2/B3's per-fork angle, and it is a separate row because it does
+        // different work: narrow keeps the primaries overlapping into trunk mass, wide
+        // separates them into distinct limbs. It is the single strongest control over
+        // whether a repository reads as columnar or as spreading.
+        fan: (base: 62000, min: 24000, max: 150000, per: (
+            bushiness: 40000,
+            skew_abs: 26000,
+            convention: -8000,
+        )),
+
+        // The root-boulder cluster at the base, in whole nodes. Every tree has one; an empty
+        // repository is *only* this plus its seed, which is the whole of `AC-SKEL-2`. The
+        // minimum is one rather than zero because a repository with nothing in it still
+        // shows a seed, not an empty canvas.
+        root_cluster: (base: 3, min: 1, max: 9, per: (
+            bushiness: 3,
+            diversity: 2,
+            depth: 1,
+        )),
+
+        // F2 — a top-level entry below this share of the repository is gathered onto a
+        // shared stem instead of taking a thin limb of its own. Set it to 0 for F1, one
+        // primary limb per top-level directory.
+        //
+        // How *many* groups is deliberately not a second number: a run closes once it is no
+        // longer small by this same threshold, or once it holds as much as a limb's
+        // `branch_capacity` allows. A rule that describes itself beats two numbers that have
+        // to be kept agreeing.
+        group_below: 55,
+    ),
 )

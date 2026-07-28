@@ -98,14 +98,49 @@ pub fn compose(manifest: &Manifest, table: &Table, origin: Point, heading: Angle
 }
 
 /// Everything the recursion carries unchanged.
-struct Context<'a> {
+///
+/// Shared with [`trunk`](crate::trunk), which owns the frame this composition starts from and
+/// then hands each primary limb back here. Fields stay private so the one mutable thing —
+/// the skeleton under construction — is reached through a method rather than being a field
+/// anyone can swap.
+pub(crate) struct Context<'a> {
     manifest: &'a Manifest,
     table: &'a Table,
     skeleton: &'a mut Skeleton,
 }
 
+impl<'a> Context<'a> {
+    /// A context for composing into `skeleton`.
+    pub(crate) const fn new(
+        manifest: &'a Manifest,
+        table: &'a Table,
+        skeleton: &'a mut Skeleton,
+    ) -> Self {
+        Self {
+            manifest,
+            table,
+            skeleton,
+        }
+    }
+
+    /// The parameter table in force.
+    pub(crate) const fn table(&self) -> &Table {
+        self.table
+    }
+
+    /// The skeleton under construction.
+    pub(crate) const fn skeleton(&mut self) -> &mut Skeleton {
+        self.skeleton
+    }
+
+    /// A path's generator seed (`P2`).
+    pub(crate) fn seed_for(&self, path: &RepoPath) -> treepo_det::Seed {
+        self.manifest.seed_for(path)
+    }
+}
+
 /// Places one path as a limb, and everything beneath it.
-fn place(
+pub(crate) fn place(
     ctx: &mut Context<'_>,
     path: &RepoPath,
     parent: Option<NodeId>,
@@ -381,7 +416,10 @@ fn build_aggregate(anchor: &RepoPath, index: usize, members: &[&PathRecord]) -> 
 /// `sort_by` rather than `sort_unstable_by`: the tie-break makes the order total, so the two
 /// agree — but the unstable sort's behaviour on equal elements is unspecified across Rust
 /// versions, and this order reaches generated output.
-fn significant_children<'a>(manifest: &'a Manifest, path: &'a RepoPath) -> Vec<&'a PathRecord> {
+pub(crate) fn significant_children<'a>(
+    manifest: &'a Manifest,
+    path: &'a RepoPath,
+) -> Vec<&'a PathRecord> {
     let mut children: Vec<&PathRecord> = manifest.children(path).collect();
     children.sort_by(|a, b| {
         b.size
@@ -398,7 +436,7 @@ fn significant_children<'a>(manifest: &'a Manifest, path: &'a RepoPath) -> Vec<&
 /// repository — and a root that failed to compose would be a tree that never grew. Neutral
 /// inputs give it the table's base values, which `trunk.rs` will replace with an axiom sized
 /// from total root mass and primary limb count (`F-SKEL-3`).
-fn inputs_for(manifest: &Manifest, table: &Table, path: &RepoPath) -> SkeletonInputs {
+pub(crate) fn inputs_for(manifest: &Manifest, table: &Table, path: &RepoPath) -> SkeletonInputs {
     manifest
         .path(path)
         .map_or_else(SkeletonInputs::default, |record| {
@@ -407,7 +445,7 @@ fn inputs_for(manifest: &Manifest, table: &Table, path: &RepoPath) -> SkeletonIn
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use alloc::string::{String, ToString};
     use alloc::vec;
@@ -420,7 +458,7 @@ mod tests {
     /// Worth the thirty lines: composition reads `child_count`, `descendant_*`,
     /// `max_subtree_depth`, `relative_bytes` and the branching histogram, and a fixture that
     /// left them at their defaults would exercise the code with every driver reading zero.
-    fn manifest_of(files: &[(&str, u64)]) -> Manifest {
+    pub(crate) fn manifest_of(files: &[(&str, u64)]) -> Manifest {
         let mut records: Vec<PathRecord> = Vec::new();
         let mut seen: Vec<RepoPath> = Vec::new();
 
@@ -535,7 +573,7 @@ mod tests {
             .iter()
             .filter_map(|node| match &node.role {
                 NodeRole::Aggregate(aggregate) => Some(aggregate),
-                NodeRole::Limb { .. } => None,
+                _ => None,
             })
             .collect()
     }
@@ -642,7 +680,7 @@ mod tests {
             .iter()
             .filter_map(|node| match &node.role {
                 NodeRole::Limb { path } => Some(path.depth()),
-                NodeRole::Aggregate(_) => None,
+                _ => None,
             })
             .max()
             .unwrap();
@@ -727,7 +765,7 @@ mod tests {
                     NodeRole::Aggregate(aggregate) => {
                         Some((aggregate.anchor.clone(), aggregate.index, node.seed))
                     }
-                    NodeRole::Limb { .. } => None,
+                    _ => None,
                 })
                 .collect()
         };

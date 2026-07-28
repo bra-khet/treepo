@@ -41,6 +41,8 @@ extern crate alloc;
 
 pub mod lsystem;
 pub mod params;
+pub mod trunk;
 
 pub use lsystem::compose;
-pub use params::{LimbParams, SkeletonInputs, Table, TableError};
+pub use params::{LimbParams, SkeletonInputs, Table, TableError, TrunkParams};
+pub use trunk::grow;
