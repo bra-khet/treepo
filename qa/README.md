@@ -93,22 +93,32 @@ Do **not** hand over entire `sessions/` trees unless asked — one finding + cho
 
 ---
 
-## Until the HTML lab exists (S4)
-
-Use the existing CLI; put outputs into a session folder yourself:
+## HTML lab (S4)
 
 ```text
-# from workspace root
-mkdir qa\sessions\2026-07-28_baseline\renders\0001
-cargo run -p m0-silhouette -- --out qa/sessions/2026-07-28_baseline/renders/0001
-
-# experiment table (AC-SKEL-4)
-copy assets\params\lsystem.ron qa\sessions\2026-07-28_baseline\experiment.ron
-cargo run -p m0-silhouette -- --table qa/sessions/2026-07-28_baseline/experiment.ron --out qa/sessions/.../renders/0002
+cargo run -p m0-silhouette -- lab
+# open http://127.0.0.1:7420/
 ```
 
-One parameter family at a time (`design/l-system-parameterization.md` §6). Structural
-fixes S1–S3 land before serious number tuning — see the plan.
+What it does:
+
+1. Creates `qa/sessions/<stamp>_<label>/` with `experiment.ron` + `baseline.ron` (copy of the
+   product table, or `--table`).
+2. Locks one §5 family, focuses one field, slider / exact value.
+3. **Render strip** → next monotonic `renders/NNNN/` (never overwrites), multi-subject PNGs.
+4. **Export finding** → `findings/<family>_<param>.json` matching [`findings.schema.json`](findings.schema.json).
+
+The lab never writes `assets/params/lsystem.ron`. Promote by hand from an exported finding.
+
+Options: `--port`, `--host`, `--label`, `--table`, `--size` (see `lab --help`).
+
+### CLI fallback (still valid)
+
+```text
+cargo run -p m0-silhouette -- --table qa/sessions/.../experiment.ron --out qa/sessions/.../renders/0002
+```
+
+One parameter family at a time (`design/l-system-parameterization.md` §6).
 
 ### Default subject strip
 

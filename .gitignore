@@ -16,4 +16,4 @@ coverage/
 # Silhouette iteration workspace (qa/README.md). Tracked: README, plan, subjects,
 # findings schema. Untracked: session tables, PNGs, per-render history, exports.
 /qa/sessions/
-/qa/current/
+/qa/current

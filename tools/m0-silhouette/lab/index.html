@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>treepo — silhouette lab</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>silhouette lab</h1>
+      <p class="sub">One parameter family at a time · §6 · non-destructive renders</p>
+    </div>
+    <div class="session-meta" id="session-meta">loading…</div>
+  </header>
+
+  <main class="layout">
+    <section class="panel controls">
+      <h2>Family lock</h2>
+      <div class="row">
+        <label for="family">Family</label>
+        <select id="family"></select>
+      </div>
+      <div class="row">
+        <label for="parameter">Parameter</label>
+        <select id="parameter"></select>
+      </div>
+
+      <h2>Value</h2>
+      <div class="slider-block">
+        <div class="row value-row">
+          <span id="param-label">—</span>
+          <strong id="param-value">—</strong>
+          <span class="unit" id="param-unit"></span>
+        </div>
+        <input type="range" id="slider" disabled />
+        <div class="row soft-range">
+          <span id="soft-min"></span>
+          <span id="soft-max"></span>
+        </div>
+        <div class="row">
+          <label for="value-input">Exact</label>
+          <input type="number" id="value-input" disabled />
+          <button type="button" id="apply-value" disabled>Apply</button>
+        </div>
+      </div>
+
+      <h2>Render</h2>
+      <div class="row">
+        <label for="render-notes">Notes</label>
+        <input type="text" id="render-notes" placeholder="optional note for this render" />
+      </div>
+      <button type="button" class="primary" id="render-btn">Render strip</button>
+      <p class="hint" id="render-status"></p>
+
+      <h2>Export finding</h2>
+      <div class="row">
+        <label for="chosen-render">Chosen render</label>
+        <select id="chosen-render"></select>
+      </div>
+      <div class="row">
+        <label for="verdict">Verdict</label>
+        <select id="verdict">
+          <option value="prefer">prefer</option>
+          <option value="reject">reject</option>
+          <option value="blocked">blocked</option>
+          <option value="needs_code">needs_code</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="export-notes">Judgment</label>
+        <textarea id="export-notes" rows="3" placeholder="Why this setting wins across the strip…"></textarea>
+      </div>
+      <button type="button" id="export-btn">Export finding</button>
+      <p class="hint" id="export-status"></p>
+
+      <h2>Session diff vs baseline</h2>
+      <pre id="diff" class="diff">—</pre>
+    </section>
+
+    <section class="panel gallery">
+      <h2>Render history</h2>
+      <p class="hint">Newest first. Renders never overwrite.</p>
+      <div id="gallery"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

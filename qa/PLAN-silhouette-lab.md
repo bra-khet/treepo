@@ -81,7 +81,7 @@ That S3 → S3b sequence is the forced order working as intended, and worth reco
 | **S2** | Tropism row + apply | **done** 2026-07-28 (`4d01807`) |
 | **S3** | Basal vs stem rule + validate | **done** 2026-07-28 (`4d01807`) |
 | **S3b** | Trunk column: pipe support + primary internodes | **done** 2026-07-28 |
-| **S4** | HTML lab MVP | pending |
+| **S4** | HTML lab MVP | **done** 2026-07-28 (`m0-silhouette lab`) |
 | **S5** | AC-SKEL-1 subject pair | pending |
 | **S6** | Tuning campaign via lab | pending |
 | **S7** | Determinism / budget gate hardening | pending |
