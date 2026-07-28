@@ -30,10 +30,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod identity_io;
 pub mod manifest_io;
 pub mod paths;
 pub mod resolve;
 
+pub use identity_io::IdentityError;
 pub use manifest_io::{ReadError, Staged, WriteError, read, stage, write};
 pub use paths::{LayoutError, RepositoryStore, StoreRoot};
 pub use resolve::{Resolution, ResolveError, Skipped, normalize_url, resolve};

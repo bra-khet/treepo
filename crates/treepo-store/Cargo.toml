@@ -32,6 +32,13 @@ gix = { version = "0.86", default-features = false, features = [
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 
+# For the small files D9 keeps as JSON so `N2`'s inspectability promise holds where a person
+# would actually look. Deferred through the previous sprint on the grounds that a serializer
+# for output nothing reads back is a dependency bought for nothing; `identity.json` is the
+# first file treepo must *read*, and hand-rolling a parser for a file users are invited to
+# open — and may hand-edit — is the worse of the two engineering choices.
+serde_json = "1"
+
 # Fixtures for the three identity tiers: `multi-remote` (tier 1), `no-remote` (tier 2), and
 # `empty` (tier 3). Dev-only, as in treepo-vcs — it shells out to `git`, which the product
 # never does (R1, architecture D3).

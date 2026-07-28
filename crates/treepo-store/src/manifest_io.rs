@@ -345,6 +345,32 @@ fn temporary(final_path: &Path) -> PathBuf {
     final_path.with_file_name(name)
 }
 
+/// Writes one file into place atomically: temporary, flush, sync, rename (`F-MAN-7`).
+///
+/// The single-file form of [`stage`] plus [`Staged::commit`], for the store's smaller files.
+/// It lives here rather than beside its callers because this is where the discipline is
+/// documented, and a second copy of it somewhere else would be a second place to get it wrong.
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), WriteError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| WriteError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let temporary = temporary(path);
+    write_durably(&temporary, bytes)?;
+    match rename(&temporary, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Nothing landed, so leaving the temporary behind would be litter rather than
+            // evidence — the two-phase path keeps its temporaries for exactly the opposite
+            // reason, that a caller may still want to retry the commit.
+            let _ = std::fs::remove_file(&temporary);
+            Err(error)
+        }
+    }
+}
+
 /// Writes `bytes` and does not return until they are on the device.
 ///
 /// `sync_all` is what makes the rename meaningful. Without it the rename can be durable while
@@ -371,49 +397,40 @@ fn rename(from: &Path, to: &Path) -> Result<(), WriteError> {
 // The sidecar.
 // ---------------------------------------------------------------------------------------
 
-/// `manifest-meta.json` — what D9 says it carries, in a fixed field order.
+/// `manifest-meta.json` — what D9 says it carries: the versions, and counts.
 ///
-/// Written by hand rather than through a JSON library. It is nine scalars that treepo never
-/// reads back, so a serializer would be a dependency bought entirely for output this file can
-/// produce in twenty lines. When a later phase needs to *read* `config.json` or
-/// `settings.json` (`F-SET-*`), that is the moment to add one.
-fn meta_json(manifest: &Manifest, manifest_bytes: u64) -> String {
-    let commit = manifest
-        .built_from_commit
-        .map_or_else(|| "null".to_string(), |id| json_string(&id.to_string()));
-
-    format!(
-        "{{\n  \"schema_version\": {},\n  \"treepo_version\": {},\n  \
-         \"built_from_commit\": {commit},\n  \"reference_time\": {},\n  \
-         \"is_shallow\": {},\n  \"path_count\": {},\n  \"author_count\": {},\n  \
-         \"language_count\": {},\n  \"manifest_bytes\": {manifest_bytes}\n}}\n",
-        manifest.schema_version,
-        json_string(&manifest.treepo_version),
-        manifest.reference_time,
-        manifest.is_shallow,
-        manifest.paths().len(),
-        manifest.authors.len(),
-        manifest.languages.len(),
-    )
+/// Written, never read back: the schema version the loader trusts is the one in the binary's
+/// header, where a person cannot edit it into something that makes the loader misparse a
+/// manifest. This file is the copy `N2` promises them instead.
+#[derive(Debug, serde::Serialize)]
+struct Meta<'a> {
+    schema_version: u32,
+    treepo_version: &'a str,
+    built_from_commit: Option<String>,
+    reference_time: i64,
+    is_shallow: bool,
+    path_count: usize,
+    author_count: usize,
+    language_count: usize,
+    manifest_bytes: u64,
 }
 
-/// A JSON string literal, escaped per RFC 8259.
-fn json_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+fn meta_json(manifest: &Manifest, manifest_bytes: u64) -> String {
+    let meta = Meta {
+        schema_version: manifest.schema_version,
+        treepo_version: &manifest.treepo_version,
+        built_from_commit: manifest.built_from_commit.map(|id| id.to_string()),
+        reference_time: manifest.reference_time,
+        is_shallow: manifest.is_shallow,
+        path_count: manifest.paths().len(),
+        author_count: manifest.authors.len(),
+        language_count: manifest.languages.len(),
+        manifest_bytes,
+    };
+    // Pretty, and with a trailing newline: this file exists to be opened in an editor.
+    let mut text = serde_json::to_string_pretty(&meta).unwrap_or_default();
+    text.push('\n');
+    text
 }
 
 #[cfg(test)]
@@ -740,12 +757,34 @@ mod tests {
         );
     }
 
+    /// The single-file form has to be as atomic as the two-file one, and has to leave nothing
+    /// behind when it cannot finish.
     #[test]
-    fn json_strings_are_escaped() {
-        assert_eq!(json_string("plain"), "\"plain\"");
-        assert_eq!(json_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
-        assert_eq!(json_string("line\nbreak"), "\"line\\nbreak\"");
-        assert_eq!(json_string("\u{1}"), "\"\\u0001\"");
+    fn a_single_file_write_lands_whole_and_leaves_no_temporary() {
+        let dir = std::env::temp_dir()
+            .join("treepo-manifest-io")
+            .join("atomic-single");
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).expect("clearing scratch");
+        }
+        let target = dir.join("nested").join("thing.json");
+
+        write_atomically(&target, b"first").expect("the write creates its parent");
+        assert_eq!(std::fs::read(&target).expect("read"), b"first");
+
+        write_atomically(&target, b"second").expect("the overwrite");
+        assert_eq!(std::fs::read(&target).expect("read"), b"second");
+
+        let leftovers: Vec<_> = std::fs::read_dir(target.parent().expect("a parent"))
+            .expect("listing")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temporaries left behind: {leftovers:?}"
+        );
     }
 
     /// Two writers must not truncate each other's temporary file.

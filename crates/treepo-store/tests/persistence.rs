@@ -207,6 +207,103 @@ fn the_second_clone_of_a_remote_opens_the_first_ones_store() {
     );
 }
 
+/// `F-MAN-2` — a complete open leaves the store laid out as the PRD says, and the identity it
+/// recorded is the one the repository resolves to.
+///
+/// The second half is what `identity.json` is for: `F-MAN-9`'s browser has a directory of hex
+/// and needs to tell a user which repository it belongs to, without the repository being to
+/// hand. Reading the file back and comparing against a fresh resolution is that question asked
+/// from both ends.
+#[test]
+fn a_complete_open_writes_the_layout_f_man_2_specifies() {
+    let root = scratch("layout");
+    let path = fixture("multi-remote");
+    let (manifest, resolution) = extract(&path);
+    let store = store_for(&root, &resolution);
+
+    treepo_store::identity_io::write(&store, &resolution).expect("the identity");
+    treepo_store::write(&store, &manifest).expect("the manifest");
+
+    for file in [
+        store.identity_file(),
+        store.manifest_file(),
+        store.manifest_meta_file(),
+    ] {
+        assert!(file.is_file(), "{} is missing", file.display());
+    }
+    assert_eq!(
+        store.dir().file_name().and_then(|n| n.to_str()),
+        Some(resolution.identity.directory_name().as_str()),
+        "the directory is named by the identity"
+    );
+
+    let recorded = treepo_store::identity_io::read(&store).expect("reading it back");
+    assert_eq!(recorded, resolution, "the store knows what it holds");
+
+    // And the file says so in words, which is the half a test cannot assert structurally.
+    let text = std::fs::read_to_string(store.identity_file()).expect("the file");
+    assert!(text.contains("example.invalid/backup"), "{text}");
+    assert!(text.contains("\"chosen_remote\": \"backup\""), "{text}");
+}
+
+/// A raw remote URL must not reach the store, however it got into `.git/config`.
+///
+/// `resolve` strips credentials and `Resolution` never carries a raw URL, so this is a check
+/// that no *later* stage reintroduced one — the store is the last place a token could end up
+/// on disk, and the first place someone would find it.
+#[test]
+fn a_credential_in_a_remote_url_never_lands_in_the_store() {
+    let root = scratch("credentials");
+    let path = root.path().join("checkout");
+    let mut builder = corpus::Builder::init(path.clone(), "with-token").expect("git init");
+    builder.write_source("src/main.rs", 12).expect("a file");
+    builder.commit("first").expect("a commit");
+    builder
+        .git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://x-access-token:ghp_notarealsecret@github.com/example/widget.git",
+        ])
+        .expect("a remote");
+
+    // The premise, asserted rather than assumed: a test that scans for a token the fixture
+    // never contained would pass whatever the store did.
+    let config = std::fs::read_to_string(path.join(".git").join("config")).expect("git config");
+    assert!(
+        config.contains("ghp_notarealsecret"),
+        "the token is really there"
+    );
+
+    let (manifest, resolution) = extract(&path);
+    let store = store_for(&root, &resolution);
+    treepo_store::identity_io::write(&store, &resolution).expect("the identity");
+    treepo_store::write(&store, &manifest).expect("the manifest");
+
+    for file in [
+        store.identity_file(),
+        store.manifest_file(),
+        store.manifest_meta_file(),
+    ] {
+        let bytes = std::fs::read(&file).expect("reading it back");
+        let haystack = String::from_utf8_lossy(&bytes);
+        assert!(
+            !haystack.contains("ghp_notarealsecret"),
+            "{} carries the token",
+            file.display()
+        );
+        assert!(
+            !haystack.contains("x-access-token"),
+            "{} carries the credential",
+            file.display()
+        );
+    }
+    assert_eq!(
+        resolution.identity.source_value, "github.com/example/widget",
+        "and the identity is still the repository's"
+    );
+}
+
 /// `F-MAN-8` — the store is regenerable, and every way of losing it says so.
 #[test]
 fn every_way_of_losing_the_store_asks_for_regeneration_rather_than_failing() {
