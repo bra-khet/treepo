@@ -6,22 +6,14 @@
 //! variable, a hash seed, a directory read order. Only a manifest extracted twice from a real
 //! repository can answer that.
 //!
-//! # The assembly step is local to this file, and should not stay that way
-//!
-//! Nothing in the workspace yet composes a [`Manifest`] from `treepo-vcs`'s [`Structure`] and
-//! [`History`] — Phase 1 produced the two halves and stopped. [`extract`] below does it in
-//! about fifteen lines of field copies. That is enough for these tests, because what
-//! `AC-MAN-1` is really asking about is the *primitives*, and those come from the real passes.
-//! It is not enough for the product, and the composition belongs in `treepo-vcs`, whose own
-//! module documentation already claims to be "turning a repository into a `Manifest`".
+//! Manifest assembly is [`treepo_vcs::extract`] — the product API. These tests call it rather
+//! than composing passes themselves.
 
 use std::path::PathBuf;
 use treepo_model::Manifest;
 use treepo_store::{RepositoryStore, StoreRoot};
-use treepo_vcs::lang::{Catalogue, ContentOptions, apply_history_signals};
-use treepo_vcs::{
-    FilterSet, HistoryOptions, SignalDictionary, WalkOptions, discover, log_pass, scan, walk,
-};
+use treepo_vcs::lang::Catalogue;
+use treepo_vcs::{ExtractOptions, FilterSet, discover, extract};
 
 /// Builds the corpus once per test binary, then hands out fixture paths.
 fn fixture(name: &str) -> PathBuf {
@@ -45,55 +37,21 @@ fn scratch(name: &str) -> StoreRoot {
     StoreRoot::at(root)
 }
 
-/// The whole Phase 1 pipeline over a repository, assembled into a manifest.
-///
-/// Each pass is called by name, as `readonly-audit` does and for the same reason: a helper is
-/// somewhere a pass could quietly stop being called while the test stayed green.
-fn extract(path: &std::path::Path) -> (Manifest, treepo_store::Resolution) {
+/// Discover, resolve identity, extract — the product open path in miniature.
+fn extract_fixture(path: &std::path::Path) -> (Manifest, treepo_store::Resolution) {
     let target = discover(path).expect("the fixture opens");
     let resolution =
         treepo_store::resolve(target.root(), target.repository(), 0).expect("identity");
-
-    let filter = FilterSet::built_in();
-    let catalogue = Catalogue::built_in();
-    let mut structure = walk(&target, &filter, WalkOptions::default()).expect("the walk");
-
-    let mut languages = treepo_model::manifest::LanguageTable::new();
-    scan(
+    let manifest = extract(
         &target,
-        &mut structure,
-        &catalogue,
-        &mut languages,
-        ContentOptions::default(),
-    )
-    .expect("the content pass");
-    treepo_vcs::signals::apply(
-        &mut structure.records,
-        &SignalDictionary::built_in(),
-        &catalogue,
-    );
-    let history = log_pass(&target, &filter, HistoryOptions::default()).expect("the history pass");
-    log_pass::apply(&mut structure.records, &history);
-    apply_history_signals(&mut structure.records);
-
-    let mut manifest = Manifest::new(
-        env!("CARGO_PKG_VERSION").to_string(),
+        &FilterSet::built_in(),
+        &Catalogue::built_in(),
         treepo_store::resolve::root_seed(&resolution.identity),
-    );
-    manifest.built_from_commit = target.repository().and_then(|_| head_of(&target));
-    manifest.reference_time = history.reference_time;
-    manifest.is_shallow = matches!(&target, treepo_vcs::Target::Repository(r) if r.is_shallow);
-    manifest.authors = history.authors.clone();
-    manifest.languages = languages;
-    manifest.set_paths(structure.records);
+        env!("CARGO_PKG_VERSION").to_string(),
+        ExtractOptions::default(),
+    )
+    .expect("extraction");
     (manifest, resolution)
-}
-
-fn head_of(target: &treepo_vcs::Target) -> Option<treepo_model::identity::CommitId> {
-    match target {
-        treepo_vcs::Target::Repository(repo) => repo.head,
-        treepo_vcs::Target::PlainDirectory { .. } => None,
-    }
 }
 
 fn store_for(root: &StoreRoot, resolution: &treepo_store::Resolution) -> RepositoryStore {
@@ -117,7 +75,7 @@ fn deleting_the_store_and_regenerating_reproduces_identical_bytes() {
         let root = scratch(&format!("regenerate-{name}"));
         let path = fixture(name);
 
-        let (first, resolution) = extract(&path);
+        let (first, resolution) = extract_fixture(&path);
         let store = store_for(&root, &resolution);
         treepo_store::write(&store, &first).expect("the first write");
         let before = std::fs::read(store.manifest_file()).expect("the first manifest");
@@ -129,7 +87,7 @@ fn deleting_the_store_and_regenerating_reproduces_identical_bytes() {
             Err(treepo_store::ReadError::Absent)
         ));
 
-        let (second, again) = extract(&path);
+        let (second, again) = extract_fixture(&path);
         assert_eq!(
             again.identity, resolution.identity,
             "{name}: identity is stable across a re-extraction"
@@ -152,7 +110,7 @@ fn deleting_the_store_and_regenerating_reproduces_identical_bytes() {
 fn a_real_manifest_round_trips_through_the_store() {
     for name in ["single-author", "mailmap", "no-git", "empty"] {
         let root = scratch(&format!("round-trip-{name}"));
-        let (manifest, resolution) = extract(&fixture(name));
+        let (manifest, resolution) = extract_fixture(&fixture(name));
         let store = store_for(&root, &resolution);
 
         treepo_store::write(&store, &manifest).expect("the write");
@@ -188,7 +146,7 @@ fn the_second_clone_of_a_remote_opens_the_first_ones_store() {
         paths.push(path);
     }
 
-    let (first, resolution_a) = extract(&paths[0]);
+    let (first, resolution_a) = extract_fixture(&paths[0]);
     let store_a = store_for(&root, &resolution_a);
     treepo_store::write(&store_a, &first).expect("the write");
 
@@ -218,7 +176,7 @@ fn the_second_clone_of_a_remote_opens_the_first_ones_store() {
 fn a_complete_open_writes_the_layout_f_man_2_specifies() {
     let root = scratch("layout");
     let path = fixture("multi-remote");
-    let (manifest, resolution) = extract(&path);
+    let (manifest, resolution) = extract_fixture(&path);
     let store = store_for(&root, &resolution);
 
     treepo_store::identity_io::write(&store, &resolution).expect("the identity");
@@ -275,7 +233,7 @@ fn a_credential_in_a_remote_url_never_lands_in_the_store() {
         "the token is really there"
     );
 
-    let (manifest, resolution) = extract(&path);
+    let (manifest, resolution) = extract_fixture(&path);
     let store = store_for(&root, &resolution);
     treepo_store::identity_io::write(&store, &resolution).expect("the identity");
     treepo_store::write(&store, &manifest).expect("the manifest");
@@ -308,7 +266,7 @@ fn a_credential_in_a_remote_url_never_lands_in_the_store() {
 #[test]
 fn every_way_of_losing_the_store_asks_for_regeneration_rather_than_failing() {
     let root = scratch("regenerable");
-    let (manifest, resolution) = extract(&fixture("single-author"));
+    let (manifest, resolution) = extract_fixture(&fixture("single-author"));
     let store = store_for(&root, &resolution);
 
     let absent = treepo_store::read(&store).expect_err("nothing stored yet");
@@ -347,8 +305,8 @@ fn the_same_history_at_a_second_path_writes_the_same_manifest() {
     std::fs::create_dir_all(moved.parent().expect("a parent")).expect("the new home");
     copy_tree(&original, &moved);
 
-    let (here, resolution_here) = extract(&original);
-    let (there, resolution_there) = extract(&moved);
+    let (here, resolution_here) = extract_fixture(&original);
+    let (there, resolution_there) = extract_fixture(&moved);
     assert_eq!(resolution_here.identity, resolution_there.identity);
 
     let store = store_for(&root, &resolution_here);

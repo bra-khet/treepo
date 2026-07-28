@@ -30,6 +30,9 @@
 //!   above already measured. Reads no blob and stats no path.
 //! * [`mailmap`] — `F-EXT-9`. One human is one contributor.
 //! * [`log_pass`] — `F-EXT-2`. Every temporal and ownership primitive, from one traversal.
+//! * [`extract`] — the composition: every pass above into one
+//!   [`Manifest`](treepo_model::Manifest). The product entry point; the individual passes stay
+//!   public for measurement and audit.
 //! * [`status`] — `F-THR-4`. Working-tree dirtiness, as an overlay over the finished
 //!   structure. The only pass that reads the working directory, and the only one that is not
 //!   extraction: nothing it produces reaches the manifest.
@@ -79,6 +82,7 @@
 #![deny(clippy::float_cmp)]
 
 pub mod discover;
+pub mod extract;
 pub mod filter;
 pub mod lang;
 pub mod log_pass;
@@ -88,6 +92,7 @@ pub mod status;
 pub mod walk;
 
 pub use discover::{DiscoverError, Notice, RepoTarget, Target, discover};
+pub use extract::{ExtractError, ExtractOptions, extract};
 pub use filter::{Decision, DefaultExclusions, ExclusionGroup, FilterSet};
 pub use lang::{
     Attributes, Catalogue, Classification, ContentOptions, Marker, ScanError, ScanReport, scan,

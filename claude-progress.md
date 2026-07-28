@@ -708,13 +708,14 @@ treepo must *read*, and hand-rolling a parser for a file users are invited to op
 hand-edit is the worse of two choices. `manifest-meta.json` moved onto it at the same time —
 two JSON writers in one crate would be worse than one.
 
-### Two gaps found, both recorded rather than quietly patched
+### Gaps
 
-**Nothing composes a `Manifest`.** Phase 1 produced `Structure` and `History` and stopped;
-`tests/persistence.rs` assembles them in about fifteen lines of field copies. That is enough
-for `AC-MAN-1`, whose question is about the *primitives* and those come from the real passes.
-It is not enough for the product, and the composition belongs in `treepo-vcs`, whose own module
-documentation already claims to be "turning a repository into a `Manifest`".
+**Manifest assembly — closed.** `treepo_vcs::extract` runs the existing passes (walk → scan →
+folder signals → history → history applications) and returns a complete `Manifest`. Root seed
+and product version stay caller-supplied so identity remains `treepo-store`'s concern and no
+new I/O or dependency lands in `treepo-vcs`. `tests/persistence.rs` calls that public API
+instead of composing field copies locally. Individual passes stay public for `xtask budget`
+and `readonly-audit`, which still name each pass so a helper cannot silently drop one.
 
 **`F-CORP-3`'s read-only fixture still does not exist.** Restricted permissions or a read-only
 mount. It is about `AC-MAN-2` and `F-ASSOC-7` rather than identity, and it carries real platform
@@ -743,17 +744,12 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phases 0, 1 and 2 are closed.** Next is **Phase 3 — skeleton generation, and M0 exit**:
+**Phases 0, 1 and 2 are closed.** Manifest assembly is in place (`treepo_vcs::extract`). Next
+is **Phase 3 — skeleton generation, and M0 exit**:
 `crates/treepo-gen/src/{params,lsystem/**,trunk,aggregate}.rs`, `assets/params/lsystem.ron`,
 `tools/m0-silhouette/**`, against `AC-SKEL-1`–`4` and `AC-DET-1`/`2`. It is the phase the
 visual identity lives or dies in, and the one Phase 0's tri-platform trig determinism was built
 for.
-
-**Do the manifest-assembly step first.** Phase 3 consumes a `Manifest` and nothing in the
-workspace produces one — `treepo-vcs` yields `Structure` and `History` and stops, and
-`tests/persistence.rs` composes them itself. It belongs in `treepo-vcs`, whose own module
-documentation already says it is "turning a repository into a `Manifest`", and it is on Phase
-3's critical path rather than beside it.
 
 Carried forward, neither blocking:
 
