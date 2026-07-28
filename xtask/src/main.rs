@@ -8,14 +8,18 @@
 //! cargo xtask determinism     # AC-DET-1/2/3 — triple-run digests, compared across platforms
 //! cargo xtask dep-guard       # N6 — no generative crate may depend on bevy
 //! cargo xtask readonly-audit  # AC-MAN-2, AC-EXT-4 — extraction writes nothing
+//! cargo xtask budget          # AC-EXT-1 — full extraction against the PRD §7 budgets
 //! ```
 //!
-//! Commands land with the phase that needs them: `id-coverage` in Phase 5 and `budget` in
-//! Phase 12 (architecture, xtask file tree).
+//! Commands land with the phase that needs them: `id-coverage` in Phase 5. `budget` is listed
+//! against Phase 12 in the architecture's file tree, but `AC-EXT-1` is a Phase 1 end
+//! condition, so it lands here in its extraction-only form and grows Grow and frame budgets
+//! later — the same way `determinism` arrived in Phase 0 covering only the primitive layer.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod budget;
 mod dep_guard;
 mod determinism;
 mod readonly_audit;
@@ -29,12 +33,11 @@ fn main() -> ExitCode {
         Some("determinism") => determinism::run(rest),
         Some("dep-guard") => dep_guard::run(rest),
         Some("readonly-audit") => readonly_audit::run(rest),
+        Some("budget") => budget::run(rest),
 
         // Listed rather than left to fall through as "unknown command", because the
-        // campaign document tells a reader these exist before the phase that builds them.
-        Some(pending @ ("id-coverage" | "budget")) => Err(format!(
-            "`{pending}` lands with a later phase: id-coverage in Phase 5, budget in Phase 12"
-        )),
+        // campaign document tells a reader this exists before the phase that builds it.
+        Some(pending @ "id-coverage") => Err(format!("`{pending}` lands with Phase 5")),
 
         Some("help" | "--help" | "-h") | None => {
             print_usage();
@@ -75,7 +78,15 @@ fn print_usage() {
          \x20   readonly-audit   Run every extraction pass over every corpus fixture and\n\
          \x20                    prove nothing was written to it (AC-MAN-2, AC-EXT-4).\n\
          \x20                      --fixture <name>  audit one shape\n\
-         \x20                      --self-test       only prove the detector detects\n"
+         \x20                      --self-test       only prove the detector detects\n\
+         \n\
+         \x20   budget           Time a full extraction of each pinned repository against\n\
+         \x20                    the PRD §7 budgets (AC-EXT-1).\n\
+         \x20                      --pins            list the pins and what is on disk\n\
+         \x20                      --fetch           clone what is missing (the network step)\n\
+         \x20                      --pin <name>      measure one\n\
+         \x20                      --threads <n>     log_pass threads (default 4, min spec)\n\
+         \x20                      --runs <n>        repeat and show the spread\n"
     );
 }
 

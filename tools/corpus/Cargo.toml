@@ -16,5 +16,11 @@ publish.workspace = true
 [dependencies]
 treepo-det = { workspace = true }
 
+# `pins.ron` — the same asset format the rest of the workspace reads. Still no network-capable
+# crate here: fetching a pinned repository shells out to `git`, exactly as building a synthetic
+# fixture does, so `cargo deny`'s bans check keeps meaning what it means (NFR-8, N2).
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+
 [lints]
 workspace = true

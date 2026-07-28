@@ -1,0 +1,75 @@
+// Real public repositories, pinned by commit SHA — PRD §3.
+//
+// > The corpus is a build artifact: synthetic fixtures for T0–T1 generated deterministically
+// > in CI, plus real public repositories pinned by commit SHA for T2–T4.
+//
+// The synthetic shapes in `shapes.rs` cover the *edge cases* — no commits, one enormous file,
+// a case collision. They cannot cover the *budgets*, because §7's figures are about real
+// history: a generated 20,000-commit repository has uniform commit sizes, uniform authorship,
+// no merges worth the name, and no rename storms, so timing against one would measure the
+// generator's idea of a repository rather than a repository.
+//
+// # Why a tag as well as a SHA
+//
+// The SHA is the pin; it is what `--verify` checks and what makes a measurement comparable to
+// one taken a year from now. The tag is here so a human can tell what the pin *is* — that
+// `4649aa97` means ripgrep 14.1.1 — and so the SHA can be re-derived if this file is ever
+// doubted. `cargo xtask budget --pins` prints both.
+//
+// Tags are not trusted at fetch time. They can be moved; a SHA cannot. The fetch resolves the
+// SHA directly and fails if the repository does not have it.
+//
+// # Why these repositories
+//
+// Each is large, public, long-lived, and not going anywhere. Beyond that the choice is
+// deliberately boring: a budget gate wants repositories whose shape is *typical* of its tier,
+// not repositories chosen to be flattering or punishing.
+//
+// The `tier` field is a claim, and `cargo xtask budget` checks it against the PRD §3 bands
+// rather than believing it. A pinned repository cannot drift — that is the point of the SHA —
+// but the *bands* could be revised, and a pin that no longer sits in the tier it claims should
+// say so out loud rather than quietly measure the wrong budget.
+//
+// # Nothing here runs in the product
+//
+// `NFR-8` requires the product to be fully functional offline with no network dependency in
+// any product path. Fetching these is a developer-time step in `tools/corpus`, which is the
+// same crate that already shells out to `git` for exactly this reason — it is never linked
+// into treepo, and `cargo deny` still reports no network-capable crate in the product graph.
+(
+    version: 1,
+    repositories: [
+        (
+            name: "ripgrep",
+            tier: T1,
+            what: "A library-scale Rust project: one dominant author, a shallow tree, tags going back years.",
+            url: "https://github.com/BurntSushi/ripgrep.git",
+            tag: "14.1.1",
+            commit: "4649aa9700619f94cf9c66876e9549d83420e16c",
+        ),
+        (
+            name: "bevy",
+            tier: T2,
+            what: "The RISK-A spike's corpus, kept so the Phase 1 numbers stay comparable to it. T2 on commits, which is what the history pass scales with; well under T2 on files, which is what the tree diff scales with — the tier-fit line says so on every run, and `godot` is the pin that covers the other axis.",
+            url: "https://github.com/bevyengine/bevy.git",
+            tag: "v0.17.1",
+            commit: "9071d7f88dfbae48837daa75faaef3a625ed56a9",
+        ),
+        (
+            name: "godot",
+            tier: T2,
+            what: "T2 by file count, which is the axis the tree diff scales on and the one the spike could not test. Overshoots T2 on commits, which makes it a pessimistic reading rather than a flattering one.",
+            url: "https://github.com/godotengine/godot.git",
+            tag: "4.3-stable",
+            commit: "77dcf97d82cbfe4e4615475fa52ca03da645dbd8",
+        ),
+        (
+            name: "rust",
+            tier: T3,
+            what: "Kernel-scale monorepo. A multi-gigabyte fetch and a multi-minute extraction; fetched on demand, never by default.",
+            url: "https://github.com/rust-lang/rust.git",
+            tag: "1.83.0",
+            commit: "90b35a6239c3d8bdabc530a6a0816f7ff89a0aaf",
+        ),
+    ],
+)

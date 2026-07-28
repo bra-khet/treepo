@@ -202,10 +202,9 @@ and it now is.
 | `crates/treepo-vcs/signals.rs` + `assets/params/folder-signals.ron` (`F-EXT-5`) | **done** |
 | `xtask readonly-audit` (`AC-MAN-2`, `AC-EXT-4`) | **done** — 16 fixtures, 0 writes, wired into CI on all three platforms |
 | `crates/treepo-vcs/status.rs` (`F-THR-4`) | **done** — all five states, overlay-only by construction |
-| T2/T3 pinned repositories, `AC-EXT-1` budget | not started |
+| `tools/corpus/pins.ron` + `xtask budget` (`AC-EXT-1`) | **done** — T1–T3 pinned and measured, no §7 ceiling exceeded |
 
-**Phase 1's module list is complete.** One end condition remains: the T2/T3 pinned
-repositories and the `AC-EXT-1` budget measured on them.
+**Phase 1 is complete.** Every deliverable and every end condition is met and verified.
 
 The three deliberately-`None` fields are now filled: `BalanceScore::kind`,
 `TemporalPrimitives::stability`, and `DerivedSignals`. The `Option` stays in every case —
@@ -441,6 +440,70 @@ is new, and exists only so the merge that is *supposed* to fail can.
 **Dependency change:** gix gains the `status` feature, which adds `gix-dir` and `gix-status`
 (129 → 131 packages). `cargo deny` and `dep-guard` both still clean; no network crate.
 
+### `AC-EXT-1` — measured, 2026-07-27
+
+`cargo xtask budget`, Windows, 16 logical cores, `log_pass` held to 4 threads (§7 minimum
+spec). Release build. Pins are in `tools/corpus/src/pins.ron`; `--fetch` is the only thing that
+touches the network and nothing calls it by default.
+
+| Pin | Tier | Files | Commits | Total | vs §7 |
+|---|---|---|---|---|---|
+| `ripgrep` 14.1.1 | T1 | 212 | 2,045 | **0.69 s** | target 10 s ✓ |
+| `bevy` v0.17.1 | T2 | 2,714 | 9,858 | **6.56 s** | target 60 s ✓ |
+| `godot` 4.3-stable | T2 | 11,030 | 66,099 | **132.61 s** | over 60 s target, inside 180 s ceiling |
+| `rust` 1.83.0 | T3 | 49,029 | 268,290 | **252.25 s** | target 600 s ✓ |
+
+**No §7 ceiling is exceeded, and `AC-EXT-1` is met.** godot is the only over-target reading and
+it is over-target because it carries 3.3× T2's commit count; at T2's nominal 20,000 commits its
+own rate gives 40.1 s, inside the target. Both T2 pins normalize to inside 60 s.
+
+Three findings worth keeping:
+
+**`log_pass` is 95–99% of every measurement.** On the T3 pin: walk 0.57 s, scan 1.03 s, signals
+0.12 s, `log_pass` 272 s. All the content work `F-EXT-4` and `F-EXT-5` added this phase costs
+about a second on a fifty-thousand-file tree. `AC-EXT-1` is a question about the history pass
+and nothing else, which is what the RISK-A spike said and is now measured rather than assumed.
+
+**Cost is not proportional to commit count, and the spike's extrapolation axis was wrong.**
+Seconds per thousand commits: ripgrep 0.34, bevy 0.67, godot 2.01, **rust 0.94** — rust has 4.4×
+godot's files and *half* its per-commit cost. Tree size is not the driver either; gix skips
+identical subtrees, so the real cost is the number of *changed paths per commit* summed over
+history. godot's history is fewer, larger commits. This is why extrapolating the spike's bevy
+figure on commit count alone was always going to be a guess, and it cuts both ways: a
+repository of many small commits is cheaper than the spike predicted, one with sweeping commits
+dearer.
+
+**T3 came in better than the extrapolation.** The spike projected ~6.1 min at four threads;
+measured is 4.2 min on a real 268k-commit tree.
+
+Two honest caveats. This is a fast desktop with `log_pass` pinned to minimum-spec *parallelism*
+— single-thread performance is better than a minimum-spec machine's, so the figures are a
+floor, not a certification. And `budget` is not wired into CI: it needs ~4 GB of clones and
+several minutes. The architecture puts `.github/workflows/budgets.yml` in Phase 12 and that is
+where it belongs; what does run in CI is the cheap half — the pins parse, are full 40-character
+lower-case SHAs, are unique, and every tier with a §7 row has one.
+
+### Pinning — the two decisions
+
+**The SHA is the pin; the tag is for humans.** `pins.ron` carries both. A tag can be moved and a
+branch certainly can, so the fetch resolves the commit directly and `verify` re-reads HEAD
+afterwards; a repository whose history was rewritten fails loudly rather than being measured as
+though it were the pinned one. The tag is there so a reader can tell that `4649aa97` means
+ripgrep 14.1.1, and so the SHA can be re-derived if this file is ever doubted.
+
+**Tier bands split at the geometric mean, not at a multiple.** The first attempt used a fixed
+factor of three either side of each PRD §3 nominal figure, and the "bands must tile" test caught
+a hole: T0 reached 60 files, T1 began at 333, and a 200-file repository belonged to no tier. The
+tiers are a decade apart, so no fixed multiple can tile them. Splitting at `sqrt(a·b)` tiles
+exactly and has no arbitrary constant. The bands now classify every pin correctly and each one
+reports what it does *not* cover: bevy is light on files for T2, godot heavy on commits. A pin
+that covers half a tier should say so on every run rather than let its number be read as more
+general than it is.
+
+The clone is deliberately complete — no `--depth`, no `--filter=blob:none`. A shallow clone
+would measure a truncated history and a blobless one would fetch objects *during* the timed
+pass, putting network latency inside a figure about local I/O.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -458,16 +521,22 @@ cargo xtask determinism && cargo xtask dep-guard && cargo deny check
 cargo xtask readonly-audit
 ```
 
+`cargo xtask budget` is deliberately *not* in that list — it needs several gigabytes of clones
+and several minutes. Run it when extraction changes, not before every push.
+
 ## Next
 
-**T2/T3 pinned repositories and `AC-EXT-1`** — the last Phase 1 end condition, and the only
-one left. The spike's ~37 s T2 figure is still an extrapolation from bevy, which is light on
-file count, the axis the tree diff scales on. PRD §3 specifies real public repositories pinned
-by commit SHA rather than synthetic ones, so this needs a pinning-and-caching mechanism, not
-another generator.
+**Phase 1 is closed.** Phase 2 is the store and repository identity: `crates/treepo-store/**`
+and `tests/identity.rs`, against `AC-MAN-1` and `AC-MAN-3`–`5`. The `F-CORP-3` fixtures it needs
+already exist — `no-remote`, `multi-remote`, `empty`, and the two-clones-of-one-remote case.
 
-Two things now depend on it that did not before. `AC-EXT-1`'s 60 s T2 budget has to cover the
-content scan and folder signals as well as the log pass, and neither existed when the spike
-ran. And `AC-THR-2`'s two seconds for the dirtiness overlay is unmeasured — a synthetic
-eight-file fixture says nothing about it, and `StatusOptions::max_paths` is currently a
-defensible guess rather than a number anything measured.
+Carried forward, neither blocking:
+
+- **`AC-THR-2`'s two seconds for the dirtiness overlay is still unmeasured.** A synthetic
+  eight-file fixture says nothing about it, and `StatusOptions::max_paths` is a defensible guess
+  rather than a measured number. The pinned repositories now make it measurable — a `status`
+  row in `cargo xtask budget` would close it, and it costs one function.
+- **`.github/workflows/budgets.yml`** — architecture puts it in Phase 12, and that is still the
+  right place. Worth revisiting only if extraction cost starts moving between sprints.
+- **`LICENSE-THIRD-PARTY.md`** — outstanding since Phase 0. `cargo deny` reports licences are
+  clean; the attribution file itself is still to write.

@@ -104,6 +104,8 @@ dependencies = [
 name = "corpus"
 version = "0.1.0"
 dependencies = [
+ "ron",
+ "serde",
  "treepo-det",
 ]
 

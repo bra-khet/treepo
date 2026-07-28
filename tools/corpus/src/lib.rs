@@ -34,8 +34,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use treepo_det::Seed;
 
+pub mod pinned;
 pub mod shapes;
 
+pub use pinned::{Pin, Pins, Presence, Tier};
 pub use shapes::{Shape, all_shapes};
 
 /// The fixed instant every fixture's first commit is dated.
