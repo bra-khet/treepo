@@ -46,3 +46,5 @@ cargo run -p treepo-app --features brp
 - [`docs/design/`](docs/design/) — living design documents (start with
   [`design-outline.md`](docs/design/design-outline.md))
 - [`.planning/`](.planning/) — architecture and phased build campaign
+- [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md) — third-party notices (MPL-2.0 `uluru`
+  and companions to `deny.toml`)

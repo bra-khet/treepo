@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-27 · **Phase 0 complete and closed** · **Phase 1 in progress**
+**Last updated:** 2026-07-27 · **Phase 0 complete and closed** · **Phase 1 complete and closed**
 
 ---
 
@@ -530,6 +530,14 @@ and several minutes. Run it when extraction changes, not before every push.
 and `tests/identity.rs`, against `AC-MAN-1` and `AC-MAN-3`–`5`. The `F-CORP-3` fixtures it needs
 already exist — `no-remote`, `multi-remote`, `empty`, and the two-clones-of-one-remote case.
 
+### `LICENSE-THIRD-PARTY.md` — closed 2026-07-27
+
+Promoted from `docs/workspace/LICENSE-THIRD-PARTY.md` to the repo root after verifying the
+resolved graph: the only MPL-2.0 crate is `uluru` 3.1.0 (via `gix` → `gix-pack` →
+`pack-cache-lru-static`). The notice pins the crate version and `Cargo.lock` checksum,
+records the feature path, and embeds the MPL-2.0 text as shipped with that crate.
+`deny.toml` points at the file. Full permissive-dep inventory remains Phase 12 packaging.
+
 Carried forward, neither blocking:
 
 - **`AC-THR-2`'s two seconds for the dirtiness overlay is still unmeasured.** A synthetic
@@ -538,5 +546,3 @@ Carried forward, neither blocking:
   row in `cargo xtask budget` would close it, and it costs one function.
 - **`.github/workflows/budgets.yml`** — architecture puts it in Phase 12, and that is still the
   right place. Worth revisiting only if extraction cost starts moving between sprints.
-- **`LICENSE-THIRD-PARTY.md`** — outstanding since Phase 0. `cargo deny` reports licences are
-  clean; the attribution file itself is still to write.

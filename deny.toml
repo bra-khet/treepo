@@ -42,8 +42,9 @@ allow = [
   #
   # Added deliberately rather than pre-emptively. It first appeared via `uluru`, an LRU
   # cache inside `gix-pack`, so the alternative was giving up gix (architecture D3) over a
-  # cache implementation. Worth a lawyer's glance before the storefront release, since this
-  # note is an engineering reading and not legal advice.
+  # cache implementation. Attribution for that crate (and the full MPL-2.0 text) lives in
+  # LICENSE-THIRD-PARTY.md at the repo root. Worth a lawyer's glance before the storefront
+  # release, since this note is an engineering reading and not legal advice.
   "MPL-2.0",
 ]
 confidence-threshold = 0.93
