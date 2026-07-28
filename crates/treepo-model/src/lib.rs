@@ -14,9 +14,13 @@
 //! * [`manifest`] — [`Manifest`] and [`PathRecord`], the persisted result of one extraction.
 //! * [`identity`] — [`RepoIdentity`] and [`AuthorKey`]. Neither carries a name.
 //!
-//! Skeleton, material, and snapshot types (`segment.rs`, `material.rs`, `snapshot.rs`,
-//! `enrichment.rs`, `aggregate.rs` in the architecture's file tree) arrive with the phases
-//! that produce them. Defining them now would be guessing at Phase 3's shape.
+//! * [`segment`] — [`Skeleton`], [`SkeletonNode`], and [`Segment`]: the geometry Phase 3
+//!   produces and Phases 5 and 6 consume.
+//! * [`aggregate`] — [`AggregateNode`], `F-SKEL-7`'s proportional container.
+//!
+//! Material, snapshot, and enrichment types (`material.rs`, `snapshot.rs`, `enrichment.rs`
+//! in the architecture's file tree) arrive with the phases that produce them. Defining them
+//! now would be guessing at Phase 4's shape.
 //!
 //! # Three properties this crate is built to hold
 //!
@@ -53,11 +57,14 @@
 
 extern crate alloc;
 
+pub mod aggregate;
 pub mod identity;
 pub mod manifest;
 pub mod path;
 pub mod primitives;
+pub mod segment;
 
+pub use aggregate::AggregateNode;
 pub use identity::{AuthorKey, CommitId, IdentityTier, RepoIdentity};
 pub use manifest::{
     AuthorEntry, AuthorTable, FilterOverrides, LanguageId, LanguageTable, Manifest, NodeKind,
@@ -68,3 +75,4 @@ pub use primitives::{
     DerivedSignals, FolderSignal, OwnershipPrimitives, SizePrimitives, StructuralPrimitives,
     TemporalPrimitives,
 };
+pub use segment::{NodeId, NodeRole, Point, Segment, Skeleton, SkeletonNode};

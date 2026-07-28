@@ -726,10 +726,13 @@ weight: `chmod` on unix, ACLs on Windows, and a builder that can clean up after 
 
 | Deliverable | Status |
 |---|---|
-| `crates/treepo-gen/src/params.rs` + `assets/params/lsystem.ron` (`F-SKEL-5`) | **done** — 17 tests |
-| `crates/treepo-gen/src/lsystem/{grammar,turtle,compose}.rs` (`F-SKEL-1`/`2`/`6`) | next |
-| `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`) | not started |
-| `crates/treepo-gen/src/aggregate.rs` (`F-SKEL-7`) | not started |
+| `crates/treepo-gen/src/params.rs` + `assets/params/lsystem.ron` (`F-SKEL-5`) | **done** — 18 tests |
+| `crates/treepo-model/src/{segment,aggregate}.rs` (skeleton handoff types) | **done** — 5 tests |
+| `crates/treepo-gen/src/lsystem/grammar.rs` (`F-SKEL-1`) | **done** — 7 tests |
+| `crates/treepo-gen/src/lsystem/turtle.rs` (`F-SKEL-6`) | **done** — 8 tests |
+| `crates/treepo-gen/src/lsystem/compose.rs` (`F-SKEL-2`, `F-SKEL-7`, `A3`) | **done** — 12 tests |
+| `crates/treepo-gen/src/trunk.rs` (`F-SKEL-3`, `F2`) | next |
+| `crates/treepo-gen/src/aggregate.rs` (container *forms*) | Phase 4 — see below |
 | `tools/m0-silhouette/**`, `tests/determinism.rs` | not started |
 
 `treepo-gen` is 14 packages against `treepo-vcs`'s 131 — `ron` and `serde` and nothing else.
@@ -815,6 +818,92 @@ an unmodified table and passed vacuously. It now asserts its target appears exac
 before patching it. Same failure shape as `readonly-audit`'s "an oracle pointed at the wrong
 repository agrees with itself perfectly".
 
+### The composition rule — resolved, and the arity question with it
+
+**Composition is phase-aware, and the resolution is the user's.** Significant children stay
+first-class hierarchical L-system instances while they stay below a critical density; past it
+the excess collapses into first-class *aggregate nodes*; inside any one instance the
+productions stay classic low-arity parametric and stochastic. The phase decision lives at the
+composition boundary and never inside the grammar.
+
+**The arity question dissolves rather than being answered.** A node's children are a fact
+about the repository; a node's branching is a fact about how a limb divides. `compose` decides
+how many attachment sites a limb needs; `grammar` produces a limb that has them, by binary
+division. **The derivation depth, not the arity, absorbs the child count** — `n` generations
+yield `2^n` sites. Fifteen children on a fan of fifteen reads as an org chart; fifteen
+distributed across a limb that forked four times reads as a branch.
+
+That is also the mechanism behind the threshold. A limb's sites are bounded by `A3`'s
+recursion cap, so a limb asked for more children than it can carry is *exactly* the
+aggregation condition — one bound, expressed once.
+
+**Two limits meet, and both are `A3`.** Per limb, `branch_capacity` (a new table row) says how
+many children stay first-class, driven by bushiness, convention, mass and skew. Per hierarchy,
+`Table::max_levels` says how many levels of nesting get limbs at all; past it a subtree becomes
+one container. `validate` refuses a table whose capacity exceeds the sites the grammar can
+offer — the table cannot promise what the productions cannot keep.
+
+**The three residue decisions**, each with a worse plausible alternative:
+
+1. *Which children stay first-class:* the largest, ties broken by path. `N4` untouched — this
+   ranks paths, never people.
+2. *How many containers:* proportional to the residue's **mass**, not its count. A residue that
+   is 60% of the children and 5% of the bytes gets one container; a flat directory of a
+   thousand equal files gets containers across nearly every site. The silhouette reports the
+   shape of what it compressed.
+3. *What goes in which container:* path-adjacent runs, cut by equal **count**. Path-adjacent so
+   that opening a cluster shows a region rather than an assortment; by count rather than mass
+   because a mass-balanced cut moves every boundary when one file changes size, where this
+   moves at most one member per boundary when a file is added (`AC-GROW-4`).
+
+A container's seed comes from its anchor and index, never its membership — so a file arriving
+in a container does not reroll it. The cluster stays the cluster and gains a member, and
+`adding_a_file_to_a_container_does_not_reroll_it` holds that at 120 files against 121.
+
+### `P6` has two questions and I had conflated them
+
+The survival test failed on first run: a file five levels beneath an aggregated directory was
+"missing". It was not missing — `AggregateNode::members` holds the *roots* of what a container
+stands for, deliberately, because storing the transitive closure would copy a large part of a
+T3 manifest into a structure rebuilt on every Grow.
+
+The failure was in the predicate, not the code, and fixing the assertion to match would have
+buried the distinction. `Skeleton` now answers both questions separately: `accounted_roots`
+lists what the skeleton *names*, and `represents(path)` answers whether a path is drawn or
+compressed. That is `P6`'s own sentence — *legibility bounds detail; honesty bounds data* —
+turned into two methods, and `represents` is what `F-MAT-3`'s floor and `F-INSP-3`'s
+drill-down will both ask.
+
+### Tropism is one expression, and it is the physics
+
+`E3`'s droop is `heading += droop × sin(heading)`, applied after each segment. Correct in all
+four quadrants with no branch: vertical limbs do not sag (`sin` is zero), a limb pointing right
+rotates clockwise and one pointing left rotates anticlockwise — both downward — and the
+magnitude peaks at the horizontal, where a real limb's bending moment does. It falls out of the
+heading convention (zero is up, increasing clockwise), which is why that convention was chosen:
+a limb's angle from vertical is read directly rather than derived.
+
+### Deviations and decisions
+
+- **Skeleton types went to `treepo-model`, not `treepo-gen`.** The architecture's file tree
+  puts `segment.rs` and `aggregate.rs` there, and it is right: `treepo-gen` writes them,
+  `treepo-grow` diffs them, `treepo-render` draws them. A type three crates exchange belongs
+  where they all already depend.
+- **`treepo-gen/src/aggregate.rs` is deliberately absent.** Container *synthesis* — rolling up
+  mass and membership — is twenty lines and belongs beside the decision that creates it, in
+  `compose.rs`. What that file is for is choosing a container's visual *form*, which is
+  enrichment and lands with Phase 4.
+- **`TABLE_VERSION` bumped to 2.** A version 1 table has no `branch_capacity` row, and a table
+  missing the row that decides when a limb aggregates would compose a different tree while
+  parsing perfectly.
+- **Segments taper through their joints**, resolved during interpretation via the turtle's own
+  stack rather than by matching coordinates afterwards. Coordinate matching is quadratic and,
+  worse, cannot tell a genuine joint from two segments that happen to meet.
+
+Verified by sabotage twice. Turning aggregation into truncation failed six tests, the first
+naming the vanished path outright. Removing the hierarchy cap failed the `A3` test with "a limb
+appeared at depth 11, past A3's cap of 5". Both reverted.
+
 ## Agent hygiene
 
 Run `cargo clippy --workspace --all-targets -- -D warnings` and the relevant tests **locally,
@@ -837,21 +926,24 @@ and several minutes. Run it when extraction changes, not before every push.
 
 ## Next
 
-**Phase 3 is underway.** The parameter table is in; the L-system that consumes it is not.
+**Phase 3 is underway.** A manifest now composes into a `Skeleton`: parameters, productions,
+turtle, and the phase-aware composition rule are all in and green.
 
-Next is `crates/treepo-gen/src/lsystem/` — `grammar.rs` (parametric + stochastic
-productions), `turtle.rs` (on `treepo_det::trig`, `F-SKEL-6`), and `compose.rs` (`F-SKEL-2`'s
-hierarchical composition, one instance per major limb seeded by its path hash). That is the
-sprint that turns `LimbParams` into segments and makes `F-SKEL-1`'s "pure function" claim
-testable. `trunk.rs` (`F-SKEL-3`, and `F2`'s limb grouping), `aggregate.rs` (`F-SKEL-7`) and
-`tools/m0-silhouette/` follow, and the silhouette tool is what closes `AC-SKEL-1` and `2` by
-eye as well as by metric.
+Next is **`crates/treepo-gen/src/trunk.rs`** — `F-SKEL-3`'s hybrid basal axiom, sized from
+total root mass and primary limb count, plus `F2`'s grouping of small top-level directories
+into fewer, thicker limbs. It is what supplies the origin and heading `compose` currently
+takes from its caller, and what turns `AC-SKEL-2`'s empty repository from a single seed
+segment into the root cluster `design/visual-construction.md` asks for. It is also where the
+overlapping trunk mass that `C1` was tuned for actually appears.
 
-One thing to decide when `compose.rs` is written, deliberately left open: whether the number
-of children at a node comes from the directory structure or from a parameter. `F-SKEL-2` says
-each major limb runs its own instance seeded by its path hash, which points at structure; §2.2's
-classic production is binary. `params.rs` takes no position — none of its rows names a child
-count — and that is why.
+Then `tools/m0-silhouette/` — line-and-thickness PNGs for every corpus fixture — which is what
+closes `AC-SKEL-1` and `AC-SKEL-2` **by eye** rather than only by metric, and is the point at
+which the v0.1 parameter row gets reviewed against real repositories as §6 prescribes. The
+numbers in `lsystem.ron` are coherent and validated, but no one has yet looked at a tree.
+
+`tests/determinism.rs` and the tri-platform skeleton-hash triple run (`AC-DET-1`/`2`) follow
+that, and `AC-SKEL-3`'s T3 budget wants a `skeleton` row in `cargo xtask budget` against the
+existing pins.
 
 Carried forward, neither blocking:
 

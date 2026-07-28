@@ -39,6 +39,8 @@
 
 extern crate alloc;
 
+pub mod lsystem;
 pub mod params;
 
+pub use lsystem::compose;
 pub use params::{LimbParams, SkeletonInputs, Table, TableError};

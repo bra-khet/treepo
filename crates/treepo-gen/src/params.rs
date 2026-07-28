@@ -98,7 +98,11 @@ const BUILT_IN_RON: &str = include_str!("../../../assets/params/lsystem.ron");
 ///
 /// Separate from [`treepo_model::SCHEMA_VERSION`]: a manifest and a parameter table version
 /// independently, and a table edit must not invalidate a stored manifest.
-pub const TABLE_VERSION: u32 = 1;
+///
+/// Version 2 adds `branch_capacity`, the composition threshold. Bumped rather than accepted
+/// silently because a version 1 table has no such row, and a table missing the row that
+/// decides when a limb aggregates would compose a different tree while parsing perfectly.
+pub const TABLE_VERSION: u32 = 2;
 
 /// Children-per-node used as each [`BranchingHistogram`] bucket's representative value.
 ///
@@ -162,6 +166,14 @@ pub struct LimbParams {
     pub base_length: Fx,
     /// Width of this limb's first segment, in world units.
     pub base_width: Fx,
+    /// How many children this limb may carry as first-class limbs of their own.
+    ///
+    /// The composition threshold. Below it, children stay hierarchical L-system instances
+    /// seeded by their own paths (`F-SKEL-2`); at it, the excess collapses into aggregate
+    /// containers (`F-SKEL-7`). It is a property of the *limb* rather than a global constant
+    /// because a bushy, conventionally-named directory can carry more before it stops being
+    /// readable than a lopsided one can.
+    pub branch_capacity: u16,
 }
 
 /// Every structural signal the skeleton is permitted to read, normalized.
@@ -492,6 +504,10 @@ pub struct Table {
     pub base_length: Row,
     /// First-segment width, per mille of a world unit.
     pub base_width: Row,
+    /// How many children stay first-class limbs, in whole children.
+    ///
+    /// The composition threshold — see [`LimbParams::branch_capacity`].
+    pub branch_capacity: Row,
 }
 
 impl Table {
@@ -551,6 +567,7 @@ impl Table {
             ("droop", &self.droop),
             ("base_length", &self.base_length),
             ("base_width", &self.base_width),
+            ("branch_capacity", &self.branch_capacity),
         ];
         for (name, row) in rows {
             if row.min > row.max || row.base < row.min || row.base > row.max {
@@ -628,6 +645,21 @@ impl Table {
             }
         }
 
+        // A limb offers `2^generations` attachment sites and `A3` caps generations at 5, so a
+        // capacity above 32 is a promise the grammar cannot keep — the excess children would
+        // silently have nowhere to attach. A capacity below one leaves a limb unable to carry
+        // even a single child, which would aggregate every repository down to its root.
+        if self.branch_capacity.min < 1
+            || i64::from(self.branch_capacity.max) > i64::from(self.max_sites())
+        {
+            return Err(TableError::Decision {
+                row: "branch_capacity",
+                decision: "A3",
+                detail: "a limb cannot carry more children than its recursion cap offers \
+                         attachment sites, nor fewer than one",
+            });
+        }
+
         if self.min_length <= 0 {
             return Err(TableError::Decision {
                 row: "min_length",
@@ -676,6 +708,7 @@ impl Table {
             droop: Angle::from_millidegrees(self.droop.evaluate(inputs)),
             base_length: per_mille(self.base_length.evaluate(inputs)),
             base_width: per_mille(self.base_width.evaluate(inputs)),
+            branch_capacity: u16::try_from(self.branch_capacity.evaluate(inputs)).unwrap_or(1),
         }
     }
 
@@ -683,6 +716,25 @@ impl Table {
     #[must_use]
     pub fn min_length(&self) -> Fx {
         per_mille(self.min_length)
+    }
+
+    /// `A3`'s cap, in whole hierarchy levels.
+    ///
+    /// The recursion row governs two related things and it is worth naming both. Per limb,
+    /// its evaluated value is how many generations that limb's own L-system runs — how many
+    /// attachment sites it offers. Table-wide, its *maximum* is how many levels of repository
+    /// hierarchy get limbs at all, after which a subtree becomes one container. Both are
+    /// "hard-capped at 4–5 levels; deeper content is aggregated"; they are the same cap read
+    /// at the two scales `F-SKEL-2`'s hierarchical composition operates on.
+    #[must_use]
+    pub fn max_levels(&self) -> u8 {
+        u8::try_from((i64::from(self.recursion.max) + PER_MILLE / 2) / PER_MILLE).unwrap_or(u8::MAX)
+    }
+
+    /// How many attachment sites a limb at the recursion cap can offer.
+    #[must_use]
+    pub fn max_sites(&self) -> u16 {
+        crate::lsystem::grammar::sites_for(self.max_levels())
     }
 }
 
@@ -1043,13 +1095,19 @@ mod tests {
 
     #[test]
     fn a_table_from_a_future_version_is_refused() {
-        let text = BUILT_IN_RON.replacen("version: 1", "version: 2", 1);
+        let current = alloc::format!("version: {TABLE_VERSION}");
+        assert_eq!(
+            BUILT_IN_RON.matches(current.as_str()).count(),
+            1,
+            "the built-in table must declare `{current}` exactly once"
+        );
+
+        let next = TABLE_VERSION + 1;
+        let text = BUILT_IN_RON.replace(&current, &alloc::format!("version: {next}"));
         assert!(matches!(
             Table::from_ron(&text),
-            Err(TableError::Version {
-                found: 2,
-                expected: 1
-            })
+            Err(TableError::Version { found, expected })
+                if found == next && expected == TABLE_VERSION
         ));
     }
 

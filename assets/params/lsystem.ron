@@ -67,7 +67,7 @@
 // driver would re-shape `docs/` because somebody touched `src/`, which loses `AC-GROW-4` and
 // makes a Grow unreadable.
 (
-    version: 1,
+    version: 2,
 
     // What the raw counts are measured against. These are absolute constants rather than
     // maxima taken over the manifest, and deliberately so: normalizing against the
@@ -182,5 +182,26 @@
     base_width: (base: 200, min: 40, max: 800, per: (
         mass: 260,
         bushiness: 60,
+    )),
+
+    // ── The composition threshold ───────────────────────────────────────────────────────
+    // How many children stay first-class limbs of their own, in whole children. Past this
+    // the excess collapses into aggregate containers (`F-SKEL-7`) — a phase transition, not
+    // a truncation: a container is a skeleton node with its own seed and its own future
+    // enrichment, and the manifest beneath it is untouched (`P6`).
+    //
+    // A limb offers `2^generations` attachment sites and `A3` caps generations at 5, so this
+    // cannot exceed 32 — `treepo-gen` refuses a table that promises more children than the
+    // grammar can carry.
+    //
+    // Bushiness raises it because a directory whose subtree already branches widely reads as
+    // wide; convention raises it slightly because a `src` earns more of the viewer's
+    // attention than an unnamed folder; skew lowers it because a lopsided directory is the
+    // one where a wide fan looks most like a diagram and least like a branch.
+    branch_capacity: (base: 4, min: 2, max: 10, per: (
+        bushiness: 5,
+        mass: 1,
+        convention: 1,
+        skew_abs: -2,
     )),
 )
