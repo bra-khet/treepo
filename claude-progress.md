@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-28 · **Phases 0, 1 and 2 closed; Phase 3 underway**
+**Last updated:** 2026-07-29 · **Phases 0–3 closed — M0 EXIT reached; Phase 4 is next**
 
 ---
 
@@ -475,6 +475,9 @@ dearer.
 
 **T3 came in better than the extrapolation.** The spike projected ~6.1 min at four threads;
 measured is 4.2 min on a real 268k-commit tree.
+
+*Re-measured 2026-07-29 alongside `AC-SKEL-3`: 256.79 s against 252.25 s, 1.8% apart. The
+table above stands.*
 
 Two honest caveats. This is a fast desktop with `log_pass` pinned to minimum-spec *parallelism*
 — single-thread performance is better than a minimum-spec machine's, so the figures are a
@@ -1287,35 +1290,162 @@ Gate after promote: `cargo test --workspace` green, clippy `-D warnings` on gen 
 determinism overall still `39681da8…` (primitives only). Skeleton digests moved as intended —
 corpus strip under `target/m0-silhouette-promote/` (untracked).
 
+## S7 — the skeleton in the gate, and M0 EXIT (2026-07-29)
+
+The last two acceptance gaps, and they were the same gap seen from two sides: the pipeline
+could produce a tree and nothing outside a debug tool ever looked at one.
+
+### The digest was a tool feature pretending to be a gate
+
+`m0-silhouette` printed a skeleton digest beside every picture, and `cargo xtask determinism`
+hashed five `treepo-det` probes. So the harness proved that the *arithmetic* reproduces on
+three platforms while the thing a user would actually see was checked by nobody. Architecture
+D2 had said what to do since Phase 0 — "each corpus fixture three times per platform" — and the
+Phase 0 module docs even carried the note that Phase 3 would add skeleton hashes.
+
+The hash moved onto `Skeleton::digest` in `treepo-model`, where the three consumers can share
+one definition, and grew two fields on the way:
+
+* **Parentage.** The tool's version hashed geometry and roles. A node re-hung on a different
+  parent, with nothing moved, hashed the same — and `AC-GROW-4` diffs the tree, `F-INSP-3`
+  walks it. `re_hanging_a_limb_changes_the_digest` is the test.
+* **Aggregate membership.** A container that absorbed a different set of paths stands for
+  something else. Hashing only its anchor called `F-SKEL-7`'s residue interchangeable.
+  `a_container_that_absorbed_something_else_changes_the_digest`.
+
+Lengths precede every variable-length field and the counts precede everything, so two distinct
+skeletons cannot run into each other in the encoding. Tag bumped to `treepo-skeleton-v2`; `v1`
+was the tool-local hash, and a digest from an old build must not read as a disagreement about
+geometry.
+
+### The seed had to be fixed, and that is not a compromise
+
+Extraction takes its root seed from repository identity, and `F-MAN-3`'s third tier is a hash
+of the absolute path. Seeding the corpus stage that way would have made `AC-DET-2` fail on
+every machine for a reason that is not a finding — the checkout directory is *supposed* to
+differ. So the stage supplies its own constant.
+
+One consequence shows in the report and is worth expecting rather than debugging:
+`detached-head`, `shallow`, `no-remote`, and `multi-remote` hold the same files and differ only
+in refs and remotes, so under a fixed seed they print the same digest. That is the right
+answer. Those four exist for `F-MAN-3`, and identity resolution is where they get told apart.
+
+Thread count is deliberately *not* pinned. `AC-DET-3` forbids hardware-dependent values in the
+generative pipeline and the history pass is threaded; leaving it at the product's default is
+what would let a thread-order dependency surface as a cross-platform difference rather than be
+hidden by the harness.
+
+### `bare` refusing is a result, not an exception
+
+The bare-repository fixture cannot be extracted, so the report records `refused` — a constant,
+so it still compares byte for byte. The list of names allowed to say that is one entry long and
+checked: any *other* fixture becoming unextractable now fails the command, rather than emitting
+a line that would still match on all three platforms. Verified by emptying the list and
+watching `bare` fail the run.
+
+### `AC-SKEL-3` — the criterion reads §7 from the other side
+
+The §7 table is titled *Grow budget — first run, full extraction*, and a first-run Grow is
+extraction **and** skeleton generation. So `AC-EXT-1` asks whether extraction fits and
+`AC-SKEL-3` whether extraction plus the skeleton still does; `cargo xtask budget` prints both
+verdicts, because a run that fits one and not the other wants a different fix.
+
+Growth is measured rather than argued from the composition bounds. `A3` caps recursion and
+`branch_capacity` caps sites per limb, so the skeleton cannot grow without limit whatever the
+repository does — but composing it still reads every path, and bounded-by-construction is a
+proof about the output, not a measurement of the work.
+
+### `AC-SKEL-3` — measured at T3, 2026-07-29
+
+`rust` 1.83.0 (pin `90b35a62`), the T3 row: **49,029 files / 52,527 paths, 268,290 commits,
+6,840 authors.**
+
+| | Seconds | Against §7 T3 |
+|---|---:|---|
+| Extraction | 256.79 | within target (600 s target, 1800 s ceiling) — `AC-EXT-1` |
+| Skeleton | **1.466** | 0.24% of the target |
+| Grow total | 258.26 | within target — **`AC-SKEL-3` closed** |
+
+Extraction re-measures the 2026-07-27 figure at 256.79 s against 252.25 s — 1.8% apart, which
+is a useful corroboration of that run rather than a new claim. `log_pass` is 254 s of the 257;
+99% of extraction is still history, at 0.96 s per 1,000 commits, exactly as recorded then.
+
+The skeleton figure is worth reading beside its shape: **521 nodes and 1,042 segments for
+52,527 paths**, with **236 containers**. That is `A3`'s cap and `F-SKEL-7`'s aggregation doing
+exactly what `P6` asks — a kernel-scale monorepo compresses to a tree a person can look at,
+and the containers say how much was compressed rather than dropping it. Growth cost scales
+with paths read (0.279 s per 10,000), not with the skeleton produced, which is why the number
+is small and stays small.
+
+Skeleton generation is, in short, not where the Grow budget goes and is not close to being.
+Every second of a first-run Grow at T3 is the history pass, and `AC-SKEL-3` is met with three
+orders of magnitude to spare.
+
+### What the gate said
+
+Three sabotages, each producing the named failure:
+
+| Sabotage | Caught by |
+|---|---|
+| A run counter perturbing the basal node in `trunk::grow` | `empty does not grow the same skeleton twice` on the first fixture |
+| `REFUSED` emptied | `bare` fails the run instead of reporting `refused` |
+| One digest edited in a saved report | `--check` diffs it |
+
+Local gate green: fmt, clippy `-D warnings`, 428 tests, dep-guard, `cargo deny`,
+readonly-audit (18 fixtures, 17 extracted, 0 writes, detector 4/4). Determinism overall moved
+from `39681da8…` to `a82991f0…` — the primitive probes are unchanged and the twenty-three new
+`skeleton/*` lines are the difference.
+
+`cargo fmt --all --check` was **already failing on `main`** before this sprint, on a string
+literal in `tools/corpus/src/shapes.rs` from the S5 fixture pair (`340c7b6`). Fixed here. The
+lint job would have been red on `main`; the Agent hygiene rule below exists for exactly this
+and was not followed that time.
+
+## M0 EXIT — the scoreboard
+
+| End condition | Criterion | Status |
+|---|---|---|
+| PNGs for every corpus fixture | — | **done** — `m0-silhouette`, 17 fixtures + `--pin` + `--path` |
+| Nine identical skeleton hashes | `AC-DET-1`, `AC-DET-2` | **AC-DET-1 done**; `AC-DET-2` green locally, **pending the CI compare** |
+| Clean vs. high-skew differ | `AC-SKEL-1` | **done** — `skel1-clean` / `skel1-messy`, judged by eye 2026-07-29 |
+| T0 is a seed and root cluster | `AC-SKEL-2` | **done** — falls out of the column, no special case |
+| T3 within the §7 Grow budget | `AC-SKEL-3` | **done** — measured on `rust` 1.83.0: 1.47 s skeleton, 258 s grow total against a 600 s target |
+| Table edit, no recompile | `AC-SKEL-4` | **done** — `--table`, and the lab is built on it |
+| Parameter row confirmed with evidence | — | **done** — `A3+B2/B3+C1+D1&D3+E3+F2+G1`, `D1` revised to `D1&D3`; findings under `qa/sessions/` |
+
+**`AC-DET-2` is the one that is not yet evidence.** It cannot be, from one machine: the claim
+is that Linux, macOS and Windows produce byte-identical reports, and only the compare job in
+`determinism.yml` can say so. This is the same position Phase 0 was in on 2026-07-26, and it
+resolved on the first CI run — but the honest reading today is *green locally, expected to
+hold*, and this table should be updated to **confirmed** the way the Phase 0 one was.
+
+The new risk it carries is not the trig path, which Phase 0 already cleared. It is that the
+*fixtures* must be byte-identical wherever they are built. `tools/corpus` fixes author dates,
+identities, and `core.autocrlf` precisely so that they are, and `readonly-audit` has been
+building them on all three platforms since Phase 1 without complaint — so the exposure is
+understood rather than unexamined. If the compare job fails with every `skeleton/*` line moved
+and no probe moved, suspect the fixture builder, not the L-system; the workflow says so.
+
 ## Next
 
-**Joint eye pass on the promoted table** (lab or `m0-silhouette` on the four subjects + self).
-Focus for the human second pass:
+**Phase 4 — identity policy, materials & enrichment.** The skeleton is done, gated, and
+reproducible; what it does not yet have is a surface. Phase 4 is where `treepo-id` lands and
+where the pseudonymity promise (`AC-ID-1`, `AC-ID-2`) becomes code rather than intent.
 
-1. **`self` root-dir clutter** — branch_angle 30° alone slightly worsened it; internodes +
-   `group_below` should compensate — confirm or roll angle back.
-2. **Family C** — `length_ratio` / `width_ratio` still unjudged; taper character.
-3. **Organic mess without breaking D1** — raise `angle_jitter` *weights* (skew_abs /
-   diversity / fragmentation), not `base`.
-4. **Tropism row** — only `ground.lift` promoted; `tropism.base` / engage / release still open.
-5. **S5 AC-SKEL-1 pair** — **done** (`skel1-clean` / `skel1-messy`); eye judgment still open in lab.
+Three things go into it from the M0 tuning campaign, all recorded rather than resolved:
 
-Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
-`AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
-platforms. The tool's per-run skeleton digest is the same hash, so the probe is mostly moving
-code that already exists into the gate. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in
-`cargo xtask budget` against the existing pins; composition is bounded by construction
-(capacity × level cap), but bounded is not measured.
+1. **Family C — `length_ratio` / `width_ratio` are unjudged.** Deliberate. They govern taper
+   character, and Phase 4 changes what a limb *looks* like; tuning them against a
+   line-and-thickness placeholder would be tuning against the wrong picture.
+2. **The crown is lopsided on wide fans** — one long bare arm with no weight above it. The
+   trunk rework freed `trunk.fan` to be lateral character alone, and this is the first thing
+   that character should be retuned against.
+3. **`branch_capacity` base=3, monorepo vs small repository** (the `needs_code` finding).
+   Real design debt. Not an M0 exit condition — `AC-SKEL-1` asks that clean and messy differ,
+   not that every repository size reads equally well.
 
-Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
-`AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
-platforms. The tool's per-run skeleton digest is the same hash, so the probe is mostly moving
-code that already exists into the gate. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in
-`cargo xtask budget` against the existing pins; composition is bounded by construction
-(capacity × level cap), but bounded is not measured.
-
-`AC-SKEL-1` has a synthetic comparable pair (`skel1-clean` / `skel1-messy`). A real T1 pin
-(e.g. ripgrep) remains optional for a later sanity check against non-synthetic structure.
+The lab and the `qa/` session schema stay; they are Phase 4's instrument for the same
+one-family-at-a-time loop, against materials instead of geometry.
 
 Carried forward, neither blocking:
 

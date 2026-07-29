@@ -30,7 +30,7 @@
 use crate::aggregate::AggregateNode;
 use crate::path::RepoPath;
 use alloc::vec::Vec;
-use treepo_det::{Angle, Fx, Seed};
+use treepo_det::{Angle, Digest, Fx, Seed, Sha256};
 
 /// A point in world space.
 ///
@@ -314,6 +314,128 @@ impl Skeleton {
             NodeRole::Group { .. } | NodeRole::RootMass { .. } => AccountedPaths::None,
         })
     }
+
+    /// The whole skeleton as one number — `AC-DET-1`'s "byte-identical serialized skeletons".
+    ///
+    /// > **AC-DET-1** — Two Grow runs on identical repository state produce byte-identical
+    /// > serialized skeletons, materials, and enrichment placements.
+    ///
+    /// The criterion is about a *serialization*, and there is no on-disk skeleton format yet
+    /// — `treepo-store` persists manifests, and a baked skeleton is Phase 5's problem. So the
+    /// encoding is defined here instead: a canonical byte sequence that exists only to be
+    /// hashed. Comparing digests answers exactly the question comparing serialized bytes
+    /// would, and it is the form `cargo xtask determinism` can compare across three platforms
+    /// without shipping three files of geometry.
+    ///
+    /// It lives on [`Skeleton`] rather than in the tool that first needed it because there
+    /// must be *one* of it. `xtask determinism` gates on it, `xtask budget` reports it, and
+    /// `m0-silhouette` prints it beside every picture; three copies of a hash are three
+    /// chances for the gate and the picture to disagree about what changed.
+    ///
+    /// # What is covered, and why each part is
+    ///
+    /// Everything a later phase can observe, not merely everything that is drawn:
+    ///
+    /// * **Geometry** — node origins and headings, and every segment's endpoints and widths.
+    ///   The obvious half, and the one `F-SKEL-6` is about.
+    /// * **Parentage** — a node whose parent changed is a different skeleton even if nothing
+    ///   moved, because `AC-GROW-4` diffs the tree and `F-INSP-3` walks it.
+    /// * **Roles, in full** — including an [`AggregateNode`]'s members and counts. A
+    ///   container that absorbed a different set of paths stands for something else, and a
+    ///   digest that could not see that would call `F-SKEL-7`'s residue interchangeable.
+    /// * **Seeds** — the same shape grown from a different seed is the same shape now and a
+    ///   different tree in Phase 4, once materials read the seed (`P2`).
+    ///
+    /// Lengths precede every variable-length field, and the counts precede everything, so no
+    /// two distinct skeletons can encode to the same bytes by running into each other.
+    #[must_use]
+    pub fn digest(&self) -> Digest {
+        let mut hasher = Sha256::new();
+        hasher.update(SKELETON_DIGEST_TAG);
+        hasher.update(&(self.nodes.len() as u64).to_le_bytes());
+        hasher.update(&(self.segments.len() as u64).to_le_bytes());
+
+        for node in &self.nodes {
+            match node.parent {
+                None => hasher.update(&[0]),
+                Some(parent) => {
+                    hasher.update(&[1]);
+                    hasher.update(&parent.index().to_le_bytes());
+                }
+            }
+            hasher.update(&node.origin.x.to_bits().to_le_bytes());
+            hasher.update(&node.origin.y.to_bits().to_le_bytes());
+            hasher.update(&node.heading.to_bits().to_le_bytes());
+            hasher.update(node.seed.as_bytes());
+
+            // The discriminant first, so a limb that became a container is a different
+            // skeleton even where the geometry happens to land in the same place.
+            match &node.role {
+                NodeRole::Limb { path } => {
+                    hasher.update(&[0]);
+                    hash_path(&mut hasher, path);
+                }
+                NodeRole::Group { anchor, members } => {
+                    hasher.update(&[1]);
+                    hash_path(&mut hasher, anchor);
+                    hash_paths(&mut hasher, members);
+                }
+                NodeRole::Aggregate(aggregate) => {
+                    hasher.update(&[2]);
+                    hash_path(&mut hasher, &aggregate.anchor);
+                    hasher.update(&aggregate.index.to_le_bytes());
+                    hasher.update(&aggregate.bytes.to_le_bytes());
+                    hasher.update(&aggregate.file_count.to_le_bytes());
+                    hasher.update(&aggregate.dir_count.to_le_bytes());
+                    hash_paths(&mut hasher, &aggregate.members);
+                }
+                NodeRole::RootMass { anchor, index } => {
+                    hasher.update(&[3]);
+                    hash_path(&mut hasher, anchor);
+                    hasher.update(&index.to_le_bytes());
+                }
+            }
+        }
+
+        for segment in &self.segments {
+            for value in [
+                segment.start.x,
+                segment.start.y,
+                segment.end.x,
+                segment.end.y,
+                segment.base_width,
+                segment.tip_width,
+            ] {
+                hasher.update(&value.to_bits().to_le_bytes());
+            }
+            hasher.update(&segment.node.index().to_le_bytes());
+            hasher.update(&[segment.generation]);
+        }
+
+        hasher.finalize()
+    }
+}
+
+/// Namespaces [`Skeleton::digest`], and dates its encoding.
+///
+/// Bumped whenever the encoding changes, so that a digest from an older build cannot be
+/// mistaken for a disagreement about geometry. `v1` was the tool-local hash this replaced; it
+/// covered neither parentage nor aggregate membership.
+const SKELETON_DIGEST_TAG: &[u8] = b"treepo-skeleton-v2";
+
+/// One path, length first.
+fn hash_path(hasher: &mut Sha256, path: &RepoPath) {
+    let bytes = path.as_bytes();
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+/// A list of paths, count first.
+fn hash_paths(hasher: &mut Sha256, paths: &[RepoPath]) {
+    hasher.update(&(paths.len() as u64).to_le_bytes());
+    for path in paths {
+        hash_path(hasher, path);
+    }
 }
 
 /// The shapes [`Skeleton::accounted_roots`] flattens, without boxing.
@@ -432,5 +554,82 @@ mod tests {
         assert!(skeleton.represents(&path("v/lib/deep/inner.rs")));
         // A sibling the container does not stand for.
         assert!(!skeleton.represents(&path("v/other.rs")));
+    }
+
+    /// A small skeleton with one of each role, so the digest tests have something with
+    /// parentage, membership, and geometry all in it.
+    fn sample() -> Skeleton {
+        let mut skeleton = Skeleton::new();
+        let base = skeleton.push_node(
+            None,
+            Point::ORIGIN,
+            Angle::ZERO,
+            seed(),
+            NodeRole::Limb {
+                path: RepoPath::root(),
+            },
+        );
+        let limb = skeleton.push_node(
+            Some(base),
+            Point::new(Fx::from_int(1), Fx::from_int(2)),
+            Angle::QUARTER,
+            seed(),
+            NodeRole::Limb { path: path("src") },
+        );
+        skeleton.push_node(
+            Some(limb),
+            Point::new(Fx::from_int(3), Fx::from_int(4)),
+            Angle::ZERO,
+            seed(),
+            NodeRole::Aggregate(AggregateNode {
+                anchor: path("src"),
+                index: 0,
+                members: vec![path("src/a.rs"), path("src/b.rs")],
+                bytes: 40,
+                file_count: 2,
+                dir_count: 0,
+            }),
+        );
+        skeleton.extend_segments([Segment {
+            start: Point::ORIGIN,
+            end: Point::new(Fx::from_int(1), Fx::from_int(2)),
+            base_width: Fx::from_int(2),
+            tip_width: Fx::from_int(1),
+            node: base,
+            generation: 0,
+        }]);
+        skeleton
+    }
+
+    #[test]
+    fn the_same_skeleton_hashes_the_same_way_every_time() {
+        assert_eq!(sample().digest(), sample().digest());
+    }
+
+    #[test]
+    fn moving_a_segment_changes_the_digest() {
+        let mut moved = sample();
+        moved.segments[0].end.x = Fx::from_int(9);
+        assert_ne!(moved.digest(), sample().digest());
+    }
+
+    /// The half a geometry-only hash misses. Nothing moves here; the tree changes shape.
+    #[test]
+    fn re_hanging_a_limb_changes_the_digest() {
+        let mut rehung = sample();
+        rehung.nodes[2].parent = Some(NodeId::new(0));
+        assert_ne!(rehung.digest(), sample().digest());
+    }
+
+    /// The other half: a container standing for a different set of paths is a different
+    /// skeleton, however identical the container looks (`F-SKEL-7`, `F-INSP-3`).
+    #[test]
+    fn a_container_that_absorbed_something_else_changes_the_digest() {
+        let mut swapped = sample();
+        let NodeRole::Aggregate(aggregate) = &mut swapped.nodes[2].role else {
+            panic!("the sample's third node is the container");
+        };
+        aggregate.members[1] = path("src/c.rs");
+        assert_ne!(swapped.digest(), sample().digest());
     }
 }

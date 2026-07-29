@@ -3,24 +3,56 @@
 //! Architecture D2: "CI runs each corpus fixture three times per platform and compares
 //! serialized-output hashes across all nine runs."
 //!
-//! This is the Phase 0 form of that harness. There is no corpus yet and no skeleton to
-//! serialize, so what it hashes is the layer everything else will be built on: every
-//! primitive in `treepo-det`, exercised over a fixed sample, reduced to one digest per
-//! probe.
+//! The harness runs in two stages.
+//!
+//! **The probes** hash the layer everything else is built on: every primitive in `treepo-det`,
+//! exercised over a fixed sample, reduced to one digest each. They were the whole of the
+//! harness in Phase 0, when there was no corpus and no skeleton to serialize.
+//!
+//! **The corpus stage** is D2's sentence, arrived at in Phase 3. Every corpus fixture is
+//! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) is reduced to
+//! its digest. This is the stage that can fail for an interesting reason: the probes cover the
+//! arithmetic, and only this covers what the L-system, the composition order, the aggregation
+//! threshold, and the trunk column do *with* that arithmetic.
 //!
 //! Two properties are checked, and they are not the same property:
 //!
-//! * **`AC-DET-1`, within a platform.** Each probe runs three times in one process and the
-//!   digests must agree. This catches anything that reads ambient state — a clock, a
-//!   process-seeded hasher, an address — because those vary between runs of one binary.
+//! * **`AC-DET-1`, within a platform.** Each probe runs three times in one process, and each
+//!   fixture is grown three times from one manifest; the digests must agree. This catches
+//!   anything that reads ambient state — a clock, a process-seeded hasher, an address —
+//!   because those vary between runs of one binary. Growing repeatedly from *one* manifest is
+//!   deliberate: `AC-DET-1` is about two Grow runs on identical repository state, and the
+//!   manifest is that state.
 //! * **`AC-DET-2`, across platforms.** The report written by `--out` contains nothing
 //!   platform-specific, so CI can compare the files from all three runners byte for byte.
 //!   This is the check that would catch a platform `libm` creeping into the trig path.
 //!
-//! Later phases extend the probe list rather than replacing the harness: Phase 3 adds
-//! skeleton hashes, Phase 6 adds the `GrowTimeline` hash (D6).
+//! # What the corpus stage deliberately does not seed from
+//!
+//! Extraction takes its root seed from repository identity, and `F-MAN-3`'s third tier is a
+//! hash of the absolute path — which is a different number in every checkout, on every
+//! machine. Seeding this stage that way would make `AC-DET-2` fail by construction and prove
+//! nothing. So the stage supplies a fixed seed of its own. Identity resolution has its own
+//! tests; what is under test here is everything downstream of the seed.
+//!
+//! One consequence is visible in the report and worth expecting: `detached-head`, `shallow`,
+//! `no-remote`, and `multi-remote` hold the same files and differ only in refs and remotes, so
+//! under a fixed seed they grow the same skeleton and print the same digest. That is the
+//! correct answer here. Those four exist to exercise `F-MAN-3`, and it is `tests/identity.rs`
+//! that has to tell them apart.
+//!
+//! Fixtures that only some platforms can build are excluded for the same reason: a report
+//! listing `symlinks` on two runners and not the third would differ for a reason that is not a
+//! finding. `tools/corpus` records which those are, and this reads that rather than guessing.
+//!
+//! Thread count is *not* pinned. `AC-DET-3` forbids hardware-dependent values in the
+//! generative pipeline, and the history pass is threaded — so leaving it at the product's
+//! default is what would let a thread-order dependency surface as a cross-platform difference.
+//!
+//! Phase 6 extends the harness once more, with the `GrowTimeline` hash (D6).
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use treepo_det::{Angle, ChaCha8Rng, Digest, Fx, Seed, Sha256, sin_cos};
 
@@ -101,6 +133,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         overall.update(first.as_bytes());
     }
 
+    corpus_skeletons(runs, &mut report, &mut overall)?;
+
     let overall = overall.finalize();
     writeln!(report, "overall {overall}").expect("writing to a String cannot fail");
     println!("\n  {:<10} {overall}", "overall");
@@ -126,6 +160,106 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 
     println!("\nall probes reproducible ({runs} runs each)");
     Ok(())
+}
+
+/// The seed the corpus stage grows from.
+///
+/// Fixed rather than resolved, for the reason the module docs give: `F-MAN-3`'s path-hash tier
+/// would put the checkout directory into the answer.
+const CORPUS_SEED: &[u8] = b"treepo/determinism-corpus";
+
+/// The fixture extraction is *supposed* to decline — PRD §6's bare repository, which has no
+/// working tree to read.
+///
+/// Named, so that any other fixture becoming unextractable is an error rather than a line of
+/// report that still matches across three platforms.
+const REFUSED: &[&str] = &["bare"];
+
+/// Grows every all-platform corpus fixture and hashes the skeleton — `AC-DET-1`, `AC-DET-2`.
+fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> Result<(), String> {
+    let root = corpus::default_root();
+    let built = corpus::ensure(&root).map_err(|e| format!("building the corpus: {e}"))?;
+
+    println!("\nskeletons — every corpus fixture, grown {runs} times\n");
+    println!("  corpus  {}", root.display());
+    println!("  table   built-in (assets/params/lsystem.ron)\n");
+
+    let table = treepo_gen::Table::built_in();
+
+    for shape in corpus::all_shapes() {
+        // Shapes only some platforms can build would make the report differ for a reason that
+        // is not a finding. See the module docs.
+        if shape.platforms != corpus::shapes::Platforms::All {
+            continue;
+        }
+        let Some(fixture) = built.iter().find(|fixture| fixture.name == shape.name) else {
+            return Err(format!(
+                "`{}` is an all-platform shape but the corpus did not build it",
+                shape.name
+            ));
+        };
+
+        let outcome = match manifest_for(&fixture.path) {
+            Ok(manifest) => {
+                let first = treepo_gen::grow(&manifest, &table).digest();
+                // AC-DET-1: the same repository state, grown again, must not move.
+                for repeat in 1..runs {
+                    let again = treepo_gen::grow(&manifest, &table).digest();
+                    if again != first {
+                        return Err(format!(
+                            "`{}` does not grow the same skeleton twice\n  \
+                             run 1: {first}\n  run {}: {again}\n\
+                             Something in the generative path reads ambient state.",
+                            shape.name,
+                            repeat + 1
+                        ));
+                    }
+                }
+                first.to_string()
+            }
+            Err(why) if REFUSED.contains(&shape.name) => {
+                println!("  {:<18} refused — {why}", shape.name);
+                "refused".to_owned()
+            }
+            Err(why) => {
+                return Err(format!(
+                    "`{}` could not be extracted: {why}\n\
+                     Only {REFUSED:?} may refuse; anything else is a regression in extraction \
+                     rather than a determinism finding.",
+                    shape.name
+                ));
+            }
+        };
+
+        if outcome != "refused" {
+            println!("  {:<18} {outcome}", shape.name);
+        }
+        writeln!(report, "skeleton/{} {outcome}", shape.name)
+            .expect("writing to a String cannot fail");
+        overall.update(shape.name.as_bytes());
+        overall.update(outcome.as_bytes());
+    }
+
+    Ok(())
+}
+
+/// One fixture, through the Phase 1 pipeline, seeded from [`CORPUS_SEED`].
+fn manifest_for(path: &Path) -> Result<treepo_model::Manifest, String> {
+    use treepo_vcs::lang::Catalogue;
+    use treepo_vcs::{ExtractOptions, FilterSet};
+
+    let target = treepo_vcs::discover(path).map_err(|e| format!("discover: {e}"))?;
+    treepo_vcs::extract(
+        &target,
+        &FilterSet::built_in(),
+        &Catalogue::built_in(),
+        Seed::root(CORPUS_SEED),
+        // A constant, not the crate version. The report is compared byte for byte, and a
+        // version string reaching a digest would make every release look like a regression.
+        "determinism-harness".to_owned(),
+        ExtractOptions::default(),
+    )
+    .map_err(|e| format!("extract: {e}"))
 }
 
 /// The sampled angles. Stride 429,497 is odd, so it is coprime with 2³² and the 10,000

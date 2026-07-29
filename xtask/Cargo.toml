@@ -15,8 +15,13 @@ publish.workspace = true
 # observing half is held to the original rule and uses `std::fs` and `treepo-det` only, so the
 # thing doing the measuring shares no code with the thing being measured; see the module docs
 # in src/readonly_audit.rs.
+#
+# `treepo-gen` joined them in Phase 3, for the same reason: `determinism` and `budget` both
+# grow real skeletons, because a harness that gated on its own copy of the L-system would be
+# gating on the copy.
 [dependencies]
 treepo-det = { workspace = true }
+treepo-gen = { workspace = true }
 treepo-model = { workspace = true }
 treepo-store = { workspace = true }
 treepo-vcs = { workspace = true }

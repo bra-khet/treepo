@@ -6,17 +6,22 @@ name: Determinism
 # serialized-output hashes across all nine runs."
 #
 # The shape of this workflow is that sentence. Each platform runs the probes three times in
-# one process (AC-DET-1) and publishes a report; a final job compares the three reports byte
-# for byte (AC-DET-2). The reports contain nothing platform-specific, so any difference at
-# all is a real finding.
+# one process and grows every corpus fixture three times (AC-DET-1) and publishes a report; a
+# final job compares the three reports byte for byte (AC-DET-2). The reports contain nothing
+# platform-specific, so any difference at all is a real finding.
 #
 # RISK-2 is what this exists for: sin/cos are not guaranteed bit-identical across platform
 # math libraries, and the failure mode — a tree that is subtly the wrong shape on someone
-# else's machine — is close to undiagnosable if it is found late. Phase 0 gates on it before
-# any generative code exists to inherit the problem.
+# else's machine — is close to undiagnosable if it is found late. Phase 0 gated on it before
+# any generative code existed to inherit the problem; Phase 3 added the skeletons themselves,
+# which is where a difference would actually be visible to a user.
 #
-# Later phases extend the probe list rather than this workflow: Phase 3 adds skeleton
-# hashes, Phase 6 the GrowTimeline hash (architecture D6).
+# The corpus is built by `cargo xtask determinism` on demand and needs `git` on PATH, which
+# every runner image has. `tools/corpus` fixes author dates, identities, and line endings, so
+# the fixtures are byte-identical wherever they are built — the property the comparison below
+# depends on.
+#
+# Phase 6 extends this once more, with the GrowTimeline hash (architecture D6).
 
 on:
   push:
@@ -46,7 +51,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Three runs per probe, in one process. Catches anything reading ambient state.
+      # Three runs per probe and three growths per fixture, in one process. Catches anything
+      # reading ambient state.
       - name: Run determinism probes
         run: cargo xtask determinism --runs 3 --out determinism-${{ matrix.name }}.txt
 
@@ -99,6 +105,8 @@ jobs:
             echo "  2. HashMap or HashSet iteration order"
             echo "  3. an unsorted directory read (AC-DET-3)"
             echo "  4. a debug/release arithmetic difference — overflow panics vs wraps"
+            echo "  5. the fixture itself differs — if every skeleton/* line moved and no"
+            echo "     probe did, suspect tools/corpus rather than the generative path"
             exit 1
           fi
 

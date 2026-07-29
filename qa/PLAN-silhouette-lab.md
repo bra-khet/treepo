@@ -1,6 +1,6 @@
 # Plan: Silhouette lab + forced structural tuning
 
-**Status:** open  
+**Status:** closed 2026-07-29  
 **Opened:** 2026-07-28  
 **Close when:** structural fixes S1–S3 done, HTML lab MVP (S4) usable, and the first full tuning campaign has promoted evidence into `assets/params/lsystem.ron` (or recorded a deliberate decision not to).  
 **Related:** `design/l-system-parameterization.md` §6 · PRD M0 / AC-SKEL-* · `claude-progress.md` “What the pictures say”
@@ -70,6 +70,13 @@ That S3 → S3b sequence is the forced order working as intended, and worth reco
 6. Tuning campaign (user drives; agent promotes).
 7. Skeleton digest in determinism harness / budget row as needed.
 
+S7 turned out to be less "as needed" than the line suggests. The lab's per-render digest was
+the only thing hashing a skeleton anywhere, which made it a *tool feature* rather than a gate —
+`cargo xtask determinism` was still proving that the arithmetic reproduces, not that the tree
+does. Moving the hash onto [`Skeleton`] and growing every fixture inside the harness is what
+turns the lab's habit of printing a digest into `AC-DET-1`/`AC-DET-2` for the thing a user
+would actually see.
+
 ---
 
 ## Sprint checklist
@@ -84,20 +91,40 @@ That S3 → S3b sequence is the forced order working as intended, and worth reco
 | **S4** | HTML lab MVP | **done** 2026-07-28 (`m0-silhouette lab`) |
 | **S5** | AC-SKEL-1 subject pair | **done** 2026-07-29 — `skel1-clean` / `skel1-messy` corpus shapes + lab subjects |
 | **S6** | Tuning campaign via lab | **partial** 2026-07-29 — first promote + joint-promote micro-pass (fan 80°, tropism/ground, jitter wild weights). Capacity needs_code and Family C still open. |
-| **S7** | Determinism / budget gate hardening | pending |
+| **S7** | Determinism / budget gate hardening | **done** 2026-07-29 — `Skeleton::digest`, corpus stage in `xtask determinism`, skeleton row in `xtask budget` |
 
 ---
 
 ## Success criteria
 
-- [ ] Structural: taper across limbs; upright bias; non-pancake multi-primary stem; AC-SKEL-2 still holds by eye.
-- [ ] Lab: one command, multi-subject strip, non-destructive render history, export package for agent.
-- [ ] Tuning: each family has ≥1 exported finding; promoted table changes are evidence-backed in progress.
-- [ ] AC-SKEL-1: clean vs messy comparable pair judged in lab.
-- [ ] Gates remain green; determinism digests updated only when geometry contract intentionally changes.
+- [x] Structural: taper across limbs; upright bias; non-pancake multi-primary stem; AC-SKEL-2 still holds by eye.
+- [x] Lab: one command, multi-subject strip, non-destructive render history, export package for agent.
+- [~] Tuning: each family has ≥1 exported finding; promoted table changes are evidence-backed in progress.
+      Families A, B, D, E promoted with recorded findings. **Family C (`length_ratio` /
+      `width_ratio`) has none** — see the close note.
+- [x] AC-SKEL-1: clean vs messy comparable pair judged in lab (2026-07-29, by eye).
+- [x] Gates remain green; determinism digests updated only when geometry contract intentionally changes.
 
 ---
 
 ## Close note
 
-_(fill when closed)_
+**Closed 2026-07-29.** The forced order held: every structural fix (S1–S3b) had to land before
+any number was worth sliding, and S3 → S3b is the proof — the basal rule was *both*
+inconsistent and built on the wrong model, and fixing only the number is what revealed which.
+
+What the plan did not anticipate is that its last sprint was the one that mattered to M0. S7
+was written as "as needed"; it turned out to be the gap between a debug tool that prints a
+skeleton digest and a CI gate that compares one across three platforms.
+
+Two things are deliberately left open rather than dragged into the close:
+
+* **Family C** — `length_ratio` and `width_ratio` are unjudged. They govern taper character,
+  which is a materials-adjacent question, and Phase 4 will change what a limb looks like
+  before the answer would settle. Tuning them now would be tuning against a placeholder.
+* **`branch_capacity` base=3, monorepo vs small repo** (the `needs_code` finding). Real design
+  debt, recorded in `claude-progress.md`, and not an M0 exit condition — the criterion is that
+  clean and messy differ, not that every repository size reads equally well.
+
+The lab (`m0-silhouette lab`) and the `qa/` session schema stay in place; both are the
+instrument for Phase 4's material passes, not scaffolding to be removed.

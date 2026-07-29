@@ -24,6 +24,21 @@
 //! carries on, and only a ceiling breach fails the command. A gate that treated them alike
 //! would either cry wolf at 61 seconds or say nothing at 179.
 //!
+//! # And skeleton generation, against the same table — `AC-SKEL-3`
+//!
+//! > **AC-SKEL-3** — Skeleton generation for T3 completes within the §7 Grow budget.
+//!
+//! The §7 table above is titled *Grow budget — first run, full extraction*, and a first-run
+//! Grow is extraction **and** skeleton generation. So the two criteria read the same rows from
+//! two sides: `AC-EXT-1` asks whether extraction fits, `AC-SKEL-3` whether extraction plus the
+//! skeleton still does. Both verdicts are printed, because a run that fits one and not the
+//! other is a different diagnosis from a run that fits neither.
+//!
+//! Growth is measured, not derived from the composition bounds. `A3` caps recursion and
+//! `branch_capacity` caps sites per limb, so the *skeleton* cannot grow without limit whatever
+//! the repository does — but composing it still reads every path, and "bounded by
+//! construction" is a proof about the output, not a measurement of the work.
+//!
 //! # What is measured, and what is not
 //!
 //! Every Phase 1 pass, timed individually, because a total that has moved is only useful if it
@@ -122,7 +137,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
         return list(&root, &selected);
     }
 
-    println!("budget — full extraction against PRD §7 (AC-EXT-1)\n");
+    println!("budget — extraction and skeleton against PRD §7 (AC-EXT-1, AC-SKEL-3)\n");
     println!("  cache    {}", root.display());
     println!(
         "  machine  {} logical cores; log_pass held to {threads} (§7 minimum spec is 4)",
@@ -182,23 +197,61 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             );
         }
 
+        // Three decimals where every other row has two: at T1 the skeleton costs less than a
+        // hundredth of a second, and `0.00 s` reads as "not measured" rather than as "free".
+        println!(
+            "    {:<17} {:>8.3} s  {} nodes, {} segments, {} containers",
+            "skeleton",
+            measurement.skeleton,
+            measurement.nodes,
+            measurement.segments,
+            measurement.aggregates
+        );
+        println!(
+            "    {:<17} {:.3} s per 10,000 paths; {} at {} nominal files",
+            "grow rate",
+            measurement.skeleton_per_ten_thousand_paths(),
+            seconds(measurement.skeleton_at_tier_scale(pin.tier)),
+            pin.tier.nominal().0,
+        );
+
         report_tier_fit(pin, &measurement);
 
         match pin.tier.budget_seconds() {
             None => println!("    {:<17} {} has no §7 row", "budget", pin.tier.name()),
             Some((target, ceiling)) => {
-                let verdict = verdict(measurement.total, target, ceiling);
                 println!(
-                    "    {:<17} {verdict} (target {target} s, ceiling {ceiling} s)",
-                    "budget"
+                    "    {:<17} {} (target {target} s, ceiling {ceiling} s) — AC-EXT-1",
+                    "budget",
+                    verdict(measurement.total, target, ceiling)
+                );
+                // The §7 rows budget a first-run Grow, which is extraction *and* the skeleton.
+                // Reported separately from the line above because the two criteria fail for
+                // different reasons and want different fixes.
+                println!(
+                    "    {:<17} {:>8.2} s  {} — AC-SKEL-3",
+                    "grow total",
+                    measurement.grow(),
+                    verdict(measurement.grow(), target, ceiling)
                 );
                 #[allow(clippy::cast_precision_loss)]
                 if measurement.total > ceiling as f64 {
                     breaches.push(format!(
-                        "{} ({}) took {:.1} s against a {} s hard ceiling",
+                        "AC-EXT-1: {} ({}) extracted in {:.1} s against a {} s hard ceiling",
                         pin.name,
                         pin.tier.name(),
                         measurement.total,
+                        ceiling
+                    ));
+                }
+                #[allow(clippy::cast_precision_loss)]
+                if measurement.grow() > ceiling as f64 {
+                    breaches.push(format!(
+                        "AC-SKEL-3: {} ({}) extracted and grew in {:.1} s against a {} s hard \
+                         ceiling",
+                        pin.name,
+                        pin.tier.name(),
+                        measurement.grow(),
                         ceiling
                     ));
                 }
@@ -276,7 +329,7 @@ fn prepare(root: &Path, pin: &Pin, may_fetch: bool) -> Result<std::path::PathBuf
     }
 }
 
-/// One timed extraction.
+/// One timed extraction, and the skeleton grown from it.
 struct Measurement {
     passes: [f64; PASSES.len()],
     total: f64,
@@ -284,9 +337,38 @@ struct Measurement {
     paths: usize,
     commits: u32,
     authors: usize,
+    /// Seconds spent in [`treepo_gen::grow`] — `AC-SKEL-3`.
+    skeleton: f64,
+    nodes: usize,
+    segments: usize,
+    aggregates: usize,
 }
 
 impl Measurement {
+    /// Extraction plus skeleton: what §7's Grow budget is a budget *for*.
+    fn grow(&self) -> f64 {
+        self.total + self.skeleton
+    }
+
+    /// Seconds of skeleton generation per ten thousand paths.
+    ///
+    /// Growth scales with paths, where extraction scales with commits — so this is the figure
+    /// that reads across pins, and the one the T3 projection is built from.
+    #[allow(clippy::cast_precision_loss)]
+    fn skeleton_per_ten_thousand_paths(&self) -> f64 {
+        self.skeleton / self.paths as f64 * 10_000.0
+    }
+
+    /// What that rate would cost at the tier's nominal file count.
+    ///
+    /// The same extrapolation [`at_tier_scale`](Self::at_tier_scale) makes for extraction, and
+    /// with the same caveat: it assumes linear cost, and it is not a substitute for measuring
+    /// a repository that really is the tier.
+    #[allow(clippy::cast_precision_loss)]
+    fn skeleton_at_tier_scale(&self, tier: corpus::Tier) -> f64 {
+        self.skeleton_per_ten_thousand_paths() * tier.nominal().0 as f64 / 10_000.0
+    }
+
     /// Seconds per thousand commits — the shape-independent reading.
     #[allow(clippy::cast_precision_loss)]
     fn per_thousand_commits(&self) -> f64 {
@@ -380,19 +462,57 @@ fn measure(root: &Path, threads: usize) -> Result<Measurement, String> {
     apply_history_signals(&mut structure.records);
     passes[6] = mark.elapsed().as_secs_f64();
 
+    let total = overall.elapsed().as_secs_f64();
+
+    // PRD §3's tier table counts *files*; `records` also holds every directory, and at T3 the
+    // difference is tens of thousands of entries.
+    let files = structure
+        .records
+        .iter()
+        .filter(|record| record.kind == treepo_model::manifest::NodeKind::File)
+        .count();
+    let paths = structure.records.len();
+    let commits = history.commit_count;
+    let authors = history.authors.len();
+
+    // The tail of `treepo_vcs::extract`, written out rather than called, for the reason the
+    // passes above are: a manifest assembled by a helper is a manifest that could quietly stop
+    // carrying a field while this kept reporting a figure for it. Identity is resolved the way
+    // the product resolves it — unlike the determinism harness, nothing here is compared
+    // across machines, so the realistic seed is the right one.
+    let identity = treepo_store::resolve(target.root(), target.repository(), 0)
+        .map_err(|e| format!("resolve: {e}"))?
+        .identity;
+    let mut manifest = treepo_model::Manifest::new(
+        env!("CARGO_PKG_VERSION").to_owned(),
+        treepo_store::resolve::root_seed(&identity),
+    );
+    manifest.built_from_commit = match &target {
+        treepo_vcs::Target::Repository(repo) => repo.head,
+        treepo_vcs::Target::PlainDirectory { .. } => None,
+    };
+    manifest.reference_time = history.reference_time;
+    manifest.is_shallow =
+        matches!(&target, treepo_vcs::Target::Repository(repo) if repo.is_shallow);
+    manifest.authors = history.authors;
+    manifest.languages = languages;
+    manifest.set_paths(structure.records);
+
+    let mark = now();
+    let skeleton = treepo_gen::grow(&manifest, &treepo_gen::Table::built_in());
+    let skeleton_seconds = mark.elapsed().as_secs_f64();
+
     Ok(Measurement {
         passes,
-        total: overall.elapsed().as_secs_f64(),
-        // PRD §3's tier table counts *files*; `records` also holds every directory, and at
-        // T3 the difference is tens of thousands of entries.
-        files: structure
-            .records
-            .iter()
-            .filter(|record| record.kind == treepo_model::manifest::NodeKind::File)
-            .count(),
-        paths: structure.records.len(),
-        commits: history.commit_count,
-        authors: history.authors.len(),
+        total,
+        files,
+        paths,
+        commits,
+        authors,
+        skeleton: skeleton_seconds,
+        nodes: skeleton.nodes().len(),
+        segments: skeleton.segments().len(),
+        aggregates: skeleton.aggregate_count(),
     })
 }
 

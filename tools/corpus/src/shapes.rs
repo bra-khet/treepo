@@ -387,7 +387,10 @@ fn build_excluded_content(root: &Path, name: &str) -> Result<(), BuildError> {
 /// lab strip can judge orderly vs wild from one table without fetching a T1 pin.
 fn build_skel1_clean(root: &Path, name: &str) -> Result<(), BuildError> {
     let mut builder = Builder::init(root.to_path_buf(), name)?;
-    builder.write("README.md", b"# skel1-clean\n\nA conventional single-language library.\n")?;
+    builder.write(
+        "README.md",
+        b"# skel1-clean\n\nA conventional single-language library.\n",
+    )?;
     builder.write(
         "Cargo.toml",
         b"[package]\nname = \"skel1-clean\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -404,14 +407,22 @@ fn build_skel1_clean(root: &Path, name: &str) -> Result<(), BuildError> {
     }
     // Tests mirror the layout; convention weight stays high without adding hierarchy skew.
     for test_name in [
-        "core_a", "core_b", "io_a", "io_b", "util_a", "util_b", "integration", "smoke",
+        "core_a",
+        "core_b",
+        "io_a",
+        "io_b",
+        "util_a",
+        "util_b",
+        "integration",
+        "smoke",
     ] {
         builder.write_source(&format!("tests/{test_name}.rs"), 28)?;
     }
     for doc in ["guide", "api", "architecture", "changelog"] {
         builder.write(
             &format!("docs/{doc}.md"),
-            format!("# {doc}\n\nProject documentation for the clean half of AC-SKEL-1.\n").as_bytes(),
+            format!("# {doc}\n\nProject documentation for the clean half of AC-SKEL-1.\n")
+                .as_bytes(),
         )?;
     }
 

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use treepo_det::{Digest, Sha256};
+use treepo_det::Digest;
 use treepo_gen::{Table, grow};
 use treepo_model::{Manifest, NodeRole, Skeleton};
 
@@ -80,7 +80,7 @@ pub(crate) fn render_manifest(
     );
 
     let (min_x, min_y, max_x, max_y) = view.extent;
-    let digest = skeleton_digest(&skeleton);
+    let digest = skeleton.digest();
     let report = Report {
         paths: manifest.paths().len(),
         nodes: skeleton.nodes().len(),
@@ -112,50 +112,6 @@ pub(crate) fn render_manifest(
         report,
         sidecar,
     }
-}
-
-/// A hash of the skeleton's geometry and roles.
-///
-/// Not the PNG's hash, deliberately. The PNG folds the skeleton through a fit that depends on
-/// the canvas size, so two runs at different `--size` values would disagree about a tree that
-/// is identical. This is the thing `AC-DET-1` is actually about.
-pub(crate) fn skeleton_digest(skeleton: &Skeleton) -> Digest {
-    let mut hasher = Sha256::new();
-    hasher.update(b"treepo-skeleton-v1");
-
-    for node in skeleton.nodes() {
-        hasher.update(&node.origin.x.to_bits().to_le_bytes());
-        hasher.update(&node.origin.y.to_bits().to_le_bytes());
-        hasher.update(&node.heading.to_bits().to_le_bytes());
-        hasher.update(node.seed.as_bytes());
-        // The role's discriminant and its anchor, so a limb that became a container is a
-        // different skeleton even where the geometry happens to land in the same place.
-        hasher.update(&[match &node.role {
-            NodeRole::Limb { .. } => 0,
-            NodeRole::Group { .. } => 1,
-            NodeRole::Aggregate(_) => 2,
-            NodeRole::RootMass { .. } => 3,
-        }]);
-        hasher.update(node.role.anchor().as_bytes());
-        hasher.update(b"\0");
-    }
-
-    for segment in skeleton.segments() {
-        for value in [
-            segment.start.x,
-            segment.start.y,
-            segment.end.x,
-            segment.end.y,
-            segment.base_width,
-            segment.tip_width,
-        ] {
-            hasher.update(&value.to_bits().to_le_bytes());
-        }
-        hasher.update(&segment.node.index().to_le_bytes());
-        hasher.update(&[segment.generation]);
-    }
-
-    hasher.finalize()
 }
 
 /// The deepest limb in the skeleton — `A3`'s cap, as observed rather than as configured.

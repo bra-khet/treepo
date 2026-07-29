@@ -1731,6 +1731,7 @@ version = "0.1.0"
 dependencies = [
  "corpus",
  "treepo-det",
+ "treepo-gen",
  "treepo-model",
  "treepo-store",
  "treepo-vcs",
