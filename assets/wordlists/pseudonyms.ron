@@ -1,0 +1,96 @@
+// The pseudonym wordlist — `F-ID-3`.
+//
+// Read by `treepo-id::pseudonym`. A contributor's name is a function of their `AuthorKey`
+// and this file: the key draws one word from each list. No real name, email, or handle
+// enters it, and none can — the key is a one-way hash and this crate holds nothing else
+// (`N9`).
+//
+// # The theme, and why it is this one
+//
+// Arboreal. The words are trees, undergrowth, forest terrain and weather, plus the qualities
+// that describe them. treepo draws a repository as a tree, so a contributor called
+// `Hushed Bracken` belongs to the picture in a way that `Blue Otter 4713` does not — and a
+// name that belongs is a name someone will use out loud, which is the whole point of
+// pseudonymity being pleasant rather than merely correct.
+//
+// Two constraints on any word added here, both enforced by `Wordlist::validate`:
+//
+// * **Lower-case ASCII letters only, 2 to 14 of them.** Capitalization is the display's
+//   decision, and Unicode casing would need a table that then becomes a determinism input
+//   (`N3`).
+// * **No word in both lists**, so `Willow Willow` cannot be drawn.
+//
+// One constraint that is not enforced and matters just as much: a pseudonym is shown to a
+// person, so nothing here should be a slur, a surname, a brand, or a word that reads as a
+// judgement of the contributor it lands on. Both lists are deliberately neutral — no word
+// here says anything about a person.
+//
+// # The size is a property, not a preference
+//
+// 128 x 128 is 16,384 names. That number is what the stability claim in
+// `treepo-id::pseudonym` rests on: a contributor's pseudonym moves only if a new contributor
+// draws the same pair *and* sorts earlier by key, which is one chance in 16,384 per
+// contributor added. Trimming either list weakens that claim quietly, so
+// `the_wordlist_is_large_enough_for_the_stability_claim` asserts a floor on it.
+//
+// A repository with more contributors than there are pairs still works — the loader falls
+// back to a numeric discriminator rather than failing — but that is a graceful degradation,
+// not the intended reading.
+//
+// Both lists are alphabetical. That is for the human editing them: a duplicate is visible on
+// sight, and `validate` refuses one either way.
+(
+    version: 1,
+
+    // Qualities: colour, texture, weather, temperament. 128 words.
+    first: [
+        "amber",     "ashen",     "autumn",    "balmy",     "banded",    "bare",
+        "bitter",    "blushing",  "bold",      "boreal",    "braided",   "brassy",
+        "breezy",    "bright",    "brisk",     "bronzed",   "burnished", "calm",
+        "candid",    "chalky",    "cinder",    "clement",   "cloudy",    "cobalt",
+        "copper",    "coral",     "crisp",     "crooked",   "dappled",   "deep",
+        "dewy",      "drifting",  "dusky",     "dusty",     "earthen",   "eastern",
+        "ember",     "fallow",    "feathered", "flaxen",    "fleet",     "flint",
+        "foggy",     "forked",    "frosted",   "gentle",    "gilded",    "glassy",
+        "gnarled",   "golden",    "grassy",    "hollow",    "honeyed",   "humble",
+        "hushed",    "indigo",    "ivory",     "jade",      "keen",      "knotted",
+        "lantern",   "leafy",     "limber",    "lofty",     "lonely",    "lucid",
+        "marbled",   "mellow",    "mild",      "misty",     "mottled",   "muted",
+        "nimble",    "northern",  "olive",     "opal",      "pale",      "patient",
+        "pearl",     "pewter",    "plain",     "quick",     "quiet",     "ragged",
+        "rambling",  "restful",   "rimed",     "ripe",      "rooted",    "russet",
+        "rustling",  "sable",     "sallow",    "sanded",    "scarlet",   "seaward",
+        "shaded",    "shallow",   "sheltered", "silent",    "silver",    "slate",
+        "sleepy",    "slender",   "smoky",     "soft",      "solemn",    "southern",
+        "sparse",    "speckled",  "spindly",   "staid",     "still",     "stormy",
+        "sunlit",    "supple",    "swift",     "tawny",     "tender",    "thawing",
+        "tidal",     "twilit",    "umber",     "upland",    "velvet",    "verdant",
+        "warm",      "weathered",
+    ],
+
+    // Trees, undergrowth, fungi, terrain, and the small things that live in them. 128 words.
+    second: [
+        "acorn",     "alder",     "arbor",     "ash",       "aspen",     "badger",
+        "bark",      "basin",     "bay",       "beech",     "birch",     "blossom",
+        "bluff",     "bough",     "boulder",   "bracken",   "bracket",   "bramble",
+        "briar",     "brook",     "burl",      "burrow",    "cairn",     "canopy",
+        "catkin",    "cedar",     "chanterelle", "chestnut", "clearing", "clover",
+        "cobble",    "comfrey",   "coppice",   "cove",      "crag",      "cypress",
+        "dell",      "dingle",    "elder",     "elm",       "fern",      "fescue",
+        "fir",       "foxglove",  "frond",     "furrow",    "glade",     "gorse",
+        "grove",     "gully",     "hawthorn",  "hazel",     "heather",   "hemlock",
+        "hillock",   "holly",     "hornbeam",  "hummock",   "ivy",       "juniper",
+        "kestrel",   "knoll",     "larch",     "laurel",    "ledge",     "lichen",
+        "lily",      "linden",    "loam",      "madrone",   "maple",     "marsh",
+        "meadow",    "mist",      "moor",      "morel",     "moss",      "myrtle",
+        "nettle",    "oak",       "orchard",   "osier",     "pine",      "plover",
+        "poplar",    "primrose",  "puffball",  "quince",    "ravine",    "redwood",
+        "reed",      "ridge",     "rill",      "rookery",   "rowan",     "rush",
+        "sage",      "sapling",   "sedge",     "sequoia",   "shale",     "sorrel",
+        "spruce",    "stem",      "stump",     "sumac",     "sycamore",  "tamarack",
+        "tansy",     "teasel",    "thicket",   "thistle",   "thorn",     "thrush",
+        "timber",    "trillium",  "tundra",    "valley",    "verge",     "vetch",
+        "vine",      "violet",    "walnut",    "warren",    "willow",    "wren",
+        "yarrow",    "yew",
+    ],
+)

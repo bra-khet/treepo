@@ -6,6 +6,7 @@ members = [
   "crates/treepo-vcs",
   "crates/treepo-store",
   "crates/treepo-gen",
+  "crates/treepo-id",
   "xtask",
   "tools/corpus",
   "tools/m0-silhouette",
@@ -28,6 +29,7 @@ treepo-model = { path = "crates/treepo-model" }
 treepo-vcs = { path = "crates/treepo-vcs" }
 treepo-store = { path = "crates/treepo-store" }
 treepo-gen = { path = "crates/treepo-gen" }
+treepo-id = { path = "crates/treepo-id" }
 
 # Lint policy applies to every member via `[lints] workspace = true`.
 #

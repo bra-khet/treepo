@@ -1,0 +1,98 @@
+// The contributor colour palette — `F-ID-4`, `AC-MAT-4`.
+//
+// Read by `treepo-id::palette`. A contributor's colour is a function of their `AuthorKey`
+// and this file: the key picks an entry, then a point inside that entry's neighbourhood.
+// No name, no email, and nothing about the repository enters it (`N9`, `N3`).
+//
+// # Units: OKLCh, integers, never floats
+//
+// `N3` keeps floats out of anything reaching generated output, so every number is an integer
+// in a stated unit — the convention `lsystem.ron` and `folder-signals.ron` already use.
+//
+// * **lightness** — per mille of OKLab L. `800` is `0.80`. `0` is black, `1000` is white.
+// * **chroma** — per mille of OKLab C, distance from grey. `110` is `0.11`. Roughly: `0` is
+//   grey, `60` is muted, `150` is vivid, and past `250` nothing on a monitor can show it.
+// * **hue** — millidegrees around the OKLCh circle. `140000` is 140°.
+//
+// The palette is authored in OKLCh rather than in hex because `AC-MAT-4` is a *perceptual*
+// claim and hex is not a perceptual space. `treepo-id::palette` explains the choice at
+// length; the short version is that LCh → Lab is one sine and one cosine, which
+// `treepo-det::trig` computes identically on every platform, where sRGB → Lab needs a power
+// and a cube root that no integer implementation here has. Converting to sRGB is the render
+// layer's job, in Phase 5, downstream of everything `AC-DET-2` covers.
+//
+// **Gamut is not checked.** A high lightness with a high chroma is a valid OKLCh coordinate
+// and not a colour a display can produce. The bands below stay conservative enough not to
+// need mapping; if a later edit pushes chroma up, the render layer is where that gets
+// resolved.
+//
+// # The shape of the palette
+//
+// Three lightness bands of six hues each. The bands are what make the palette read as a set
+// rather than as a rainbow, and they are also most of the separation budget: 150 per mille of
+// lightness between adjacent bands is on its own more than twice the threshold, so every
+// cross-band pair is comfortable and only the within-band spacing is doing real work.
+//
+// Hues are 60° apart within a band and offset 20° between bands, so no two entries anywhere
+// in the palette share a hue. Chroma rises in the middle band, because a mid lightness is
+// where a display has the most room for it and where a muted entry would look washed out
+// beside its neighbours.
+//
+// The hue names in the comments are approximate and are a reading aid. OKLCh hue angles do
+// not line up with the HSL ones anybody has memorised.
+//
+// # `min_separation` and `jitter` are one decision, not two
+//
+// `jitter` turns each entry from a colour into a *family*: a contributor's key picks the
+// family and then a point within this much of its centre, so a repository with more
+// contributors than the palette has entries still shows them apart. What keeps `AC-MAT-4`
+// true is that the loader subtracts **both** neighbourhood radii from every pairwise
+// distance before comparing it to `min_separation`. Widening the jitter therefore tightens
+// the palette, and widening it far enough fails the file rather than quietly eroding the
+// guarantee.
+//
+// At the values below the tightest pair in the palette is 110 apart and needs 95, so there
+// is about 15 per mille of headroom. That is the number to watch when editing.
+(
+    version: 1,
+
+    // Per mille of OKLab distance. Around 20 is a just-noticeable difference on a large
+    // field; a mosaic cell is small and is seen against wood rather than against white, so
+    // this is set at three times that. It is a legibility judgement about a rendering that
+    // does not exist yet, and it is in the file because Phase 5 is where it gets looked at.
+    min_separation: 60,
+
+    // Deliberately small. The families are the design; this is the variation inside one, and
+    // it has to stay well under the gaps between them.
+    jitter: (
+        lightness: 10,   // per mille
+        chroma: 8,       // per mille
+        hue: 3000,       // millidegrees — 3°
+    ),
+
+    entries: [
+        // Light band — L 0.80, chroma 0.11.
+        (lightness: 800, chroma: 110, hue:  20000),  // rose
+        (lightness: 800, chroma: 110, hue:  80000),  // amber
+        (lightness: 800, chroma: 110, hue: 140000),  // green
+        (lightness: 800, chroma: 110, hue: 200000),  // teal
+        (lightness: 800, chroma: 110, hue: 260000),  // blue
+        (lightness: 800, chroma: 110, hue: 320000),  // magenta
+
+        // Mid band — L 0.65, chroma 0.14. The most saturated of the three.
+        (lightness: 650, chroma: 140, hue:  40000),  // vermilion
+        (lightness: 650, chroma: 140, hue: 100000),  // gold
+        (lightness: 650, chroma: 140, hue: 160000),  // moss
+        (lightness: 650, chroma: 140, hue: 220000),  // cyan
+        (lightness: 650, chroma: 140, hue: 280000),  // indigo
+        (lightness: 650, chroma: 140, hue: 340000),  // pink
+
+        // Dark band — L 0.50, chroma 0.12.
+        (lightness: 500, chroma: 120, hue:      0),  // red
+        (lightness: 500, chroma: 120, hue:  60000),  // rust
+        (lightness: 500, chroma: 120, hue: 120000),  // olive
+        (lightness: 500, chroma: 120, hue: 180000),  // pine
+        (lightness: 500, chroma: 120, hue: 240000),  // slate blue
+        (lightness: 500, chroma: 120, hue: 300000),  // violet
+    ],
+)

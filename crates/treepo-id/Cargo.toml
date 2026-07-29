@@ -1,0 +1,24 @@
+[package]
+name = "treepo-id"
+description = "N9 identity policy: the pseudonym and the author colour a contributor is shown as. No bevy, no I/O, no real names."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+treepo-det = { workspace = true }
+treepo-model = { workspace = true }
+
+# The wordlist and the palette are data for the same reason the L-system table is: they are
+# tuned by looking at the result, and a rebuild per edit makes that loop unusable.
+#
+# `default-features = false` on both, as in `treepo-gen`: this crate is `no_std`, and RON's
+# default feature set pulls `std`. Nothing here opens a file — the built-in assets arrive
+# through `include_str!` and a caller-supplied one arrives as a `&str`.
+ron = { version = "0.12", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+
+[lints]
+workspace = true

@@ -7,7 +7,10 @@
 //!
 //! **The probes** hash the layer everything else is built on: every primitive in `treepo-det`,
 //! exercised over a fixed sample, reduced to one digest each. They were the whole of the
-//! harness in Phase 0, when there was no corpus and no skeleton to serialize.
+//! harness in Phase 0, when there was no corpus and no skeleton to serialize. Phase 4 added
+//! two more, `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
+//! `AC-DET-2` about a different output and deserves the same evidence rather than an
+//! argument from `treepo-id` being integer-only.
 //!
 //! **The corpus stage** is D2's sentence, arrived at in Phase 3. Every corpus fixture is
 //! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) is reduced to
@@ -89,7 +92,33 @@ const PROBES: &[Probe] = &[
         what: "hierarchical path-hash seeding over a synthetic tree (P2)",
         run: probe_seed_tree,
     },
+    Probe {
+        name: "pseudonym",
+        what: "roster assignment over 512 contributors (F-ID-3, AC-ID-2)",
+        run: probe_pseudonym,
+    },
+    Probe {
+        name: "author-color",
+        what: "palette draw over the same 512 contributors (F-ID-4, AC-ID-2)",
+        run: probe_author_color,
+    },
 ];
+
+/// The contributor set the two `AC-ID-2` probes run over.
+///
+/// Five hundred and twelve, which is not an arbitrary round number: the built-in wordlist has
+/// 16,384 pairs, so a set this size draws a handful of collisions and the probe therefore
+/// covers the salted-redraw path rather than only the happy one. A set of ten would hash the
+/// same code either way and prove less.
+fn probe_contributors() -> Vec<treepo_model::identity::AuthorKey> {
+    (0..512u32)
+        .map(|n| {
+            treepo_model::identity::AuthorKey::from_email(
+                format!("contributor-{n}@determinism.invalid").as_bytes(),
+            )
+        })
+        .collect()
+}
 
 pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let runs: usize = match crate::flag_value(args, "--runs")? {
@@ -126,8 +155,8 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
             }
         }
 
-        println!("  {:<10} {first}", probe.name);
-        println!("  {:<10} {}", "", probe.what);
+        println!("  {:<13} {first}", probe.name);
+        println!("  {:<13} {}", "", probe.what);
         writeln!(report, "{} {first}", probe.name).expect("writing to a String cannot fail");
         overall.update(probe.name.as_bytes());
         overall.update(first.as_bytes());
@@ -137,7 +166,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 
     let overall = overall.finalize();
     writeln!(report, "overall {overall}").expect("writing to a String cannot fail");
-    println!("\n  {:<10} {overall}", "overall");
+    println!("\n  {:<13} {overall}", "overall");
 
     // The report is deliberately free of platform, path, and toolchain information. It is
     // compared byte for byte against the reports from the other two platforms, so anything
@@ -387,6 +416,63 @@ fn probe_seed_tree() -> Digest {
             let mut rng = path_seed.rng();
             hasher.update(&rng.next_u64().to_le_bytes());
         }
+    }
+    hasher.finalize()
+}
+
+/// `AC-ID-2`, the pseudonym half — "the same repository produces identical pseudonyms […] on
+/// Windows, macOS, and Linux".
+///
+/// The whole roster is hashed rather than a sample of draws, because the interesting failure
+/// is not in the draw. A draw is a hash and a modulo; the assignment is a walk over a set in
+/// key order with a collision rule, and *that* is where a platform difference would live if
+/// one existed.
+fn probe_pseudonym() -> Digest {
+    let wordlist = treepo_id::Wordlist::built_in();
+    let roster = wordlist.assign(probe_contributors());
+
+    let mut hasher = Sha256::new();
+    hasher.update(&(roster.len() as u64).to_le_bytes());
+    for (key, name) in roster.iter() {
+        hasher.update(key.as_bytes());
+        // Lengths precede the words, as in `Skeleton::digest`, so two different pairs cannot
+        // run into each other in the encoding.
+        hasher.update(&(name.first().len() as u32).to_le_bytes());
+        hasher.update(name.first().as_bytes());
+        hasher.update(&(name.second().len() as u32).to_le_bytes());
+        hasher.update(name.second().as_bytes());
+        hasher.update(&name.discriminator().to_le_bytes());
+    }
+    hasher.finalize()
+}
+
+/// `AC-ID-2`, the colour half — and `AC-MAT-4` with it.
+///
+/// The separation of the tightest pair is hashed alongside the drawn colours. That number is
+/// what `AC-MAT-4` is about, it is computed through the trig table, and a platform that
+/// disagreed about it would be disagreeing about whether the palette is legal at all.
+fn probe_author_color() -> Digest {
+    let palette = treepo_id::Palette::built_in();
+
+    let mut hasher = Sha256::new();
+    if let Some((first, second, separation)) = palette.tightest_pair() {
+        hasher.update(&(first as u32).to_le_bytes());
+        hasher.update(&(second as u32).to_le_bytes());
+        hasher.update(&separation.to_bits().to_le_bytes());
+    }
+    for key in probe_contributors() {
+        let color = palette.color_of(&key);
+        hasher.update(&color.family().to_le_bytes());
+        hasher.update(&color.lightness().to_bits().to_le_bytes());
+        hasher.update(&color.chroma().to_bits().to_le_bytes());
+        hasher.update(&color.hue().to_bits().to_le_bytes());
+        // The Lab coordinates are what the separation metric and the render layer both read,
+        // and they come through the trig table — the one place a platform `libm` could get
+        // in (`RISK-2`).
+        let lab = color.to_oklab();
+        hasher.update(&lab.l.to_bits().to_le_bytes());
+        hasher.update(&lab.a.to_bits().to_le_bytes());
+        hasher.update(&lab.b.to_bits().to_le_bytes());
     }
     hasher.finalize()
 }

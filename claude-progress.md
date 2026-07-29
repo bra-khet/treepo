@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-29 · **Phases 0–3 closed — M0 EXIT reached; Phase 4 is next**
+**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 open — `treepo-id` landed**
 
 ---
 
@@ -1445,16 +1445,167 @@ overall    a82991f06a2a7994b47cf703a9168a1d8262abc395030cc270c96146b21e1aae
 ```
 
 (Phase 0's `overall` `39681da8…` was five probes only — expected to differ once skeletons
-entered the harness.)
+entered the harness. **Superseded again by Phase 4's identity probes — see below.**)
+
+---
+
+## Phase 4 — identity policy, materials & enrichment (in progress)
+
+| Deliverable | Status |
+|---|---|
+| `crates/treepo-id/src/pseudonym.rs` + `assets/wordlists/pseudonyms.ron` (`F-ID-3`) | **done** — 11 tests |
+| `crates/treepo-id/src/palette.rs` + `assets/palettes/author-palette.ron` (`F-ID-4`, `AC-MAT-4`) | **done** — 10 tests |
+| `pseudonym` / `author-color` probes in `cargo xtask determinism` (`AC-ID-2`) | **done** — local `AC-DET-1`; CI compare pending |
+| `crates/treepo-id/src/{self_ident,policy}.rs` (`F-ID-1`, `F-ID-5`/`6`/`7`, `AC-ID-1`) | next |
+| `crates/treepo-gen/src/{material,normalize,gradient,enrichment,classify}.rs` (`F-MAT-*`) | not started |
+| `tests/privacy.rs` (`AC-ID-1`/`3`/`4`, `AC-MAT-3`) | not started |
+
+`treepo-id` is 14 packages, the same `ron` + `serde` as `treepo-gen`, and `no_std` for the
+same reason. `dep-guard` already listed it under Phase 4 and picked it up on sight.
+
+### S8 — the pseudonymous surface (2026-07-29)
+
+Two pure functions of an `AuthorKey`, and nothing else. **No real name exists anywhere in
+the workspace yet** — not because a policy forbids one but because no type holds one, which
+is the strongest form `AC-ID-1` can take and is worth having for as long as it lasts. When
+`policy.rs` lands and becomes the single gate, `Wordlist::draw` and `Palette::color_of` drop
+to `pub(crate)`; that is written in the crate docs so the demotion is not forgotten.
+
+#### `AC-MAT-4` needed a colour space, and sRGB is not one
+
+"Minimum perceptual separation" is only testable in a perceptually uniform space, and
+sRGB → OKLab wants a 2.4 power and a cube root — two transcendental functions `treepo-det`
+has no integer implementation of, in a crate where `N3` forbids a float reaching generated
+output.
+
+**The palette is authored in OKLCh instead**, which removes the problem rather than solving
+it. An entry is a lightness, a chroma and a hue — how a separated palette gets designed
+anyway — and the only conversion needed is `a = C·cos(h)`, `b = C·sin(h)`, which is the trig
+table Phase 0 already proved bit-identical on three platforms. sRGB becomes the render
+layer's job in Phase 5, in float, downstream of everything `AC-DET-2` covers. The cost is
+stated in the file: **nothing checks the sRGB gamut**, so gamut mapping lands with the
+conversion.
+
+**"Adjacent" means every pair.** Entries are chosen by hashing a key, so any two can end up
+side by side in a mosaic; reading `AC-MAT-4`'s "adjacent" as "adjacent in the list" would
+test a property no rendered pixel depends on.
+
+#### The jitter is what makes eighteen entries enough, and it is bounded on purpose
+
+Eighteen colours against a repository with thousands of contributors is not a palette, it is
+a bucket. So each entry is a **family**: the key picks the family, then a point within a
+declared neighbourhood of it. What keeps `AC-MAT-4` true is that `validate` subtracts *both*
+neighbourhood radii from every pairwise distance before comparing to the threshold — so
+widening the jitter tightens the palette and, far enough, fails the file. Without that
+arithmetic the jitter would eat the guarantee silently: the file would still parse and two
+colours would occasionally be closer than the threshold that was supposed to be enforced.
+
+The bound is the arc bound, `ΔC + (C + ΔC)·Δh`, deliberately loose — erring high costs a
+slightly stricter palette; erring low costs the guarantee. Built-in palette: tightest pair
+**110** against a requirement of **95**, and both numbers are asserted by the test that
+reads them, so an edit that eats the headroom has to change the file's comment too.
+
+#### `F-ID-3`: two functions, because two properties pull apart
+
+A pseudonym that is a pure function of one key cannot know whether someone else drew the
+same pair; a pseudonym unique within a repository is a function of the whole key set. Both
+exist and are named so the difference is visible at the call site — `draw` and `assign`.
+
+Assignment walks keys in **ascending key order** and the first claimant keeps the pair. Key
+order is hash order, which matters twice: it is uncorrelated with contribution volume, so
+`N4` is untouched, and it is a property of the keys alone, so the roster does not depend on
+how a caller happened to iterate a manifest.
+
+**The one way a pseudonym moves, stated because someone will hit it:** a *new* contributor
+appears who both draws the same word pair and sorts earlier by key. At 128 × 128 = 16,384
+pairs that is one chance in 16,384 per contributor added. The wordlist is sized for that
+claim rather than for elegance, and a test asserts the floor so trimming it forces the claim
+to be re-derived.
+
+**Nothing can fail.** Past eight salted redraws a contributor keeps its own base pair and
+takes the first free discriminator — `Ash Willow 2`. Ugly, and a far better outcome than an
+error on a repository with more contributors than the wordlist has pairs (the kernel has
+~25,000). At the sizes treepo meets it never appears.
+
+#### The sabotage found a vacuous test, which is the point of doing it
+
+`assignment_does_not_depend_on_the_order_the_keys_arrive_in` **passed** with the key-ordered
+walk replaced by the caller's arrival order. 200 keys against 16,384 pairs collide never, so
+there was nothing for the resolution order to decide and the test asserted a property it
+could not observe. Same shape as `readonly-audit`'s "an oracle pointed at the wrong
+repository agrees with itself perfectly", and as the misspelled-driver case that patched a
+comment.
+
+It now runs on a deliberately crowded four-by-four wordlist and **refuses to proceed unless
+resolution actually fired**, so a fixture that stops forcing collisions fails loudly instead
+of quietly testing nothing. Re-sabotaged afterwards: it fails naming the key and both names.
+The duplicate-key case was strengthened at the same time — it asserted only the roster
+*length*, which survives a caller passing a key twice even though every pseudonym moves.
+
+The palette's equivalent needed its own fixture for the same reason: the built-in palette
+clears its requirement by 15, so dropping the radii from `validate` leaves it passing.
+`a_palette_legal_only_without_jitter_is_refused_with_it` is built to sit in the gap — 70
+apart, above the threshold and below the threshold plus both radii — and is the only test
+that fails when the arithmetic goes. Verified by removing it: that test and the greedy-jitter
+case both failed; reverted.
+
+#### One fixture bug worth remembering
+
+`AuthorKey::from_email` ASCII-lowercases its input (`F-EXT-9`), so keys built from
+`n.to_le_bytes()` fold `0x41` and `0x61` into one contributor: a "400 contributors" fixture
+was quietly 348. Two tests failed with an off-by-13% that read like a collision bug in
+`assign`. Test keys are spelled as addresses now, with the reason attached.
+
+### `AC-ID-2` — in the gate, CI compare pending
+
+Two probes, `pseudonym` and `author-color`, over a fixed set of **512** contributors — a set
+size chosen so the built-in wordlist actually collides and the probe covers the salted-redraw
+path rather than only the happy one.
+
+The pseudonym probe hashes the whole roster rather than a sample of draws: a draw is a hash
+and a modulo, and the *assignment* is where a platform difference would live if one existed.
+The colour probe hashes the tightest pair's separation alongside every drawn colour and its
+OKLab coordinates, because that separation is what `AC-MAT-4` is about, it comes through the
+trig table, and a platform disagreeing about it would be disagreeing about whether the
+palette is legal at all.
+
+```
+pseudonym     26c0fbba3ef9d39c407f504aadfa040475b5e428de0a2d3e790a61edc3eaa5c3
+author-color  38e2205deebae3f5a1a0078ccb434513d9fa84bd0030824e2306eed7de89ba79
+overall       7bd8896fe7a19c603de363dedfa4944d428786fbdb8bcfb43d7724a1a20e5a79
+```
+
+`overall` moved from `a82991f0…`; the five primitive probes and all twenty-three
+`skeleton/*` lines are unchanged, and the two new probe lines are the whole difference.
+**`AC-DET-1` is met locally (triple-run, green); `AC-ID-2` proper is the three-platform
+compare and needs a CI run on this commit** — same shape as Phase 0 and S7, where one
+machine could only ever prove the within-platform half.
+
+Local gate green: fmt, clippy `-D warnings`, 449 tests, dep-guard (6 crates clean),
+`cargo deny` (advisories/bans/licences/sources ok), readonly-audit (18 fixtures, 17
+extracted, 0 writes, detector 4/4).
+
+---
 
 ## Next
 
-**Phase 4 — identity policy, materials & enrichment.** The skeleton is done, gated, and
-reproducible on all three platforms; what it does not yet have is a surface. Phase 4 is
-where `treepo-id` lands and where the pseudonymity promise (`AC-ID-1`, `AC-ID-2`) becomes
-code rather than intent.
+**Phase 4, continued — `self_ident.rs` and `policy.rs`.** `F-ID-1` reads `user.email` from
+git config (repository, then global), `F-ID-5` makes one setting govern live view and
+exports together, and `F-ID-7` makes "you are not a contributor here" the default rather
+than an error. That is what turns `treepo-id` from two functions into the gate `N9` needs,
+and it is what `tests/privacy.rs` and `AC-ID-1` are written against.
 
-Three things go into it from the M0 tuning campaign, all recorded rather than resolved:
+One decision is open and belongs to that sprint rather than this one: **where the git-config
+read lives.** The architecture puts `self_ident.rs` in `treepo-id`, but `treepo-id` is
+`no_std` and has no I/O — so either the crate gains a `std` feature, or `treepo-vcs` reads
+the config and hands an email in. The second keeps `treepo-id` pure and keeps every
+filesystem read in the crate that already advertises them; the first keeps `F-ID-1` in the
+file the architecture names. Worth ten minutes before writing code.
+
+Then materials (`F-MAT-*`) in `treepo-gen`, which is where the rest of Phase 4's end
+conditions live — `AC-MAT-2`'s 2%-share mosaic and `AC-MAT-3`'s no-ordered-collections.
+
+Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 
 1. **Family C — `length_ratio` / `width_ratio` are unjudged.** Deliberate. They govern taper
    character, and Phase 4 changes what a limb *looks* like; tuning them against a
