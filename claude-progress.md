@@ -1394,7 +1394,8 @@ Three sabotages, each producing the named failure:
 Local gate green: fmt, clippy `-D warnings`, 428 tests, dep-guard, `cargo deny`,
 readonly-audit (18 fixtures, 17 extracted, 0 writes, detector 4/4). Determinism overall moved
 from `39681da8…` to `a82991f0…` — the primitive probes are unchanged and the twenty-three new
-`skeleton/*` lines are the difference.
+`skeleton/*` lines are the difference. Cross-platform compare for that report closed the same
+day (see M0 EXIT scoreboard / `AC-DET-2` confirmed).
 
 `cargo fmt --all --check` was **already failing on `main`** before this sprint, on a string
 literal in `tools/corpus/src/shapes.rs` from the S5 fixture pair (`340c7b6`). Fixed here. The
@@ -1406,31 +1407,52 @@ and was not followed that time.
 | End condition | Criterion | Status |
 |---|---|---|
 | PNGs for every corpus fixture | — | **done** — `m0-silhouette`, 17 fixtures + `--pin` + `--path` |
-| Nine identical skeleton hashes | `AC-DET-1`, `AC-DET-2` | **AC-DET-1 done**; `AC-DET-2` green locally, **pending the CI compare** |
+| Nine identical skeleton hashes | `AC-DET-1`, `AC-DET-2` | **done** — local triple-run + **CI compare green** (see below) |
 | Clean vs. high-skew differ | `AC-SKEL-1` | **done** — `skel1-clean` / `skel1-messy`, judged by eye 2026-07-29 |
 | T0 is a seed and root cluster | `AC-SKEL-2` | **done** — falls out of the column, no special case |
 | T3 within the §7 Grow budget | `AC-SKEL-3` | **done** — measured on `rust` 1.83.0: 1.47 s skeleton, 258 s grow total against a 600 s target |
 | Table edit, no recompile | `AC-SKEL-4` | **done** — `--table`, and the lab is built on it |
 | Parameter row confirmed with evidence | — | **done** — `A3+B2/B3+C1+D1&D3+E3+F2+G1`, `D1` revised to `D1&D3`; findings under `qa/sessions/` |
 
-**`AC-DET-2` is the one that is not yet evidence.** It cannot be, from one machine: the claim
-is that Linux, macOS and Windows produce byte-identical reports, and only the compare job in
-`determinism.yml` can say so. This is the same position Phase 0 was in on 2026-07-26, and it
-resolved on the first CI run — but the honest reading today is *green locally, expected to
-hold*, and this table should be updated to **confirmed** the way the Phase 0 one was.
+**Phase 3 / M0 is fully closed.** Every end condition above is met and verified.
 
-The new risk it carries is not the trig path, which Phase 0 already cleared. It is that the
-*fixtures* must be byte-identical wherever they are built. `tools/corpus` fixes author dates,
-identities, and `core.autocrlf` precisely so that they are, and `readonly-audit` has been
-building them on all three platforms since Phase 1 without complaint — so the exposure is
-understood rather than unexamined. If the compare job fails with every `skeleton/*` line moved
-and no probe moved, suspect the fixture builder, not the L-system; the workflow says so.
+### `AC-DET-2` with skeletons — confirmed 2026-07-29
+
+Same shape as Phase 0: one machine can only prove `AC-DET-1`; the three-platform compare is
+CI. On commit `4c8de03` (*Sprint: M0 EXIT — the skeleton in the determinism gate, and
+AC-SKEL-3 measured.*):
+
+* **probe (linux / macos / windows)** — all success
+* **compare across platforms (AC-DET-2)** — success (byte-identical reports)
+
+Run: https://github.com/bra-khet/treepo/actions/runs/30426210832
+
+Local corroboration (WSL Ubuntu, untracked report discarded after recording): overall
+`a82991f0…`, primitives unchanged from Phase 0, twenty-three `skeleton/*` lines present,
+`skeleton/bare` = `refused`. That matches the post-S7 harness contract.
+
+The residual risk if this ever goes red is fixture identity, not trig: Phase 0 already
+cleared table math. If every `skeleton/*` line moves and no probe does, suspect
+`tools/corpus`, not the L-system — the workflow failure hint says so.
+
+### Reference digests after S7 (all three platforms)
+
+Primitives are still the Phase 0 goldens above. The report now includes corpus skeleton
+lines; the pin that changes when geometry or the digest encoding changes is:
+
+```
+overall    a82991f06a2a7994b47cf703a9168a1d8262abc395030cc270c96146b21e1aae
+```
+
+(Phase 0's `overall` `39681da8…` was five probes only — expected to differ once skeletons
+entered the harness.)
 
 ## Next
 
 **Phase 4 — identity policy, materials & enrichment.** The skeleton is done, gated, and
-reproducible; what it does not yet have is a surface. Phase 4 is where `treepo-id` lands and
-where the pseudonymity promise (`AC-ID-1`, `AC-ID-2`) becomes code rather than intent.
+reproducible on all three platforms; what it does not yet have is a surface. Phase 4 is
+where `treepo-id` lands and where the pseudonymity promise (`AC-ID-1`, `AC-ID-2`) becomes
+code rather than intent.
 
 Three things go into it from the M0 tuning campaign, all recorded rather than resolved:
 

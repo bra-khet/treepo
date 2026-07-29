@@ -91,7 +91,7 @@ would actually see.
 | **S4** | HTML lab MVP | **done** 2026-07-28 (`m0-silhouette lab`) |
 | **S5** | AC-SKEL-1 subject pair | **done** 2026-07-29 — `skel1-clean` / `skel1-messy` corpus shapes + lab subjects |
 | **S6** | Tuning campaign via lab | **partial** 2026-07-29 — first promote + joint-promote micro-pass (fan 80°, tropism/ground, jitter wild weights). Capacity needs_code and Family C still open. |
-| **S7** | Determinism / budget gate hardening | **done** 2026-07-29 — `Skeleton::digest`, corpus stage in `xtask determinism`, skeleton row in `xtask budget` |
+| **S7** | Determinism / budget gate hardening | **done** 2026-07-29 — `Skeleton::digest`, corpus stage in `xtask determinism`, skeleton row in `xtask budget`; `AC-DET-2` CI compare green on `4c8de03` (run 30426210832), overall `a82991f0…` |
 
 ---
 
