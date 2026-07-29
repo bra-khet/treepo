@@ -1226,18 +1226,57 @@ cargo xtask readonly-audit
 `cargo xtask budget` is deliberately *not* in that list — it needs several gigabytes of clones
 and several minutes. Run it when extraction changes, not before every push.
 
+## First high-confidence promote — lab session `20260728_234906_lab` (2026-07-29)
+
+S4 lab campaign: 111 strips, 25 findings. This sprint promotes the **high-confidence**
+deltas into `assets/params/lsystem.ron` as a joint table (not one family at a time on the
+product file — isolation already happened in the lab). Evidence paths are
+`qa/sessions/20260728_234906_lab/findings/*.json` and each finding's chosen `renders/NNNN/`.
+
+| Parameter | From → to | Lab render | Held / dropped |
+|-----------|-----------|------------|----------------|
+| `branch_angle.base` | 36000 → **30000** | 0110 | — |
+| `droop.per.mass` | 12000 → **30000** | 0097 | — |
+| `ground.lift` | 15000 → **25000** | 0086 | — |
+| `base_length.base` | 1000 → **2000** | 0073 | — |
+| `base_width.base` | 200 → **250** | 0078 | — |
+| `trunk.flare` | 1350 → **1250** | 0028 | — |
+| `trunk.internode_aspect` | 2000 → **4000** | 0032 | — |
+| `trunk.internode_min` | 140 → **200** | 0030 | — |
+| `trunk.support_knee` | 1200 → **800** | 0041 | — |
+| `trunk.support_beyond` | 300 → **250** | 0045 | — |
+| `trunk.fan.base` | 62000 → **90000** | 0048 | — |
+| `trunk.group_below` | 55 → **10** | 0059 | — |
+| `angle_jitter.base` | preferred 20000 | 0099 | **held at 2000** — breaks D1 (`a_clean_directory_is_near_deterministic`) |
+| `length_jitter.base`, scales, fan min/max | various | — | low confidence / not this pass |
+
+Theme of the promote: **de-clutter monorepo bases** (internode height, F2 threshold, fan,
+support projection) plus a more organic branch angle and heavier mass droop with matching
+ground lift.
+
+Gate after promote: `cargo test --workspace` green, clippy `-D warnings` on gen + silhouette,
+determinism overall still `39681da8…` (primitives only). Skeleton digests moved as intended —
+corpus strip under `target/m0-silhouette-promote/` (untracked).
+
 ## Next
 
-**The pipeline is complete, there are pictures of it, and all four findings those pictures
-produced are closed.** Trees taper root to twig, stand up, keep clear of the ground, and stand
-on a column with volume in it — a flared foot, primaries leaving along the axis with room to
-leave, and a leader continuing where the last one departs.
+**Joint eye pass on the promoted table** (lab or `m0-silhouette` on the four subjects + self).
+Focus for the human second pass:
 
-The structural track is therefore done, and what remains in this loop is **numbers**, one
-family at a time in the lab (`qa/PLAN-silhouette-lab.md` S4 onward). The two the pictures
-already nominate: the crown is lopsided on wide fans, with one long bare arm and no weight
-above it; and the fan itself is now free to be retuned as pure lateral character, which it was
-never able to be while it was also the trunk's height budget.
+1. **`self` root-dir clutter** — branch_angle 30° alone slightly worsened it; internodes +
+   `group_below` should compensate — confirm or roll angle back.
+2. **Family C** — `length_ratio` / `width_ratio` still unjudged; taper character.
+3. **Organic mess without breaking D1** — raise `angle_jitter` *weights* (skew_abs /
+   diversity / fragmentation), not `base`.
+4. **Tropism row** — only `ground.lift` promoted; `tropism.base` / engage / release still open.
+5. **S5 AC-SKEL-1 pair** — still no clean/messy comparable subjects.
+
+Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
+`AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
+platforms. The tool's per-run skeleton digest is the same hash, so the probe is mostly moving
+code that already exists into the gate. `AC-SKEL-3`'s T3 budget wants a `skeleton` row in
+`cargo xtask budget` against the existing pins; composition is bounded by construction
+(capacity × level cap), but bounded is not measured.
 
 Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
 `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three

@@ -110,7 +110,12 @@
     //
     // `balance` and `convention` pull the other way. An even, conventionally-named directory
     // is the orderly, near-symmetric silhouette `AC-SKEL-1` asks a clean repository for.
-    branch_angle: (base: 36000, min: 18000, max: 58000, per: (
+    //
+    // CHANGED: base 36000 → 30000 (qa session 20260728_234906_lab, renders/0110).
+    // WHY: 30° reads more organic and keeps a stronger upward bias than retuning tropism
+    // alone. Tradeoff recorded in the finding: slightly more root-dir clutter on `self` —
+    // mitigated by the trunk internode / group_below promotions in the same pass.
+    branch_angle: (base: 30000, min: 18000, max: 58000, per: (
         skew_abs: 14000,
         skew: 4000,
         diversity: 4000,
@@ -126,6 +131,12 @@
     //
     // `max: 24000` is the ceiling the design implies rather than one chosen here: §3 puts
     // stochasticity at 0.0–0.4 and the branching angle at up to 60°, so 0.4 × 60° = 24°.
+    //
+    // Lab preferred base 20000 for a more organic look (renders/0099), but that breaks D1:
+    // a clean directory must stay in the bottom fifth of the jitter range
+    // (`a_clean_directory_is_near_deterministic`). Organic mess belongs on the *weights*
+    // (skew_abs / diversity / fragmentation), not on the floor every limb starts from.
+    // Held at 2000 for this promotion pass — next lab pass should raise wild weights, not base.
     angle_jitter: (base: 2000, min: 0, max: 24000, per: (
         skew_abs: 10000,
         diversity: 5000,
@@ -166,8 +177,12 @@
     // sag at all. Purely `mass`, because §3 gives tropism one driver — "extreme size
     // disparity can produce visible weight" — and a droop responding to anything else would
     // read as a bug rather than as weight.
+    //
+    // CHANGED: mass weight 12000 → 30000 (lab renders/0097).
+    // WHY: heavier limbs need a more visible curve; paired with ground.lift so the crown
+    // still recovers rather than pooling on the ground band.
     droop: (base: 0, min: 0, max: 18000, per: (
-        mass: 12000,
+        mass: 30000,
     )),
 
     // ── §8, tropism ─────────────────────────────────────────────────────────────────────
@@ -205,22 +220,29 @@
     //
     // None of this touches the root cluster: roots are placed by `trunk.rs` directly and
     // never run through the turtle, so they stay below ground where they belong.
+    // CHANGED: lift 15000 → 25000 (lab renders/0086).
+    // WHY: slight increase keeps recovery ahead of the stronger droop.per.mass above.
     ground: (
         engage:  96000,
         release: 72000,
-        lift:    15000,
+        lift:    25000,
     ),
 
     // ── Starting geometry ───────────────────────────────────────────────────────────────
     // The first segment of each limb, per mille of a world unit. §4: larger subtrees produce
     // longer and thicker primary limbs. `depth` lengthens rather than thickens, so a deep
     // subtree reaches instead of bulking.
-    base_length: (base: 1000, min: 200, max: 3000, per: (
+    //
+    // CHANGED: base_length 1000 → 2000 (lab renders/0073); base_width 200 → 250 (renders/0078).
+    // WHY: longer first segments give small root-level limbs room off the column; a modest
+    // thicken keeps primaries from reading as wire. Overview can look slightly sparser —
+    // intentional trade for monorepo bases.
+    base_length: (base: 2000, min: 200, max: 3000, per: (
         mass: 800,
         depth: 200,
     )),
 
-    base_width: (base: 200, min: 40, max: 800, per: (
+    base_width: (base: 250, min: 40, max: 800, per: (
         mass: 260,
         bushiness: 60,
     )),
@@ -305,8 +327,8 @@
         // would be the lonely trunk again.
         basal_min: 90,
 
-        // How much wider the foot of the collar is than the pipe above it, per mille. 1350
-        // means "the buttress is thirty-five per cent wider than the trunk".
+        // How much wider the foot of the collar is than the pipe above it, per mille. 1250
+        // means "the buttress is twenty-five per cent wider than the trunk".
         //
         // A pure pipe is a stack of cylinders and reads as machined. This is the widening
         // where a trunk meets its roots, and it is drawn as a real taper on the collar
@@ -315,7 +337,9 @@
         //
         // 1000 is no flare, and the loader refuses less: a trunk that narrows toward the
         // ground has already fallen over.
-        flare: 1350,
+        //
+        // CHANGED: 1350 → 1250 (lab renders/0028). WHY: slightly less engineered buttress.
+        flare: 1250,
 
         // How much vertical room a departing primary claims, per mille of the support it
         // takes with it. This is the row that decides whether a tree has a trunk.
@@ -326,14 +350,18 @@
         // of the column's own width: the column keeps its proportions whether it carries
         // three primaries or thirty, and the count decides only how the height is divided.
         //
-        // Column height is therefore roughly `(basal_aspect + internode_aspect) × width`.
-        // At 2000, and with the collar above, a trunk stands about two of its own foot-widths
-        // tall before the last limb clears it, which is where a deciduous crown starts.
-        internode_aspect: 2000,
+        // Column height is roughly `(basal_aspect + n·internode_aspect) × width` in spirit.
+        // CHANGED: 2000 → 4000 (lab renders/0032). WHY: taller internodes are the main
+        // anti-clustering lever on monorepo root directories — small primaries leave with
+        // vertical room instead of fanning from one crowded height.
+        internode_aspect: 4000,
 
         // The floor, per mille of a world unit — held below the shortest limb the table can
         // produce, or a joint would out-reach the branch it makes room for.
-        internode_min: 140,
+        //
+        // CHANGED: 140 → 200 (lab renders/0030). WHY: same clustering fix at the floor;
+        // higher still risks fighting F-SKEL-3's stubby joint.
+        internode_min: 200,
 
         // How much of its limbs' combined base width a column occupies, per mille. At 1000
         // the limbs would touch without overlapping; below it they overlap, and that overlap
@@ -352,10 +380,13 @@
         // strictly positive and the loader insists on it, so a bigger repository always draws
         // a wider base. What is bounded is how fast, not whether.
         //
-        // The knee sits a little above where four ordinary top-level directories land, so
-        // small and medium repositories are untouched by it.
-        support_knee: 1200,
-        support_beyond: 300,
+        // The knee sits near where a handful of ordinary top-level directories land, so
+        // small repositories stay proportional and monorepos compress sooner.
+        //
+        // CHANGED: knee 1200 → 800, beyond 300 → 250 (lab renders/0041, 0045).
+        // WHY: better proportions on `self` with negligible change on small fixtures.
+        support_knee: 800,
+        support_beyond: 250,
 
         // Total angular spread of the limbs leaving a column — lateral character, and the
         // trunk-scale companion to B2/B3's per-fork angle.
@@ -365,7 +396,11 @@
         // widening the fan shortened the trunk and the two readings fought. The column
         // removed the coupling and this row now does one job, which is why `max` can stay
         // wide — `AC-SKEL-1`'s wilder repository spreads further without losing its base.
-        fan: (base: 62000, min: 24000, max: 150000, per: (
+        //
+        // CHANGED: base 62000 → 90000 (lab renders/0048).
+        // WHY: pure lateral character after the pipe trunk — wider fan reduces root-level
+        // clustering and gives long branches more variation without shortening the column.
+        fan: (base: 90000, min: 24000, max: 150000, per: (
             bushiness: 40000,
             skew_abs: 26000,
             convention: -8000,
@@ -389,6 +424,10 @@
         // longer small by this same threshold, or once it holds as much as a limb's
         // `branch_capacity` allows. A rule that describes itself beats two numbers that have
         // to be kept agreeing.
-        group_below: 55,
+        //
+        // CHANGED: 55 → 10 (lab renders/0059).
+        // WHY: lower threshold keeps more top-level dirs as first-class limbs; higher values
+        // stacked thin group stems and cluttered the trunk on real layouts.
+        group_below: 10,
     ),
 )
