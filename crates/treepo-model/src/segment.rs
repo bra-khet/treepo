@@ -160,6 +160,35 @@ impl NodeRole {
         }
     }
 
+    /// Every repository path this node stands for.
+    ///
+    /// One for a [`Limb`](Self::Limb) or a [`RootMass`](Self::RootMass), several for a
+    /// [`Group`](Self::Group) or an [`Aggregate`](Self::Aggregate). `N7` says every visible
+    /// pixel resolves to an element id and `P1` that every element resolves to a real path —
+    /// this is the function that says which, and it lives on the role so that the four answers
+    /// are written down once rather than re-matched by each consumer.
+    ///
+    /// A borrowed slice rather than an iterator, so the single-path cases cost no allocation:
+    /// [`core::slice::from_ref`] makes one path into a slice of one.
+    ///
+    /// # Not [`Skeleton::accounted_roots`], and the difference is deliberate
+    ///
+    /// That one answers "which paths does the skeleton name", and it excludes group members
+    /// and root-mass anchors because each is already named by another node — counting them
+    /// would double-count. This one answers "which records describe *this node's* content",
+    /// where a group's members are exactly the answer and a root mass describes the repository
+    /// root. Phase 4 asks this one of every node in turn, so double-counting across nodes is
+    /// not a hazard: each node is describing itself.
+    #[must_use]
+    pub const fn stands_for(&self) -> &[RepoPath] {
+        match self {
+            Self::Limb { path } => core::slice::from_ref(path),
+            Self::Group { members, .. } => members.as_slice(),
+            Self::Aggregate(aggregate) => aggregate.members.as_slice(),
+            Self::RootMass { anchor, .. } => core::slice::from_ref(anchor),
+        }
+    }
+
     /// Whether this node stands for content it does not draw individually.
     #[must_use]
     pub const fn is_aggregate(&self) -> bool {
@@ -468,6 +497,42 @@ mod tests {
 
     fn path(text: &str) -> RepoPath {
         RepoPath::new(text.as_bytes()).unwrap()
+    }
+
+    /// Every role has to answer this, or a phase reading a node's content silently gets an
+    /// empty answer for one kind of node — which looks like a limb made of nothing rather than
+    /// like a bug.
+    #[test]
+    fn every_role_says_which_paths_it_stands_for() {
+        let limb = NodeRole::Limb { path: path("src") };
+        assert_eq!(limb.stands_for(), &[path("src")]);
+
+        // A group's members, *not* its anchor: the anchor is their parent and generally has
+        // other children the stem does not carry.
+        let group = NodeRole::Group {
+            anchor: path("src"),
+            members: vec![path("src/a.rs"), path("src/b.rs")],
+        };
+        assert_eq!(group.stands_for(), &[path("src/a.rs"), path("src/b.rs")]);
+        assert_ne!(group.stands_for(), core::slice::from_ref(group.anchor()));
+
+        let container = NodeRole::Aggregate(AggregateNode {
+            anchor: path("src"),
+            index: 0,
+            members: vec![path("src/deep")],
+            bytes: 4096,
+            file_count: 12,
+            dir_count: 2,
+        });
+        assert_eq!(container.stands_for(), &[path("src/deep")]);
+
+        // The root mass stands for the repository, which is the root record.
+        let root = NodeRole::RootMass {
+            anchor: RepoPath::root(),
+            index: 0,
+        };
+        assert_eq!(root.stands_for(), &[RepoPath::root()]);
+        assert!(!root.stands_for().is_empty());
     }
 
     #[test]

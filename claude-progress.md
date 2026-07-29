@@ -3,7 +3,7 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 open — `treepo-id` landed**
+**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 open — `F-MAT-1`…`F-MAT-5` landed**
 
 ---
 
@@ -2207,31 +2207,156 @@ the CI run.
 
 ---
 
+## S14 — `F-MAT-5`, enrichment placement (2026-07-29)
+
+> Semantic enrichment structures placed during Grow: docs → bookshelves/archive platforms;
+> assets/binaries → stockpiles and crates; tests → distinct secondary growth or proving-ground
+> platforms; high-churn clusters → work sites.
+
+The fourth material slice, and the first that puts something *on* a limb rather than deciding
+what the limb is. `treepo-model::enrichment` holds the handoff types; `treepo-gen::enrich` is
+the pass; the rules are an `enrich:` section of `materials.ron`.
+
+### What a placement is
+
+`(kind, form, position, weight, sources)`.
+
+- **Kind** — four, exactly the four §8.7 names. `Resin` and `Machined` have no entry, and a
+  fifth invented to fill the grid would be a shape with no requirement behind it.
+- **Form** — a four-rung ladder (`Single`, `Run`, `Cluster`, `Platform`) rather than a size. A
+  size would say "2.4 units tall", which is a number a renderer must invent an appearance for
+  at every value; a rung is a sprite. §8.4 says the same thing in the enrichment's own words:
+  at detail scale, size "modulates *quality*, *fanciness*, *shelf placement*" rather than pure
+  scale. The per-kind vocabulary (shelf → run of shelving → stacked case → archive platform;
+  crate → stack → braced pile → loading platform) is documented on the type so four sprite sets
+  get designed against one reading.
+- **Position** — the limb's length axis, the same one the mosaic runs its cells along and the
+  age gradient shades. Three readings on one axis is a coherent picture; three axes would be
+  three pictures sharing a shape.
+- **Weight and sources**, both, because they answer different questions and the compounding
+  rules need both. Weight alone would draw two small shelves that fused as one small shelf,
+  which is the "stacking rather than compounding" failure the feature is defined against.
+
+### Compounding is the mechanism, and it is real rather than decorative
+
+Four steps: candidates, fusion within a merge window, densification down to `max_per_kind`,
+then grading onto the ladder. Nothing is discarded at any step — `Placement::fuse` adds the
+weights and keeps the source count, and the over-cap excess *grows into* what stays rather than
+being dropped. `P6` bounds what is drawn; it does not license throwing data away.
+
+**A `Limb` never compounds, and that is correct rather than a limitation.** A limb stands for
+one path, one path is one thing, and one thing does not grow together with itself. Compounding
+is a property of `Group` and `Aggregate` — the roles that stand for *several* paths, which is
+where "several things at one place" actually arises. The first `furnished_repository` fixture
+had no multi-path nodes at all, so every fusion assertion in it was vacuously true; the guard
+in `no_node_shows_more_than_the_table_permits` is what caught it.
+
+**A fused mass absorbs what is near the mass**, not what is near the last thing it absorbed.
+So a long even line of candidates does *not* all collapse into one — its centre of mass lags
+behind its leading edge, it forms a bounded cluster, and then starts another. That is the
+behaviour the picture wants: unbounded chaining would draw a decade of accreted documentation
+identically to a week of it.
+
+### Position comes off the age gradient
+
+A structure sits at its kind's `anchor`, offset by the vintage of the content it stands for —
+`AgeGradient::position_of`, the inverse of the shading `F-MAT-4` already applies. So a bookshelf
+holding three-year-old documentation is drawn on three-year-old wood, and a work site is out at
+the tip because that is where the recent material is. Where a source has no vintage (a
+single-commit node, or no history at all) the anchor is the whole answer.
+
+The anchor is what keeps it honest where the design has an opinion. §8.7's *only* positional
+statement is that stockpiles sit "near the base of the relevant limb", so that row is
+transcribed rather than chosen, and its spread is kept narrow so the whole band stays basal
+rather than only its centre. `stockpiles_stay_near_the_base_whatever_their_vintage` is the test.
+
+### The work-site signal was rebuilt after measuring it
+
+The first formulation was recent churn as a **share of the path's own lifetime churn** — elegant
+because it needs no scale in the table and cannot be wrong about a repository's tempo. It does
+not work, and measuring rather than reasoning is what showed it: **151 work sites on 151 nodes**
+of this repository. In any young or actively developed project most of every path's history *is*
+recent, so the ratio sits near one everywhere and the signal never discriminates. `P6` — a
+signal that fires on everything is texture, not information.
+
+Replaced with an absolute line count against `churn_full_scale_lines: 5000`, log-scaled like
+every other scale in the table. Absolute because a repository-relative one would make the
+busiest corner of every repository equally busy; logarithmic because churn rolls up, so a
+directory's window is its whole subtree's and a linear scale would make every large directory
+maximally hot while no file ever was. The measurement is recorded in `Normalize::heat`'s docs
+and in the RON, and `validate` refuses a scale below 100 lines so the failure is unreachable
+rather than merely avoided.
+
+**The form ladder was mis-set the same way, and the same measurement caught it.** `budget` is
+logarithmic, so a pure node of any ordinary size carries a weight between about 0.38 (a
+kilobyte) and 0.81 (the largest a `u64` holds); rungs spaced evenly over 0..1 put nearly
+everything at the top. At 120/300/600 this repository produced 43 platforms out of 202
+structures. At 300/550/750 the rungs land near a kilobyte, a hundred kilobytes and a megabyte:
+**27 single / 97 run / 31 cluster / 8 platform**, spread across all four.
+
+### What moved, and what did not
+
+`materials.ron` gained `churn_full_scale_lines` and the whole `enrich:` section.
+`treepo-model` gained `enrichment.rs`, `AgeGradient::position_of` and `NodeRole::stands_for`.
+The shared `compose::tests` fixture gained rolled-up thirty-day churn windows and folder signals
+— without either, two of the four kinds could never fire and every assertion about them would
+have been vacuous. `xtask` gained an `enrichment` probe and an `enrichment/*` corpus line.
+
+`materialize` is untouched: enrichment is a separate pass taking the `MaterialMap` as input,
+which is both what `AC-DET-1`'s wording asks for ("skeletons, materials, **and** enrichment
+placements" — three things) and what the dependency actually is. Enrichment is placed *on*
+material: sized by its budget, positioned along its gradient.
+
+Three tests were corrected by their own guards or by fixed-point reality:
+
+- Three assertions pinned decimals across `Fx` arithmetic (`0.05 + 0.05` against `0.10`), which
+  pins a Q32.32 rounding artefact rather than the claim. Same class as S13's. Switched to
+  eighths and sixteenths, which are exact through addition and through `lerp`.
+- `many_documents_read_as_one_larger_archive` was asserting `len() == 1` on a `Limb`, which can
+  never be anything else. Rebuilt against an `Aggregate` over twelve chapters, asserting the
+  offered count exceeds the placed count and nothing was dropped between them.
+- `a_line_of_near_structures_densifies_into_one` claimed more than the rule guarantees. The
+  centroid lag is a design property, so the test now pins what it actually buys.
+
+```
+enrichment    787d0bc48e74ceea4e881a6ab9bd9be4554a11e673192b515630dd79d741c5ad
+material      34604d57fc502b675cc771c5633bdfcbf04d282235a4ddacd9bf276fd4f8c881
+overall       f11fb5ca2d73d4687dda792e4960a1aa697947c733fea57b5b6acb114a5293dd
+```
+
+**All eighteen `skeleton/*` lines byte-identical to S13's**, and the `material` probe digest
+unchanged — enrichment is a layer on top and moved neither. The four identity fixtures share one
+enrichment digest while their material digests differ, which is a third correct answer rather
+than a leak: each is one small source file that clears no presence floor, and nothing hashes
+like nothing.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), **578 tests**, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages), `cargo deny`, readonly-audit (18 fixtures,
+0 writes, detector 4/4), determinism reproducible over 3 runs. `AC-DET-2` proper still needs
+the CI run.
+
+---
+
 ## Next
 
-**Phase 4, continued — `F-MAT-5`, enrichment placement.** S10 built the families and the
-arithmetic, S11 gave every node a material, S12 a mosaic, S13 an age. What no node carries yet
-is what is *placed on* it.
+**Phase 4 is one slice from its end conditions.** S10 built the families and the arithmetic,
+S11 gave every node a material, S12 a mosaic, S13 an age, S14 what is built on it. What remains
+is `F-MAT-6` and one acceptance test.
 
-`Composition::Subordinate` was built for this and is still the only arm nothing reads: a
-container holding mostly `Parchment` becomes a bookshelf, mostly `Ore` a stockpile, and the
-whole inventory survives (rather than the top two) precisely so this slice can ask it. PRD
-`F-MAT-5` names four: docs → bookshelves or archive platforms; assets/binaries → stockpiles and
-crates; tests → distinct secondary growth or proving-ground platforms; high-churn clusters →
-work sites.
+**`F-MAT-6`, stress materials** — `P2` and the designated cut. "High TODO / debt signals can
+introduce subtle stress materials (cracks, sparse density, restless micro-particles) that
+coexist with the primary material" (§8.5). The primitives are extracted and unread:
+`DerivedSignals::todo_density`, `generated_debt`, `large_file_debt`, `doc_staleness_days`, and
+`TemporalPrimitives::stability`. It is the smallest remaining slice — one optional field on
+`Material`, one section of `materials.ron`, no new pass — because it modulates a surface rather
+than placing anything.
 
-Two things to settle, in the order they bite:
-
-1. **What a placement *is*.** Enrichment sits somewhere on a limb, and the limb's length axis
-   now carries two readings already — the mosaic's cells and the age gradient. A placement is
-   presumably a position along that same axis plus a kind, but whether it also needs a size,
-   and whether several may share a position, is the decision that shapes the visual.
-2. **Where the "tests" and "high-churn" signals come from.** The first two kinds fall out of
-   `Composition::Subordinate` directly. Tests are `DerivedSignals`/`FolderSignal::test_like_ratio`
-   and churn is `ChurnWindows` — both extracted, neither read by this crate yet, so the slice
-   widens what `resolve` gathers for the third time.
-
-`F-MAT-6`'s stress materials are `P2` and the designated cut.
+Two things S14 leaves for it. First, `DerivedSignals::test_to_source` is deliberately *not* read
+by `F-MAT-5` — `test_like_ratio` is the proportion-of-content reading the placement pass needs,
+and `test_to_source` is unbounded above and is the debt reading, which is `F-MAT-6`'s. Second,
+every `DerivedSignals` field is `Option` and `None` means "not measured" rather than zero, so
+the slice has to carry that distinction through rather than defaulting it — the same refusal
+`Option<AgeGradient>` makes about a path with no history.
 
 Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
 an ordered contributor collection or a share as a figure"** — still needing a test that says so
@@ -2242,7 +2367,7 @@ that is accepted rather than overlooked. The crate-level test should therefore a
 *shape* of the API — no accessor returns a ranking, no `Display` surfaces a share — rather than
 claim a guarantee the compiler does not hold.
 
-Three things recorded rather than resolved, all waiting on materials having an appearance:
+Recorded rather than resolved, all waiting on materials having an appearance:
 
 - **The mosaic arrangement is contiguous runs in key order** (S12). A seeded per-node shuffle
   would make a bad colour pairing local instead of systemic across every limb two contributors
@@ -2250,13 +2375,27 @@ Three things recorded rather than resolved, all waiting on materials having an a
 - **`mosaic_min_cells: 8` / `mosaic_max_cells: 64` are set by argument** (S12), like
   `blend_floor`.
 - **`age_full_scale_days: 3650` is set by argument** (S13). Ten years, log-scaled, which puts a
-  couple of months at halfway old. Defensible and untested against a picture — the third thing
-  for the silhouette lab, after `blend_floor` and the cell bounds.
+  couple of months at halfway old.
+- **`F-MAT-5`'s anchors, spreads and `merge_window` are set by argument** (S14). The kind
+  anchors encode a reading (`stockpile` basal is §8.7's own words; `work_site` distal follows
+  `F-MAT-4` putting recent material tip-ward), but the numbers themselves — and `merge_window:
+  90`, which decides whether a limb reads as one archive or several — cannot be judged until
+  structures render. `merge_window` is the one to point the lab at: it is what the whole
+  compounding character lives on.
 
 **`blend_floor` is the first material number set by argument rather than by looking.** 80 per
 mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until
 materials have an appearance, and it is the first thing the silhouette lab should be pointed
-at once they do. The mosaic's cell bounds are the second.
+at once they do. The mosaic's cell bounds are the second, `merge_window` the third.
+
+**Two `F-MAT-5` numbers were set by measurement instead, and both want a second repository.**
+`churn_full_scale_lines: 5000` and `forms.run_at`/`cluster_at`/`platform_at` were tuned against
+this repository, which is four months old and under heavy active development — 116 of 151 nodes
+still carry a work site after the fix, which is arguably honest for a project in this state and
+arguably still too many. Neither can be confirmed without measuring a repository with years of
+history. `tools/corpus` cannot supply one: every fixture is built in a single day, so every path
+in the corpus is wholly "recent" and the churn row is untestable against it. That is a real gap
+in the corpus rather than in the table.
 
 Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 

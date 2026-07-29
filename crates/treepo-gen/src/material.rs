@@ -47,7 +47,15 @@
 //! The gathering has one trap the mixture does not. A share is a proportion of *one record's
 //! own* attributed lines, so several records' shares cannot simply be added — see
 //! [`ownership_over`].
+//!
+//! # And what is built on it — `F-MAT-5`
+//!
+//! [`Table`] carries [`enrich`](Table::enrich) as well, and [`enrich`](crate::enrich) is the
+//! pass that reads it. Enrichment is placed *on* material — sized by the budget this module
+//! settles and positioned along the gradient it computes — so the rules live in one table and
+//! the pass takes the [`MaterialMap`] this one produced.
 
+use crate::enrich::{EnrichError, Rules as EnrichRules};
 use crate::normalize::{Normalize, NormalizeError};
 use crate::params::per_mille;
 use alloc::borrow::Cow;
@@ -120,6 +128,13 @@ pub struct Table {
     /// `F-MAT-3` — log, soft clamp, floor, the contributor quota, and how finely a node's
     /// surface subdivides into mosaic cells.
     pub normalize: Normalize,
+    /// `F-MAT-5` — what gets built on a limb, where it sits, and how several of them
+    /// compound.
+    ///
+    /// In this table rather than one of its own because enrichment is placed *on* material and
+    /// reads [`normalize`](Self::normalize)'s age scale to place it; two files would be two
+    /// copies of that scale with two chances to disagree. See [`enrich`](crate::enrich).
+    pub enrich: EnrichRules,
 }
 
 impl Table {
@@ -172,7 +187,10 @@ impl Table {
             });
         }
 
-        self.normalize.validate().map_err(MaterialError::Normalize)
+        self.normalize
+            .validate()
+            .map_err(MaterialError::Normalize)?;
+        self.enrich.validate().map_err(MaterialError::Enrich)
     }
 
     /// The material for one node.
@@ -582,6 +600,8 @@ pub enum MaterialError {
     },
     /// The `F-MAT-3` section is invalid.
     Normalize(NormalizeError),
+    /// The `F-MAT-5` section is invalid.
+    Enrich(EnrichError),
 }
 
 impl fmt::Display for MaterialError {
@@ -594,6 +614,7 @@ impl fmt::Display for MaterialError {
             ),
             Self::Decision { row, detail } => write!(f, "`{row}`: {detail}"),
             Self::Normalize(error) => error.fmt(f),
+            Self::Enrich(error) => error.fmt(f),
         }
     }
 }

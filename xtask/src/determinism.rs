@@ -8,20 +8,24 @@
 //! **The probes** hash the layer everything else is built on: every primitive in `treepo-det`,
 //! exercised over a fixed sample, reduced to one digest each. They were the whole of the
 //! harness in Phase 0, when there was no corpus and no skeleton to serialize. Phase 4 added
-//! three more — `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
+//! four more — `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
 //! `AC-DET-2` about a different output and deserves the same evidence rather than an argument
-//! from `treepo-id` being integer-only; and `material`, which sweeps the material layer's
+//! from `treepo-id` being integer-only; `material`, which sweeps the material layer's
 //! arithmetic over magnitudes, exact ties and calendar edges that no real repository reliably
-//! contains.
+//! contains; and `enrichment`, whose fusion rule *branches* on a fixed-point comparison, so a
+//! one-ulp disagreement would change which structures grew together rather than moving one of
+//! them slightly.
 //!
 //! **The corpus stage** is D2's sentence, arrived at in Phase 3. Every corpus fixture is
-//! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) and
-//! [`MaterialMap`](treepo_model::MaterialMap) are each reduced to a digest —
-//! `AC-DET-1` names skeletons and materials together, so both are re-derived from scratch on
-//! every run rather than the material being computed once over geometry already known to be
-//! stable. This is the stage that can fail for an interesting reason: the probes cover the
-//! arithmetic, and only this covers what the L-system, the composition order, the aggregation
-//! threshold, the trunk column, and the role-driven material walk do *with* that arithmetic.
+//! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton),
+//! [`MaterialMap`](treepo_model::MaterialMap) and
+//! [`EnrichmentMap`](treepo_model::EnrichmentMap) are each reduced to a digest — `AC-DET-1`
+//! names "skeletons, materials, and enrichment placements", three things, so all three are
+//! re-derived from scratch on every run rather than the later passes being computed once over
+//! geometry already known to be stable. This is the stage that can fail for an interesting
+//! reason: the probes cover the arithmetic, and only this covers what the L-system, the
+//! composition order, the aggregation threshold, the trunk column, the role-driven material
+//! walk and the enrichment fusion do *with* that arithmetic.
 //!
 //! Two properties are checked, and they are not the same property:
 //!
@@ -58,6 +62,13 @@
 //! the material layer separates repositories the geometry cannot. Four identical skeleton
 //! digests beside four distinct material digests is that decision being visible rather than a
 //! disagreement between the two stages.
+//!
+//! **Their enrichment digests then coincide again**, and that is a third correct answer rather
+//! than the material distinction leaking away. Each of the four is one small source file, and
+//! one small source file offers no documentation, no assets, no test directory and too little
+//! churn to clear `F-MAT-5`'s presence floor — so all four are furnished with nothing, and
+//! nothing hashes the same as nothing. A byte difference that moves a budget need not move a
+//! threshold it was never near.
 //!
 //! Fixtures that only some platforms can build are excluded for the same reason: a report
 //! listing `symlinks` on two runners and not the third would differ for a reason that is not a
@@ -133,6 +144,11 @@ const PROBES: &[Probe] = &[
         name: "material",
         what: "families, budgets, mosaics and ages over sampled inputs (F-MAT-1…4, AC-DET-1)",
         run: probe_material,
+    },
+    Probe {
+        name: "enrichment",
+        what: "placement, fusion and densification over sampled limbs (F-MAT-5, AC-DET-1)",
+        run: probe_enrichment,
     },
 ];
 
@@ -265,13 +281,15 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
             Ok(manifest) => {
                 let skeleton = treepo_gen::grow(&manifest, &table);
                 let first = skeleton.digest();
-                let first_material =
-                    treepo_gen::materialize(&manifest, &skeleton, &materials).digest();
+                let first_materials = treepo_gen::materialize(&manifest, &skeleton, &materials);
+                let first_material = first_materials.digest();
+                let first_enrichment =
+                    treepo_gen::enrich(&manifest, &skeleton, &first_materials, &materials).digest();
 
                 // AC-DET-1: the same repository state, grown again, must not move — and the
-                // criterion names materials beside skeletons, so both are re-derived from
-                // scratch each run rather than the material being computed once over a
-                // skeleton that is already known to be stable.
+                // criterion names all three, so all three are re-derived from scratch each run
+                // rather than the later passes being computed once over a skeleton that is
+                // already known to be stable.
                 for repeat in 1..runs {
                     let regrown = treepo_gen::grow(&manifest, &table);
                     let again = regrown.digest();
@@ -284,8 +302,8 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
                             repeat + 1
                         ));
                     }
-                    let again_material =
-                        treepo_gen::materialize(&manifest, &regrown, &materials).digest();
+                    let again_materials = treepo_gen::materialize(&manifest, &regrown, &materials);
+                    let again_material = again_materials.digest();
                     if again_material != first_material {
                         return Err(format!(
                             "`{}` grows the same skeleton but not the same materials\n  \
@@ -296,11 +314,28 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
                             repeat + 1
                         ));
                     }
+                    let again_enrichment =
+                        treepo_gen::enrich(&manifest, &regrown, &again_materials, &materials)
+                            .digest();
+                    if again_enrichment != first_enrichment {
+                        return Err(format!(
+                            "`{}` grows the same materials but not the same enrichment\n  \
+                             run 1: {first_enrichment}\n  run {}: {again_enrichment}\n\
+                             The material pass is stable and the placement pass is not, so the \
+                             ambient read is in `treepo-gen::enrich`.",
+                            shape.name,
+                            repeat + 1
+                        ));
+                    }
                 }
 
                 (
                     first.to_string(),
-                    Some((first_material.to_string(), skeleton.nodes().len())),
+                    Some((
+                        first_material.to_string(),
+                        first_enrichment.to_string(),
+                        skeleton.nodes().len(),
+                    )),
                 )
             }
             Err(why) if REFUSED.contains(&shape.name) => {
@@ -317,9 +352,10 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
             }
         };
 
-        if let Some((material, nodes)) = &material {
+        if let Some((material, enrichment, nodes)) = &material {
             println!("  {:<18} {outcome}  skeleton", shape.name);
             println!("  {:<18} {material}  material, {nodes} nodes", "");
+            println!("  {:<18} {enrichment}  enrichment", "");
         }
 
         // Report and digest in the order they are printed. A reader comparing two platforms'
@@ -330,10 +366,14 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
         overall.update(shape.name.as_bytes());
         overall.update(outcome.as_bytes());
 
-        if let Some((material, _)) = &material {
+        if let Some((material, enrichment, _)) = &material {
             writeln!(report, "material/{} {material}", shape.name)
                 .expect("writing to a String cannot fail");
             overall.update(material.as_bytes());
+
+            writeln!(report, "enrichment/{} {enrichment}", shape.name)
+                .expect("writing to a String cannot fail");
+            overall.update(enrichment.as_bytes());
         }
     }
 
@@ -691,6 +731,155 @@ fn probe_material() -> Digest {
     }
 
     hasher.finalize()
+}
+
+/// `F-MAT-5` — where structures land, what fuses, and what the excess densifies into.
+///
+/// Its own probe rather than more of [`probe_material`], because the arithmetic is a different
+/// shape and would be lost inside a sweep of budgets. Three things here could disagree across
+/// platforms and nothing above would catch any of them: the mass-weighted `lerp` that
+/// [`Placement::fuse`](treepo_model::Placement::fuse) centres a fused structure on, the
+/// `position_of` division that turns a normalized age back into a place on the limb, and the
+/// gap comparison the densification loop picks its closest pair with — the last of which is a
+/// *branch* on fixed-point values, so a one-ulp disagreement would change which two structures
+/// grew together rather than moving one of them slightly.
+///
+/// The sweep is built so every one of those is exercised. Positions land on and either side of
+/// the merge window, counts run past `max_per_kind` so the densification loop runs, and the
+/// ages cover the range `F-MAT-4`'s scale compresses hardest.
+fn probe_enrichment() -> Digest {
+    use treepo_model::enrichment::{EnrichmentKind, EnrichmentMap, Placement};
+
+    let table = treepo_gen::MaterialTable::built_in();
+    let mut hasher = Sha256::new();
+
+    // The inverse of the age gradient — the division that places a structure on material of its
+    // own vintage. Spans that straddle the whole scale, read at every age in it.
+    for (oldest, newest) in [(3650i64, 0i64), (365, 30), (90, 89), (36_500, 1), (7, 7)] {
+        let gradient = table.normalize.gradient(oldest, newest);
+        for days in [0i64, 1, 7, 30, 90, 365, 1000, 3650, 36_500] {
+            let age = table.normalize.age(days);
+            hasher.update(&[u8::from(gradient.position_of(age).is_some())]);
+            hasher.update(
+                &gradient
+                    .position_of(age)
+                    .unwrap_or(Fx::ZERO)
+                    .to_bits()
+                    .to_le_bytes(),
+            );
+        }
+    }
+
+    // Fusion: the mass-weighted mean, over lopsided pairs where the rounding has somewhere to
+    // go, and over chains where it accumulates.
+    for kind in EnrichmentKind::ALL {
+        for (a, b) in [(1i64, 999i64), (500, 500), (997, 3), (1, 1), (333, 667)] {
+            let grown =
+                Placement::single(kind, Fx::from_ratio(a, 1000), Fx::from_ratio(a, 1000)).fuse(
+                    Placement::single(kind, Fx::from_ratio(b, 1000), Fx::from_ratio(b, 1000)),
+                );
+            hasher.update(&grown.position.to_bits().to_le_bytes());
+            hasher.update(&grown.weight.to_bits().to_le_bytes());
+            hasher.update(&grown.sources.to_le_bytes());
+        }
+    }
+
+    // The whole pass, through the public entry point rather than through its steps — so the
+    // table's own thresholds are in the answer and no probe hook has to exist in shipping API.
+    //
+    // Documents dated `spacing` days apart, which is what puts their structures a controlled
+    // distance apart along the limb: position comes off the vintage. Spacings that put
+    // neighbours inside, on and outside the merge window, and counts that overrun
+    // `max_per_kind` so the densification loop runs.
+    let mut sampled = EnrichmentMap::new();
+    for spacing in [1i64, 9, 40, 180] {
+        for count in [1u32, 2, 5, 13, 40] {
+            let (manifest, role) = probe_container(count, spacing);
+            let record = manifest
+                .path(&treepo_model::path::RepoPath::root())
+                .unwrap();
+            let reference = manifest.reference_time;
+            let material = table.material_of(
+                &record.size,
+                record.size.bytes,
+                &record.ownership,
+                Some(treepo_gen::AgeSpan {
+                    oldest_days: record
+                        .temporal
+                        .first_commit_age_days(reference)
+                        .unwrap_or(0),
+                    newest_days: record.temporal.last_commit_age_days(reference).unwrap_or(0),
+                }),
+                &role,
+            );
+            sampled.push(table.enrichment_of(&manifest, &role, &material));
+        }
+    }
+    hasher.update(sampled.digest().as_bytes());
+
+    hasher.finalize()
+}
+
+/// A synthetic container standing for `count` documents dated `spacing` days apart.
+///
+/// The shape [`probe_enrichment`] needs and nothing more: one aggregate over several dated
+/// paths, so the positions along the limb are a function of the dates and therefore controllable
+/// to either side of the merge window.
+fn probe_container(count: u32, spacing: i64) -> (treepo_model::Manifest, treepo_model::NodeRole) {
+    use treepo_model::path::RepoPath;
+    use treepo_model::primitives::size::ContentCategory;
+    use treepo_model::{Manifest, NodeKind, PathRecord};
+
+    const REFERENCE: i64 = 1_800_000_000;
+    const DAY: i64 = 86_400;
+
+    let mut records = Vec::new();
+    let mut members = Vec::new();
+    let mut root = PathRecord::new(RepoPath::root(), NodeKind::Directory);
+
+    for index in 0..count {
+        // Two categories, alternating, so bookshelves and stockpiles are both offered and the
+        // per-kind rows are both in the digest.
+        let (name, category) = if index % 2 == 0 {
+            (format!("doc{index}.md"), ContentCategory::Docs)
+        } else {
+            (format!("blob{index}.png"), ContentCategory::Asset)
+        };
+        let path = RepoPath::new(name.as_bytes()).expect("a fixture name is a valid path");
+
+        let mut record = PathRecord::new(path.clone(), NodeKind::File);
+        record.size.bytes = 4096 + u64::from(index) * 17;
+        record.size.category_bytes = core::iter::once((category, record.size.bytes)).collect();
+        record.temporal.first_commit_time = Some(REFERENCE - (2000 + i64::from(index)) * DAY);
+        record.temporal.last_commit_time = Some(REFERENCE - i64::from(index) * spacing * DAY);
+        // Enough recent churn for the work-site row to be reachable on some of them.
+        record.temporal.churn.lifetime = 1000;
+        record.temporal.churn.days_30 = u64::from(index % 5) * 250;
+
+        root.size.bytes += record.size.bytes;
+        *root.size.category_bytes.entry(category).or_insert(0) += record.size.bytes;
+        members.push(path);
+        records.push(record);
+    }
+
+    root.temporal.first_commit_time = Some(REFERENCE - (2000 + i64::from(count)) * DAY);
+    root.temporal.last_commit_time = Some(REFERENCE);
+    records.push(root);
+
+    let mut manifest = Manifest::new("probe".to_string(), Seed::root(b"enrichment-probe"));
+    manifest.reference_time = REFERENCE;
+    manifest.set_paths(records);
+
+    let role = treepo_model::NodeRole::Aggregate(treepo_model::AggregateNode {
+        anchor: RepoPath::root(),
+        index: 0,
+        members,
+        bytes: 4096 * u64::from(count.max(1)),
+        file_count: count,
+        dir_count: 0,
+    });
+
+    (manifest, role)
 }
 
 /// One mosaic, as bytes.

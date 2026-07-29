@@ -514,6 +514,30 @@ impl AgeGradient {
         self.base.lerp(self.tip, along)
     }
 
+    /// Where along the limb material of a given age sits — the inverse of [`at`](Self::at).
+    ///
+    /// [`at`](Self::at) answers "at this fraction along, how old is the material"; this answers
+    /// "for material of this age, how far along". `F-MAT-5` is what needs it: enrichment placed
+    /// where its own content's vintage sits lands *on* the material of that vintage, rather than
+    /// at a position chosen independently of the shading it will be drawn over.
+    ///
+    /// `None` for a uniform gradient. A single-commit path has one age everywhere, so there is
+    /// no position that age picks out — every point is equally right and the caller has to
+    /// decide on some other ground. Returning a midpoint instead would be inventing an answer
+    /// to a question with none, which is the same mistake `Option<AgeGradient>` refuses to make
+    /// about a path with no history.
+    ///
+    /// Clamped to `0..=1`: an age outside the node's own span belongs to content the node does
+    /// not stand for, and the honest placement is the nearer end rather than off the limb.
+    #[must_use]
+    pub fn position_of(&self, age: Fx) -> Option<Fx> {
+        let span = self.span();
+        if span.is_zero() {
+            return None;
+        }
+        Some(self.base.sub(age).div(span).clamp(Fx::ZERO, Fx::ONE))
+    }
+
     /// How much of the age range this node covers — zero for a single-commit path.
     #[must_use]
     pub const fn span(&self) -> Fx {
@@ -864,6 +888,46 @@ mod tests {
         assert_eq!(flat.at(Fx::ZERO), Fx::HALF);
         assert_eq!(flat.at(Fx::ONE), Fx::HALF);
         assert_eq!(AgeGradient::new(Fx::HALF, Fx::HALF), flat);
+    }
+
+    /// `F-MAT-5`'s question, and the inverse of the one above: for material of this age, how
+    /// far along does it sit? A structure placed there lands on material of its own vintage.
+    #[test]
+    fn material_of_a_given_age_has_a_place_on_the_limb() {
+        let gradient = AgeGradient::new(Fx::ONE, Fx::ZERO);
+        assert_eq!(
+            gradient.position_of(Fx::ONE),
+            Some(Fx::ZERO),
+            "oldest is basal"
+        );
+        assert_eq!(
+            gradient.position_of(Fx::ZERO),
+            Some(Fx::ONE),
+            "newest is at the tip"
+        );
+        assert_eq!(gradient.position_of(Fx::HALF), Some(Fx::HALF));
+
+        // Round-trips against `at`, which is what makes it the inverse rather than a second
+        // opinion about the axis.
+        for step in 0..=8i64 {
+            let along = Fx::from_ratio(step, 8);
+            assert_eq!(gradient.position_of(gradient.at(along)), Some(along));
+        }
+
+        // An age outside the node's own span belongs to content the node does not stand for,
+        // and the honest placement is the nearer end rather than off the limb.
+        let narrow = AgeGradient::new(Fx::from_ratio(3, 4), Fx::from_ratio(1, 4));
+        assert_eq!(narrow.position_of(Fx::ONE), Some(Fx::ZERO));
+        assert_eq!(narrow.position_of(Fx::ZERO), Some(Fx::ONE));
+    }
+
+    /// A single-commit path has one age everywhere, so no age picks out a position. Returning a
+    /// midpoint would be inventing an answer to a question that has none — the same refusal
+    /// `Option<AgeGradient>` makes about a path with no history at all.
+    #[test]
+    fn a_uniform_gradient_places_nothing() {
+        assert_eq!(AgeGradient::uniform(Fx::HALF).position_of(Fx::HALF), None);
+        assert_eq!(AgeGradient::uniform(Fx::ZERO).position_of(Fx::ZERO), None);
     }
 
     /// The renderer's question: at a fraction of the way up, how old is the material?

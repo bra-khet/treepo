@@ -18,11 +18,12 @@
 //!   produces and Phases 5 and 6 consume.
 //! * [`aggregate`] — [`AggregateNode`], `F-SKEL-7`'s proportional container.
 //! * [`material`] — [`Material`] and [`MaterialFamily`]: what Phase 4 makes a limb out of.
+//! * [`enrichment`] — [`Placement`] and [`EnrichmentMap`]: what Phase 4 builds *on* a limb.
 //!
-//! Snapshot and enrichment types (`snapshot.rs`, `enrichment.rs` in the architecture's file
-//! tree) arrive with the phases that produce them. Defining them now would be guessing at
-//! their shape — which is what [`material`] stopped being a guess about when Phase 4's first
-//! material slice landed, and it arrived carrying only the fields that slice computes.
+//! Snapshot types (`snapshot.rs` in the architecture's file tree) arrive with the phase that
+//! produces them. Defining them now would be guessing at their shape — which is what
+//! [`material`] and [`enrichment`] stopped being guesses about when Phase 4's slices landed,
+//! and each arrived carrying only the fields its slice computes.
 //!
 //! # Three properties this crate is built to hold
 //!
@@ -60,6 +61,7 @@
 extern crate alloc;
 
 pub mod aggregate;
+pub mod enrichment;
 pub mod identity;
 pub mod manifest;
 pub mod material;
@@ -68,6 +70,7 @@ pub mod primitives;
 pub mod segment;
 
 pub use aggregate::AggregateNode;
+pub use enrichment::{Enrichment, EnrichmentForm, EnrichmentKind, EnrichmentMap, Placement};
 pub use identity::{AuthorKey, CommitId, IdentityTier, RepoIdentity};
 pub use manifest::{
     AuthorEntry, AuthorTable, FilterOverrides, LanguageId, LanguageTable, Manifest, NodeKind,

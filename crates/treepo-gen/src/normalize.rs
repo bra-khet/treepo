@@ -20,6 +20,7 @@
 //! * `F-MAT-2`'s mosaic granularity — [`mosaic_min_cells`](Normalize::mosaic_min_cells) and
 //!   [`mosaic_max_cells`](Normalize::mosaic_max_cells).
 //! * `F-MAT-4`'s ages — [`Normalize::age`] and [`Normalize::gradient`].
+//! * `F-MAT-5`'s churn heat — [`Normalize::heat`].
 //!
 //! Nothing here decides what anything looks like. Family is [`material`](crate::material), the
 //! arrangement of the cells is [`Mosaic`]'s own documented reading, and what an age *means*
@@ -159,6 +160,15 @@ pub struct Normalize {
     /// scale spends most of its range on the distinction nobody can use. The recent end is the
     /// end §8.3's picture is about.
     pub age_full_scale_days: u64,
+    /// The lines changed in a thirty-day window that read as fully hot — `F-MAT-5`.
+    ///
+    /// Absolute and logarithmic, for both of the reasons the two scales above are. Absolute,
+    /// because a repository-relative one would make the busiest corner of every repository
+    /// equally busy and say nothing about which repositories are actually under construction.
+    /// Logarithmic, because a container's churn is its whole subtree's and a file's is its own
+    /// — the same disparity [`full_scale_bytes`](Self::full_scale_bytes) compresses, arriving
+    /// through a different primitive.
+    pub churn_full_scale_lines: u64,
 }
 
 impl Normalize {
@@ -225,6 +235,39 @@ impl Normalize {
         }
         let days = u64::try_from(days).unwrap_or(0);
         let Some(magnitude) = Fx::log2_u64(days.saturating_add(1)) else {
+            return Fx::ZERO;
+        };
+        magnitude.div(scale).min(Fx::ONE)
+    }
+
+    /// How hot `lines` of recent churn reads, in `0..=1` — `F-MAT-5`'s work sites.
+    ///
+    /// Zero is untouched in the window, one is at or beyond
+    /// [`churn_full_scale_lines`](Self::churn_full_scale_lines). Logarithmic and saturating,
+    /// exactly as [`age`](Self::age) is, and the same `+ 1` so an untouched path lands on
+    /// exactly zero rather than the scale starting at one line.
+    ///
+    /// # Why not a share of the path's own lifetime churn
+    ///
+    /// The obvious alternative — recent churn over lifetime churn — needs no scale at all, and
+    /// it was built and measured before this one replaced it. It does not work: in any young or
+    /// actively developed repository, most of every path's history *is* recent, so the ratio
+    /// sits near one everywhere and the signal fires on every node. Measured over this
+    /// repository it placed a work site on 151 of 151 nodes, which is `P6` broken — a signal
+    /// that never discriminates is texture rather than information.
+    ///
+    /// An absolute line count discriminates because it asks about the work rather than about
+    /// the proportion: seventy lines changed this month is activity whether the path is a day
+    /// old or a decade old.
+    #[must_use]
+    pub fn heat(&self, lines: u64) -> Fx {
+        let Some(scale) = Fx::log2_u64(self.churn_full_scale_lines.saturating_add(1)) else {
+            return Fx::ZERO;
+        };
+        if scale.is_zero() {
+            return Fx::ZERO;
+        }
+        let Some(magnitude) = Fx::log2_u64(lines.saturating_add(1)) else {
             return Fx::ZERO;
         };
         magnitude.div(scale).min(Fx::ONE)
@@ -453,6 +496,17 @@ impl Normalize {
                 row: "age_full_scale_days",
                 detail: "the age scale spans at least a month, or every path but the ones \
                          touched this week reads as equally ancient",
+            });
+        }
+
+        // The failure this row was introduced to fix, refused rather than merely avoided: at
+        // one line, every path touched at all reads as fully hot and `F-MAT-5`'s work sites
+        // appear on everything. `P6` — a signal that never discriminates is texture.
+        if self.churn_full_scale_lines < 100 {
+            return Err(NormalizeError {
+                row: "churn_full_scale_lines",
+                detail: "the churn scale spans at least a hundred lines, or every path touched \
+                         this month reads as equally hot and the signal stops distinguishing",
             });
         }
 

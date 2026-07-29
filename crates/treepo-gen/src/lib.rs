@@ -5,27 +5,32 @@
 //!
 //! * **the structural skeleton** — topology, limb geometry, thickness, angles.
 //!   [`params`], [`lsystem`], [`trunk`] (`F-SKEL-1`…`F-SKEL-7`).
-//! * **material** — what each limb is made of, who is drawn on it, how old it is, and how
-//!   much of the picture it may occupy. [`material`], [`normalize`]
-//!   (`F-MAT-1` … `F-MAT-4`).
+//! * **material** — what each limb is made of, who is drawn on it, how old it is, how much of
+//!   the picture it may occupy, and what is built on it. [`material`], [`normalize`],
+//!   [`enrich`] (`F-MAT-1` … `F-MAT-5`).
 //!
-//! Enrichment placement and everything alive arrive in later layers and later phases.
+//! Everything alive arrives in later layers and later phases.
 //!
 //! Both layers are pure functions of a [`Manifest`](treepo_model::Manifest) and a parameter
 //! table, and there are two tables — [`Table`] for the skeleton and [`MaterialTable`] for
 //! material — versioned independently, so that tuning a silhouette cannot invalidate a
 //! material and vice versa.
 //!
-//! The two entry points pair up, and a caller wanting a tree calls both:
+//! The three entry points pair up, and a caller wanting a tree calls all of them in order:
 //!
 //! ```ignore
-//! let skeleton  = treepo_gen::grow(&manifest, &Table::built_in());
-//! let materials = treepo_gen::materialize(&manifest, &skeleton, &MaterialTable::built_in());
+//! let materials_table = MaterialTable::built_in();
+//! let skeleton   = treepo_gen::grow(&manifest, &Table::built_in());
+//! let materials  = treepo_gen::materialize(&manifest, &skeleton, &materials_table);
+//! let enrichment = treepo_gen::enrich(&manifest, &skeleton, &materials, &materials_table);
 //! ```
 //!
-//! [`materialize`] visits nodes in the order [`grow`] created them, so the resulting
-//! [`MaterialMap`](treepo_model::MaterialMap) is indexed by the same
+//! Each visits nodes in the order [`grow`] created them, so the resulting
+//! [`MaterialMap`](treepo_model::MaterialMap) and
+//! [`EnrichmentMap`](treepo_model::EnrichmentMap) are indexed by the same
 //! [`NodeId`](treepo_model::NodeId) — `covers` is the invariant, and it holds by construction.
+//! [`enrich`] takes the materials rather than recomputing them because enrichment is placed
+//! *on* material: sized by its budget, positioned along its age gradient.
 //!
 //! # `F-SKEL-1`: the skeleton is a pure function
 //!
@@ -61,12 +66,14 @@
 
 extern crate alloc;
 
+pub mod enrich;
 pub mod lsystem;
 pub mod material;
 pub mod normalize;
 pub mod params;
 pub mod trunk;
 
+pub use enrich::{EnrichError, enrich};
 pub use lsystem::compose;
 pub use normalize::{Normalize, NormalizeError};
 pub use params::{LimbParams, SkeletonInputs, Table, TableError, TrunkParams};

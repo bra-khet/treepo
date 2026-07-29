@@ -556,6 +556,44 @@ pub(crate) mod tests {
         (first, last)
     }
 
+    /// How many of one fixture file's lines changed inside the thirty-day window.
+    ///
+    /// `F-MAT-5`'s work sites read recent churn against lifetime churn, so a fixture leaving
+    /// `days_30` at zero would place none and `every_kind_is_reachable_over_a_real_repository`
+    /// would be one kind short.
+    ///
+    /// Derived from the date [`history_of`] already assigned rather than from a second
+    /// independent knob, so the fixture cannot describe a path that was touched a year ago and
+    /// churned heavily last week. Linear decay across the window: a file touched today has all
+    /// of its churn inside it, one touched thirty or more days ago has none.
+    fn recent_churn_of(path: &str, lines: u64) -> u64 {
+        const DAY: i64 = 86_400;
+        let days = (REFERENCE - history_of(path).1) / DAY;
+        if days >= 30 {
+            return 0;
+        }
+        lines.saturating_sub(lines.saturating_mul(days as u64) / 30)
+    }
+
+    /// The folder-convention record a fixture directory carries, if the name is one.
+    ///
+    /// A miniature of `treepo-vcs`'s `F-EXT-5` pass over
+    /// `assets/params/folder-signals.ron`. `F-MAT-5` reads `test_like_ratio` off this and
+    /// nothing else does yet, so the non-test entries are here on purpose: a signal-reading bug
+    /// that fired on *any* folder signal rather than on the ratio would pass a fixture where
+    /// only `tests` had one.
+    fn folder_signal_of(name: &str) -> Option<treepo_model::FolderSignal> {
+        let test_like = match name {
+            "tests" | "test" => Fx::ONE,
+            "src" | "docs" | "assets" | "vendor" | "examples" => Fx::ZERO,
+            _ => return None,
+        };
+        let mut signal =
+            treepo_model::FolderSignal::unmodulated(name.into(), Fx::from_ratio(4, 5), 1);
+        signal.content_modulation.test_like_ratio = test_like;
+        Some(signal)
+    }
+
     /// Builds a manifest from a list of `(path, bytes)` files, synthesizing every ancestor
     /// directory and rolling the structural counts up as `treepo-vcs::walk` would.
     ///
@@ -579,6 +617,7 @@ pub(crate) mod tests {
 
         let mut records: Vec<PathRecord> = Vec::new();
         let mut counts: Vec<OrderedMap<AuthorKey, u64>> = Vec::new();
+        let mut recent: Vec<u64> = Vec::new();
         let mut seen: Vec<RepoPath> = Vec::new();
 
         for (text, bytes) in files {
@@ -591,31 +630,48 @@ pub(crate) mod tests {
             record.temporal.last_commit_time = Some(last);
             seen.push(path.clone());
             records.push(record);
-            counts.push(authors_of(text, *bytes).into_iter().collect());
+
+            let attributed: OrderedMap<AuthorKey, u64> =
+                authors_of(text, *bytes).into_iter().collect();
+            recent.push(recent_churn_of(text, attributed.values().sum()));
+            counts.push(attributed);
 
             let mut ancestor = path.parent();
             while let Some(current) = ancestor {
                 ancestor = current.parent();
                 if !seen.contains(&current) {
                     seen.push(current.clone());
-                    records.push(PathRecord::new(current, NodeKind::Directory));
+                    let mut directory = PathRecord::new(current, NodeKind::Directory);
+                    directory.folder_signal = directory
+                        .path
+                        .file_name()
+                        .and_then(|name| core::str::from_utf8(name).ok())
+                        .and_then(folder_signal_of);
+                    records.push(directory);
                     counts.push(OrderedMap::new());
+                    recent.push(0);
                 }
             }
         }
         if !seen.contains(&RepoPath::root()) {
             records.push(PathRecord::new(RepoPath::root(), NodeKind::Directory));
             counts.push(OrderedMap::new());
+            recent.push(0);
         }
 
-        roll_up(&mut records, &mut counts);
+        roll_up(&mut records, &mut counts, &mut recent);
 
         // Attributed lines and lifetime churn come out of one per-commit tally in the real log
         // pass, so `lifetime` is exactly the sum of the author counts. `treepo-gen::material`
         // weights by it when merging a container's contributors, and a fixture where the two
         // disagreed would be measuring a weight no repository produces.
-        for (record, counts) in records.iter_mut().zip(counts) {
+        //
+        // The thirty-day window is a share of that same tally, rolled up the same way, because
+        // `F-MAT-5` reads one against the other — a fixture where the windows came from
+        // somewhere else could describe a directory churning harder this month than it ever has.
+        for ((record, counts), recent) in records.iter_mut().zip(counts).zip(recent) {
             record.temporal.churn.lifetime = counts.values().sum();
+            record.temporal.churn.days_30 = recent.min(record.temporal.churn.lifetime);
             record.ownership =
                 treepo_model::primitives::ownership::OwnershipPrimitives::from_line_counts(
                     &counts,
@@ -634,6 +690,7 @@ pub(crate) mod tests {
     fn roll_up(
         records: &mut [PathRecord],
         counts: &mut [treepo_det::OrderedMap<treepo_model::identity::AuthorKey, u64>],
+        recent: &mut [u64],
     ) {
         let mut order: Vec<usize> = (0..records.len()).collect();
         order.sort_by_key(|&index| core::cmp::Reverse(records[index].path.depth()));
@@ -655,6 +712,15 @@ pub(crate) mod tests {
             for (key, lines) in inherited {
                 *counts[index].entry(key).or_insert(0) += lines;
             }
+
+            // And the recent window with them, off the same per-commit tally.
+            let churned: u64 = records
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| record.path.parent().as_ref() == Some(&path))
+                .map(|(child, _)| recent[child])
+                .sum();
+            recent[index] = recent[index].saturating_add(churned);
 
             // Dates roll up the same way, and in both directions: a directory was created when
             // its earliest child was and touched when its latest child was. That is what gives

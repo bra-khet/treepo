@@ -1,4 +1,4 @@
-// The material table — `F-MAT-1` … `F-MAT-4`, `design/feature-system.md` §8.3–§8.5.
+// The material table — `F-MAT-1` … `F-MAT-5`, `design/feature-system.md` §8.3–§8.7.
 //
 // Read by `treepo-gen::material`. This file decides what a limb is made of and how much of
 // the picture it may occupy. Editing it changes every material treepo draws with no rebuild,
@@ -20,10 +20,20 @@
 //   length. That is a statement about what a cell *is*, and it lives on
 //   `treepo-model::material::Mosaic` with the reasoning. What is tunable is how many of them
 //   there are, which is below.
+// * **Which primitive each enrichment kind reads.** Docs bytes make bookshelves, asset bytes
+//   make stockpiles, `test_like_ratio` makes proving grounds and recent churn makes work
+//   sites. `design/feature-system.md` §8.7 names those four pairings and a table permitted to
+//   re-point them would be a table that could make the picture say something else. It lives in
+//   `treepo-gen::enrich::signal_of` with the argument. What is tunable is how much of a signal
+//   it takes, and where the result sits.
+// * **That structures compound rather than stack.** Two shelves at one place are one taller
+//   run of shelving, never two shelves overlapping. That is the visual language, not a
+//   setting; it lives on `treepo-model::enrichment::Placement::fuse`. What is tunable is how
+//   close "one place" is, and how big the result has to be before it reads as a cluster.
 //
 // What is left is the one genuinely tunable material decision — how much of a second material
-// it takes before you can see it — plus the `F-MAT-3` normalization constants and the mosaic's
-// granularity. All of them are below.
+// it takes before you can see it — plus the `F-MAT-3` normalization constants, the mosaic's
+// granularity, and the `F-MAT-5` placement rules. All of them are below.
 //
 // # Units: integers, never floats
 //
@@ -38,6 +48,7 @@
 //   resolution `TemporalPrimitives` reports ages in and a finer one would be false precision
 //   about a commit timestamp supplied by someone else's machine.
 // * **cells** — counts, for the mosaic.
+// * **sources** — counts, for how many pieces of content grew into one structure.
 (
     version: 1,
 
@@ -173,5 +184,156 @@
         // commit *in the repository*, so this row moves how age is shaded, never what counts
         // as now.
         age_full_scale_days: 3650,
+
+        // ---------------------------------------------------------------------------------
+        // F-MAT-5 — the churn scale
+        // ---------------------------------------------------------------------------------
+
+        // Lines changed inside the thirty-day window that read as fully hot. Drives where
+        // `F-MAT-5` places work sites and nothing else.
+        //
+        // Absolute and logarithmic, like the two scales above, and for both of their reasons.
+        // The logarithm matters more here than anywhere: churn rolls up, so a directory's
+        // window is its whole subtree's and a file's is its own, and a linear scale would make
+        // every large directory maximally hot while no file ever was.
+        //
+        // 5,000 lines. At that scale about seventy lines in a month is enough for an ordinary
+        // file to earn a work site once its budget is taken into account, and a directory being
+        // actively rewritten reaches the top of the range. It was set by measurement rather
+        // than by argument, which makes it the one number in this file that is: the previous
+        // formulation — recent churn as a *share* of the path's own lifetime churn — needed no
+        // scale at all and was rejected because measuring it over this repository placed a work
+        // site on 151 of 151 nodes. In a young or active project almost all of every path's
+        // history is recent, so the share is near one everywhere and says nothing.
+        //
+        // Expect to retune it against a repository older than this one. Too low and every
+        // touched limb is scaffolded; too high and a project under heavy construction looks
+        // dormant.
+        //
+        // Refused below 100 lines: the failure it was introduced to fix, made unreachable
+        // rather than merely avoided.
+        churn_full_scale_lines: 5000,
+    ),
+
+    // ---------------------------------------------------------------------------------
+    // F-MAT-5 — enrichment placement
+    // ---------------------------------------------------------------------------------
+    //
+    // > Semantic enrichment structures placed during Grow: docs → bookshelves/archive
+    // > platforms; assets/binaries → stockpiles and crates; tests → distinct secondary growth
+    // > or proving-ground platforms; high-churn clusters → work sites.
+    //
+    // In this file rather than one of its own because enrichment is placed *on* material: a
+    // structure's size is a share of the `F-MAT-3` budget above and its position is read off
+    // the `F-MAT-4` gradient above, so a second file would hold a second copy of the age scale
+    // with a second chance to disagree about what "old" means. `treepo-gen::enrich` has the
+    // pass and the rest of the argument.
+    enrich: (
+        // How close two structures of one kind sit before they grow together, per mille of the
+        // limb's length.
+        //
+        // The knob this whole feature's character lives on. Wide, and every kind collapses to
+        // one structure per limb — legible, and blind to whether the content arrived all at
+        // once or over a decade. Narrow, and a directory of forty documents becomes forty
+        // shelves that `max_per_kind` then has to rescue.
+        //
+        // 90 per mille — a shelf absorbs anything within about a tenth of the limb. Set so
+        // that a handful of documents written in the same season read as one archive while
+        // documentation that accreted across a project's life stays visibly spread, which is
+        // the reading `F-MAT-4`'s gradient is already drawing underneath it.
+        //
+        // Refused at or above 500: a window covering half the limb fuses anything the anchors
+        // below could ever separate, so the positional tuning would be configured and inert.
+        merge_window: 90,
+
+        // The most structures of one kind a node may show — `P6`, legibility bounds detail.
+        //
+        // Four. The excess is *not* discarded: the closest remaining pair grows together until
+        // the count is met, so a container standing for two hundred documents shows four dense
+        // archives rather than two hundred invisible shelves. Raising it buys fidelity at the
+        // cost of the silhouette; lowering it makes every enriched limb look alike.
+        max_per_kind: 4,
+
+        // Where the compounding ladder's rungs sit — Single, Run, Cluster, Platform.
+        //
+        // Two ladders, and a structure takes the higher rung of the two. Weight alone would
+        // draw two small shelves that fused as one small shelf, which is the "stacking rather
+        // than compounding" failure the feature is defined against. Sources alone would call
+        // one enormous documentation directory a Single.
+        forms: (
+            // By weight — a share of the node's own drawn budget, per mille.
+            //
+            // Set against where budgets actually land rather than across the nominal 0..1
+            // range, which is the correction a first measurement forced. `budget` is
+            // logarithmic, so a pure node of *any* ordinary size carries a weight between about
+            // 0.38 (a kilobyte) and 0.81 (the largest thing a u64 can hold); rungs spaced
+            // evenly over 0..1 put almost every real file at the top and the ladder stops
+            // discriminating. Measured over this repository at 120/300/600, 43 of 202
+            // structures came out as platforms.
+            //
+            // At 300/550/750 the rungs land near a kilobyte, a hundred kilobytes and a
+            // megabyte, which spreads real content across all four.
+            run_at: 300,
+            cluster_at: 550,
+            platform_at: 750,
+
+            // By how many pieces of content grew together. Two is a run by definition — one
+            // source is a Single, which is what the rung means, and `treepo-gen` refuses a
+            // `run_from` below two.
+            //
+            // Nine for a platform: a structure standing for nine or more files has stopped
+            // being a countable pile whatever it weighs.
+            run_from: 2,
+            cluster_from: 4,
+            platform_from: 9,
+        ),
+
+        // Per-kind placement. `anchor` is where the kind sits by default, per mille from base
+        // to tip; `spread` is the full width of the band vintage may move it within, so a
+        // spread of 400 reaches 200 either side of the anchor; `present_at` is the weight
+        // below which nothing of the kind is built at all.
+        //
+        // Position is the anchor offset by the *age of the content the structure stands for*,
+        // read off the same gradient `F-MAT-4` shades the limb with — so a shelf of old
+        // documentation is drawn on old wood. Where a source has no vintage (a single-commit
+        // node, or no history at all) the anchor is the whole answer.
+        kinds: (
+            // §8.7: "small pixel bookshelves or archive platforms built into or hanging from
+            // the limb". Mid-limb and generously spread, because documentation is the kind
+            // whose vintage is most worth reading — a project's oldest docs and its newest sit
+            // in visibly different places, which is the ageing of the writing made visible.
+            //
+            // `present_at: 20` — about four percent of an ordinary limb's content. Low, because
+            // a shelf is a discrete object a viewer can see and count, where a four-percent
+            // material vein (`blend_floor: 80`, above) would be invisible. The two numbers
+            // answer different perceptual questions and are not expected to agree.
+            bookshelf: (anchor: 520, spread: 620, present_at: 20),
+
+            // §8.7: "stockpiles, crates, or resource nodes **near the base** of the relevant
+            // limb". The one positional statement the design makes about enrichment, so this
+            // row is transcribed rather than chosen — and the spread is kept narrow so the
+            // whole band stays basal rather than only the anchor.
+            stockpile: (anchor: 140, spread: 220, present_at: 20),
+
+            // §8.7: "distinct secondary growth, hanging markers, or small 'proving ground'
+            // platforms". Distal, because secondary growth happens where a thing is growing.
+            //
+            // `present_at: 60`, higher than the two byte-driven kinds: `test_like_ratio` is a
+            // proportion of *files* whose names read as tests, which is a fuzzier measurement
+            // than a byte count and deserves a firmer floor before it builds anything.
+            proving_ground: (anchor: 700, spread: 420, present_at: 60),
+
+            // §8.7: "elevated particle systems, more restless workers, or temporary 'work
+            // sites'". Furthest out, and that is not decoration — `F-MAT-4` puts recent
+            // material tip-ward, so the work site sits on the material that is actually new.
+            //
+            // `present_at: 250`, the firmest floor of the four, and the one most likely to
+            // need moving. Churn is the only signal here that is about *activity* rather than
+            // about content, so it is the one a quiet week or a busy one can swing — and a
+            // repository where every limb had scaffolding on it would be saying nothing at all.
+            // Together with `churn_full_scale_lines` above, this is the pair to reach for if a
+            // tree looks like a construction yard or like a ruin.
+            work_site: (anchor: 800, spread: 300, present_at: 250),
+        ),
     ),
 )
