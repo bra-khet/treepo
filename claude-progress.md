@@ -1874,35 +1874,141 @@ Local gate green: fmt, clippy `-D warnings` (workspace, all targets), 492 tests,
 (advisories/bans/licences/sources ok), readonly-audit (18 fixtures, 17 extracted, 0 writes,
 detector 4/4), determinism reproducible over 3 runs.
 
+### S11 — materials, second slice: the walk (2026-07-29)
+
+`materialize(manifest, skeleton, table) -> MaterialMap`. S10 built the families and the
+arithmetic and had no caller for either; this is the caller. `MaterialMap` in `treepo-model`
+(the collection and its canonical digest), the walk and its role resolution in `treepo-gen`,
+and a corpus-wide `material/*` digest beside every `skeleton/*` line.
+
+#### A node's mixture is not always one record's, and getting it wrong is invisible
+
+Every role produces *a* material. The wrong one still renders, still hashes, still passes a
+"covers" check — so the resolution table is the part of this slice worth reading twice:
+
+| Role | Mixture from | Bytes from |
+|---|---|---|
+| `Limb` | its own record | its own record |
+| `Group` | its **members'** records | its members' records |
+| `Aggregate` | its **members'** records | `AggregateNode::bytes` |
+| `RootMass` | the repository root | the repository root |
+
+**`Group` is the trap.** Its `anchor` is the *parent* of the paths it gathered, and that parent
+generally has other children the stem does not carry. Reading the mixture off the anchor
+describes a directory that is not what the group holds — and since `F2` groups *small*
+siblings, the anchor is dominated by exactly the large entries that were not grouped. The
+difference is largest precisely where the group matters most.
+`a_group_is_made_of_its_members_not_of_its_anchor` asserts the two disagree on the fixture
+before asserting the walk picked the right one, so it cannot pass under the bug.
+
+`Aggregate` takes its bytes from its own field rather than from the sum of its members,
+because that field is already "bytes across everything beneath the members, inclusive" and is
+what `F-SKEL-7` means by *proportional*.
+
+#### The rollup that turned out not to be one
+
+The worry going in was that a container would need a subtree traversal per node to learn what
+it holds. It does not: `treepo-vcs::lang::roll_up_content` already sums `category_bytes` from
+children into parents, so **a directory's mixture is already its whole subtree's**. Summing
+the member records is the complete answer rather than an approximation of one, which keeps the
+walk at `O(nodes × members × log paths)` instead of a traversal per container.
+
+Bytes are accumulated across members *before* the division rather than the members'
+proportions being averaged. A group of one large and one tiny member is made of the large one;
+averaging proportions would give the tiny member equal say in what the stem is made of.
+
+#### The fixture was going to make every assertion vacuous
+
+`compose::tests::manifest_of` — the shared skeleton fixture — sets `size.bytes` and never set
+`category_bytes`. Against it every directory has an empty mixture, every node comes out
+`Stone`, and every material assertion passes for the wrong reason. That is the third vacuous
+test caught this phase, and the first one caught *before* it was written rather than after.
+
+The fixture now assigns a category by extension and rolls `category_bytes` up exactly as
+`roll_up_content` does. That is worth more than a material-only fixture would have been: the
+walk depends on real manifests having rolled-up mixtures, so the test fixture now has the
+property under test rather than merely enough shape to exercise the code.
+
+#### `MaterialMap` owns the encoding, so there is one of it
+
+S10 left a private `hash_material` in the xtask. It is gone: `MaterialMap::digest` is the
+canonical encoding, beside `Skeleton::digest` and for the reason that one is documented with —
+"there must be *one* of it", because the gate and the report are two chances to disagree about
+what changed. The synthetic probe now builds a small map and hashes it, which is why the
+`material` probe moved from `fc22bc3b…` to `0e131c61…`: **the encoding changed, not a
+material.** Tag `treepo-material-v1`.
+
+`covers(skeleton)` is the pairing invariant and holds by construction — the walk visits nodes
+in the order the skeleton stores them and `push` returns the id it assigned, the same guarantee
+`Skeleton::push_node` gives. A map one entry short would not fail loudly on its own; it would
+fail as a node rendering with whatever the renderer does for `None`, several crates away.
+
+#### Four identical skeletons, four different materials — and that is the point
+
+`detached-head`, `shallow`, `no-remote` and `multi-remote` have printed one shared skeleton
+digest since Phase 3, and the harness module doc explained it as "they hold the same files".
+**That explanation was wrong**, and the new material lines are what exposed it: all four
+digests differ.
+
+They hold the same *structure* but not the same bytes — `tools/corpus` seeds generated line
+widths from the fixture's name, so the one `src/main.rs` runs to 1322, 1251, 883 and 2565
+bytes. The skeleton cannot see that: its size driver is `relative_bytes`, and a lone file is
+all of its parent whatever it weighs. `F-MAT-3`'s budget is measured against an **absolute**
+scale, deliberately, and so the material layer separates repositories the geometry cannot.
+
+Four identical skeleton digests beside four distinct material digests is the absolute-scale
+decision becoming visible, not a disagreement between the two stages. The module doc now says
+so, with the measured byte counts in it.
+
+```
+material      0e131c61eaa2ccc45acec0a6a9e1f3eae952caaecfd607879e34eb256a871f2d
+overall       af75adeb795510e6aeef37c5e8bdebec8b92b887af832961e42ef0bd16f71097
+```
+
+**All eighteen `skeleton/*` lines are byte-identical** to S10's; the seventeen new
+`material/*` lines and the re-encoded `material` probe are the whole difference. Node counts
+run 4 (`empty`) to 37 (`skel1-clean`). `AC-DET-2` proper still needs the CI run.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), 512 tests, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages), `cargo deny`, readonly-audit (18 fixtures,
+0 writes, detector 4/4), determinism reproducible over 3 runs.
+
 ---
 
 ## Next
 
-**Phase 4, continued — the material walk, then `F-MAT-2`.** The first slice (S10) built the
-families and the arithmetic; what it has no caller for is a walk over the skeleton.
+**Phase 4, continued — `F-MAT-2`, the ownership mosaic.** S10 built the families and the
+arithmetic, S11 gave every node a material. What no node carries yet is *who wrote it*.
 
-The next slice is **`materialize(manifest, skeleton, table) -> MaterialMap`** — one pass over
-`Skeleton::nodes()`, each node's `role.anchor()` looked up in the manifest, `material_of`
-called with the role. Three things fall out of it and nothing else can start until it exists:
+`Normalize::allocate` already answers **how many cells** each contributor holds, with the
+`AC-MAT-2` quota and the `N4` discipline in place and tested. What is missing is **which cell
+is where** — arrangement rather than allocation — and a `mosaic` field on `Material` to hold
+it. The walk is the natural place to compute it: `resolve` already gathers a node's records,
+and ownership comes off the same records the mixture does.
 
-1. **`AC-MAT-2` on the real T2 fixture**, which is a Phase 4 end condition and is currently
-   held only by unit tests over synthetic shares. The 2% contributor has to keep presence on
-   an actual repository.
-2. **A corpus-wide `material/*` digest** beside the `skeleton/*` lines, which is the half of
-   `AC-DET-1` the synthetic `material` probe does not reach.
-3. **`F-MAT-2`'s mosaic** — arrangement rather than allocation. `Normalize::allocate` already
-   answers *how many cells each contributor holds*; what is missing is which cell is where,
-   and that wants a skeleton to lay cells out on.
+Three things to settle in that slice, in the order they bite:
 
-Note the aggregate case has a wrinkle worth expecting: an `AggregateNode` carries its own
-`bytes`, but its *category mix* has to be rolled up from the paths beneath its `members`,
-which the manifest holds and the aggregate does not. `material_of` already takes `bytes`
-separately for this reason; the rollup itself is the walk's job.
+1. **What a cell *is*.** Allocation is unitless today. A mosaic on a limb needs a geometry —
+   bands along the limb's length, patches across its width, or segment-indexed runs. This is
+   the decision that shapes the visual and it wants an opinion, not a default.
+2. **`AC-MAT-2` on a real fixture**, which is a Phase 4 end condition. It is currently held by
+   unit tests over synthetic shares; `many-authors` is the corpus fixture that should carry it.
+   Note the harness runs under a *fixed* seed, so ownership there is real extraction output.
+3. **`Composition` versus the mosaic.** Ownership is accent *over* the primary material
+   (`F-MAT-2`), so the mosaic is a fourth field on `Material` rather than a fourth arm of
+   `Composition` — worth stating before someone tries the latter, because a limb that is
+   "made of Heartwood and owned by three people" is two facts and not one.
+
+Then **`F-MAT-4`** (age/recency gradient, `design/feature-system.md` §8.3) and **`F-MAT-5`**
+(enrichment placement, which reads `Composition::Subordinate` — a container of mostly
+`Parchment` becomes a bookshelf, mostly `Ore` a stockpile; that arm was built for this).
+`F-MAT-6`'s stress materials are `P2` and the designated cut.
 
 Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
 an ordered contributor collection or a share as a figure"** — enforced at the type level
 already (`AuthorShare` implements neither `Ord` nor `PartialOrd`, with `compile_fail`
 doctests) and still needing a test that says so at the crate level rather than the type's.
+Worth doing alongside `F-MAT-2`, since the mosaic is the first thing that could break it.
 
 **`blend_floor` is the one material number set by argument rather than by looking.** 80 per
 mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until

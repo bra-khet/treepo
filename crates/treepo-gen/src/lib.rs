@@ -15,6 +15,17 @@
 //! material — versioned independently, so that tuning a silhouette cannot invalidate a
 //! material and vice versa.
 //!
+//! The two entry points pair up, and a caller wanting a tree calls both:
+//!
+//! ```ignore
+//! let skeleton  = treepo_gen::grow(&manifest, &Table::built_in());
+//! let materials = treepo_gen::materialize(&manifest, &skeleton, &MaterialTable::built_in());
+//! ```
+//!
+//! [`materialize`] visits nodes in the order [`grow`] created them, so the resulting
+//! [`MaterialMap`](treepo_model::MaterialMap) is indexed by the same
+//! [`NodeId`](treepo_model::NodeId) — `covers` is the invariant, and it holds by construction.
+//!
 //! # `F-SKEL-1`: the skeleton is a pure function
 //!
 //! `(subtree primitives, path seed, parameter table) → oriented, thickened segments`.
@@ -63,4 +74,4 @@ pub use trunk::grow;
 // Renamed on the way out, not in its own module. Two parameter tables now exist and
 // `crate::Table` has meant the skeleton's since Phase 3; a second bare `Table` at the root
 // would make every import site ambiguous to a reader even where it compiles.
-pub use material::{MaterialError, Table as MaterialTable};
+pub use material::{MaterialError, Table as MaterialTable, materialize};

@@ -41,9 +41,10 @@ use alloc::string::String;
 use core::fmt;
 use serde::Deserialize;
 use treepo_det::Fx;
-use treepo_model::material::{Composition, FamilyMix, Material, MaterialFamily};
-use treepo_model::primitives::size::{ContentCategory, SizePrimitives};
+use treepo_model::material::{Composition, FamilyMix, Material, MaterialFamily, MaterialMap};
+use treepo_model::primitives::size::SizePrimitives;
 use treepo_model::segment::NodeRole;
+use treepo_model::{Manifest, RepoPath, Skeleton};
 
 /// The compiled-in table. Same reasoning as [`params`](crate::params): this crate is `no_std`
 /// and could not open a file if it wanted to, and a compiled-in copy guarantees a usable
@@ -148,7 +149,16 @@ impl Table {
     /// the container's, not one member's.
     #[must_use]
     pub fn material_of(&self, size: &SizePrimitives, bytes: u64, role: &NodeRole) -> Material {
-        let mix = self.mix_of(size);
+        self.material_from(self.mix_of(size), bytes, role)
+    }
+
+    /// The material for one node whose mixture has already been gathered.
+    ///
+    /// What [`material_of`](Self::material_of) is in terms of, and what [`materialize`] calls
+    /// for a [`Group`](NodeRole::Group) or an [`Aggregate`](NodeRole::Aggregate) — where the
+    /// mixture is a sum over several records and no single [`SizePrimitives`] describes it.
+    #[must_use]
+    pub fn material_from(&self, mix: FamilyMix, bytes: u64, role: &NodeRole) -> Material {
         let family = dominant(&mix);
 
         let composition = match role {
@@ -174,15 +184,7 @@ impl Table {
     /// Every family's share of a node's bytes.
     #[must_use]
     pub fn mix_of(&self, size: &SizePrimitives) -> FamilyMix {
-        let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
-        for category in ContentCategory::ALL {
-            let slot = MaterialFamily::of_category(category).position();
-            // `+=` rather than `=`: Asset and Binary are two categories and one family, so
-            // the slot has to accumulate or the second would overwrite the first and half of
-            // every mixed-binary directory would vanish.
-            shares[slot] = shares[slot].add(size.category_ratio(category));
-        }
-        FamilyMix::new(shares)
+        mix_over(core::iter::once(size))
     }
 
     /// The runner-up as a vein, where there is enough of it to see.
@@ -207,6 +209,122 @@ impl Table {
             None => Composition::Pure,
         }
     }
+}
+
+/// Gives every node of a skeleton a material — `F-MAT-1` and `F-MAT-3` over a whole tree.
+///
+/// The counterpart to [`grow`](crate::grow): that produces geometry, this produces what the
+/// geometry is made of, and the two are paired by [`NodeId`](treepo_model::NodeId) because the
+/// walk visits nodes in the order the skeleton stores them. [`MaterialMap::covers`] is the
+/// invariant, and it holds by construction here rather than by care.
+///
+/// # A node's mixture is not always one record's
+///
+/// Each [`NodeRole`] names its content differently, and getting this wrong is invisible —
+/// every variant produces *a* material, just the wrong one.
+///
+/// | Role | Mixture from | Bytes from |
+/// |---|---|---|
+/// | [`Limb`](NodeRole::Limb) | its own record | its own record |
+/// | [`Group`](NodeRole::Group) | its members' records | its members' records |
+/// | [`Aggregate`](NodeRole::Aggregate) | its members' records | [`AggregateNode::bytes`](treepo_model::AggregateNode::bytes) |
+/// | [`RootMass`](NodeRole::RootMass) | the repository root | the repository root |
+///
+/// A [`Group`](NodeRole::Group) is the one worth stating plainly: its `anchor` is the *parent*
+/// of the paths it gathered, and that parent generally has other children which are not in
+/// this group. Reading the mixture off the anchor would describe a directory the stem does not
+/// carry. `F2` groups small siblings, so the difference is largest exactly where the group
+/// matters most.
+///
+/// An [`Aggregate`](NodeRole::Aggregate) takes its bytes from its own field rather than from
+/// the sum, because that field is already "bytes across everything beneath the members,
+/// inclusive" and is what `F-SKEL-7` means by *proportional*.
+///
+/// # Why summing member records is not a deep walk
+///
+/// `treepo-vcs`'s extraction rolls `category_bytes` from children into parents, so a
+/// directory's mixture is already its whole subtree's. Summing the member records is therefore
+/// the complete answer, not an approximation of one — which is what keeps this `O(nodes ×
+/// members × log paths)` instead of a traversal per container.
+///
+/// # A node whose path is not in the manifest
+///
+/// Contributes nothing, and a node with no resolvable content becomes
+/// [`Stone`](MaterialFamily::Stone) at the representation floor. That is a defect rather than
+/// an expected case — every role's paths come from the manifest the skeleton was composed
+/// from — but the honest degradation is better than a panic in the generative path, and
+/// `Stone` already means "treepo knows nothing about this". `every_node_of_every_fixture_resolves`
+/// is what would notice.
+#[must_use]
+pub fn materialize(manifest: &Manifest, skeleton: &Skeleton, table: &Table) -> MaterialMap {
+    let mut map = MaterialMap::new();
+    for node in skeleton.nodes() {
+        let (mix, bytes) = resolve(manifest, &node.role);
+        map.push(table.material_from(mix, bytes, &node.role));
+    }
+    map
+}
+
+/// What one node is made of and how big it is — see [`materialize`] for the table.
+fn resolve(manifest: &Manifest, role: &NodeRole) -> (FamilyMix, u64) {
+    match role {
+        NodeRole::Limb { path } => single(manifest, path),
+        // The repository root, so every node of the cluster reads as the repository it stands
+        // for. `RootMass::anchor` is the root by construction, but going through the same
+        // lookup keeps one code path rather than a special case that could drift.
+        NodeRole::RootMass { anchor, .. } => single(manifest, anchor),
+        NodeRole::Group { members, .. } => {
+            let sizes = members.iter().filter_map(|path| manifest.path(path));
+            let bytes = sizes.clone().fold(0u64, |total, record| {
+                total.saturating_add(record.size.bytes)
+            });
+            (mix_over(sizes.map(|record| &record.size)), bytes)
+        }
+        NodeRole::Aggregate(aggregate) => {
+            let sizes = aggregate
+                .members
+                .iter()
+                .filter_map(|path| manifest.path(path))
+                .map(|record| &record.size);
+            (mix_over(sizes), aggregate.bytes)
+        }
+    }
+}
+
+/// One path's mixture and byte total, or nothing at all where the manifest has no record.
+fn single(manifest: &Manifest, path: &RepoPath) -> (FamilyMix, u64) {
+    manifest.path(path).map_or_else(
+        || (FamilyMix::default(), 0),
+        |record| (mix_over(core::iter::once(&record.size)), record.size.bytes),
+    )
+}
+
+/// Every family's share across a set of size primitives.
+///
+/// Bytes are accumulated first and divided once, rather than each record's proportions being
+/// averaged: a group of one large and one tiny member is mostly the large one, and averaging
+/// proportions would give the tiny member equal say in what the stem is made of.
+fn mix_over<'a>(sizes: impl Iterator<Item = &'a SizePrimitives>) -> FamilyMix {
+    let mut bytes = [0u64; MaterialFamily::ALL.len()];
+    for size in sizes {
+        for (&category, &count) in &size.category_bytes {
+            // Accumulated rather than assigned: `Asset` and `Binary` are two categories and
+            // one family, so a slot that overwrote would lose half of every mixed directory.
+            let slot = MaterialFamily::of_category(category).position();
+            bytes[slot] = bytes[slot].saturating_add(count);
+        }
+    }
+
+    let total = bytes.iter().fold(0u64, |sum, &n| sum.saturating_add(n));
+    if total == 0 {
+        return FamilyMix::default();
+    }
+
+    let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
+    for (share, count) in shares.iter_mut().zip(bytes) {
+        *share = Fx::from_ratio(count as i64, total as i64);
+    }
+    FamilyMix::new(shares)
 }
 
 /// The largest family in a mix, in [`MaterialFamily::ALL`] order on a tie.
@@ -278,7 +396,7 @@ mod tests {
     use super::*;
     use alloc::vec;
     use treepo_model::AggregateNode;
-    use treepo_model::path::RepoPath;
+    use treepo_model::primitives::size::ContentCategory;
 
     fn path(text: &str) -> RepoPath {
         RepoPath::new(text.as_bytes()).unwrap()
@@ -518,6 +636,223 @@ mod tests {
         .validate()
         .expect_err("should have been refused");
         assert!(matches!(error, MaterialError::Normalize(_)));
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The walk
+    // ---------------------------------------------------------------------------------
+
+    use crate::lsystem::compose::tests::manifest_of;
+
+    /// A repository with enough shape to produce every node role: many small top-level
+    /// entries so `F2` groups some, and a deep wide subtree so composition aggregates.
+    fn shaped_repository() -> treepo_model::Manifest {
+        let mut files: alloc::vec::Vec<(alloc::string::String, u64)> = alloc::vec::Vec::new();
+        for i in 0..12 {
+            files.push((alloc::format!("tiny{i}/mod.rs"), 40));
+        }
+        files.push((alloc::string::String::from("src/main.rs"), 20_000));
+        files.push((alloc::string::String::from("src/lib.rs"), 15_000));
+        for i in 0..40 {
+            files.push((alloc::format!("src/deep/a/b/c/f{i}.rs"), 700));
+        }
+        files.push((alloc::string::String::from("docs/guide.md"), 30_000));
+        files.push((alloc::string::String::from("assets/logo.png"), 90_000));
+        files.push((alloc::string::String::from("Cargo.toml"), 900));
+
+        let borrowed: alloc::vec::Vec<(&str, u64)> =
+            files.iter().map(|(p, b)| (p.as_str(), *b)).collect();
+        manifest_of(&borrowed)
+    }
+
+    /// `MaterialMap::covers` is the pairing invariant, and it must hold for every fixture
+    /// shape rather than for a convenient one.
+    #[test]
+    fn every_node_gets_a_material() {
+        let table = Table::built_in();
+        let skeleton = crate::grow(&shaped_repository(), &crate::Table::built_in());
+        let materials = materialize(&shaped_repository(), &skeleton, &table);
+
+        assert!(materials.covers(&skeleton));
+        assert!(
+            materials.len() > 1,
+            "the fixture should produce a real tree"
+        );
+        for (id, material) in materials.iter() {
+            assert!(
+                material.budget > Fx::ZERO,
+                "node {id:?} was drawn with no pixels — P7"
+            );
+        }
+    }
+
+    /// Every role's paths come from the manifest the skeleton was composed from, so nothing
+    /// should fall through to the `Stone`-at-the-floor path. A fixture where everything
+    /// resolved to `Stone` would make every other assertion here vacuous.
+    #[test]
+    fn every_node_of_the_fixture_resolves_to_real_content() {
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+
+        for node in skeleton.nodes() {
+            let (mix, bytes) = resolve(&manifest, &node.role);
+            assert!(
+                mix.count() > 0 && bytes > 0,
+                "{:?} resolved to nothing — its paths are not in the manifest",
+                node.role
+            );
+        }
+    }
+
+    /// The subtle one. A group's `anchor` is the *parent* of the paths it gathered, and that
+    /// parent has other children the stem does not carry. Reading the mixture off the anchor
+    /// describes a directory that is not what the group holds.
+    #[test]
+    fn a_group_is_made_of_its_members_not_of_its_anchor() {
+        let table = Table::built_in();
+        // Every group here hangs off the root, whose mixture is dominated by the 90 KB image
+        // and the 30 KB of docs. The grouped members are all small `.rs` files.
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let mut groups = 0;
+        for (id, node) in skeleton.nodes().iter().enumerate() {
+            let NodeRole::Group { anchor, .. } = &node.role else {
+                continue;
+            };
+            groups += 1;
+
+            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
+            let from_members = resolve(&manifest, &node.role).0;
+            let from_anchor = table.mix_of(&manifest.path(anchor).unwrap().size);
+
+            assert_eq!(material.family, dominant(&from_members));
+            // The distinction has to be observable, or the test would pass under the bug it
+            // exists to catch. Which paths `F2` gathers is its business, not this test's —
+            // what matters is that the anchor describes something the stem does not carry.
+            assert_ne!(
+                dominant(&from_members),
+                dominant(&from_anchor),
+                "anchor and members agree here, so this fixture cannot tell them apart"
+            );
+        }
+        assert!(groups > 0, "the fixture should produce F2 groups");
+    }
+
+    /// A container's budget comes from its own byte total — already "everything beneath the
+    /// members, inclusive" — while its inventory comes from the member records.
+    #[test]
+    fn a_container_is_budgeted_by_its_own_total_and_stocked_by_its_members() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let mut containers = 0;
+        for (id, node) in skeleton.nodes().iter().enumerate() {
+            let NodeRole::Aggregate(aggregate) = &node.role else {
+                continue;
+            };
+            containers += 1;
+
+            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
+            assert!(
+                material.composition.contents().is_some(),
+                "a container holds rather than is made of"
+            );
+            assert_eq!(
+                material.budget,
+                table.normalize.budget(aggregate.bytes),
+                "the container's budget is its own, not a member's"
+            );
+        }
+        assert!(containers > 0, "the fixture should aggregate something");
+    }
+
+    /// The root cluster stands for the repository, so it is made of the repository.
+    #[test]
+    fn the_root_cluster_is_made_of_the_repository() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let root = manifest.path(&treepo_model::RepoPath::root()).unwrap();
+        let expected = table.material_of(&root.size, root.size.bytes, &limb());
+
+        let mut roots = 0;
+        for (id, node) in skeleton.nodes().iter().enumerate() {
+            if !matches!(node.role, NodeRole::RootMass { .. }) {
+                continue;
+            }
+            roots += 1;
+            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
+            assert_eq!(material.family, expected.family);
+            assert_eq!(material.budget, expected.budget);
+        }
+        assert!(roots > 0, "AC-SKEL-2: every tree has a root cluster");
+    }
+
+    /// Bytes are summed before the division, so a group of one large and one tiny member is
+    /// made of the large one. Averaging the members' proportions instead would give the tiny
+    /// member equal say.
+    #[test]
+    fn a_mixture_is_weighted_by_bytes_not_by_member_count() {
+        let manifest = manifest_of(&[("big/a.rs", 100_000), ("small/b.png", 100)]);
+        let big = &manifest.path(&path("big")).unwrap().size;
+        let small = &manifest.path(&path("small")).unwrap().size;
+
+        let mix = mix_over([big, small].into_iter());
+        assert_eq!(dominant(&mix), MaterialFamily::Heartwood);
+        // A count-weighted average would have made this a half-and-half blend.
+        assert!(mix.share_of(MaterialFamily::Ore) < Fx::from_ratio(1, 100));
+    }
+
+    /// `AC-DET-1`, over a whole tree rather than over sampled inputs.
+    #[test]
+    fn the_same_repository_materializes_the_same_way_twice() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+
+        let first = materialize(&manifest, &skeleton, &table);
+        let again = materialize(&manifest, &skeleton, &table);
+        assert_eq!(first.digest(), again.digest());
+
+        // And a freshly built identical manifest lands in the same place — nothing in the
+        // walk reads a pointer, an allocation address, or an iteration order.
+        let rebuilt = shaped_repository();
+        let regrown = crate::grow(&rebuilt, &crate::Table::built_in());
+        assert_eq!(
+            materialize(&rebuilt, &regrown, &table).digest(),
+            first.digest()
+        );
+    }
+
+    /// PRD §6, "Empty repository": a seed and a root cluster, all of it `Stone` because
+    /// nothing is known — and every node still budgeted above zero.
+    #[test]
+    fn an_empty_repository_still_materializes() {
+        let table = Table::built_in();
+        let mut manifest = treepo_model::Manifest::new(
+            alloc::string::String::from("test"),
+            treepo_det::Seed::root(b"empty"),
+        );
+        manifest.set_paths(vec![treepo_model::PathRecord::new(
+            treepo_model::RepoPath::root(),
+            treepo_model::NodeKind::Directory,
+        )]);
+
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        assert!(materials.covers(&skeleton));
+        assert!(!materials.is_empty(), "AC-SKEL-2: never nothing");
+        for (_, material) in materials.iter() {
+            assert_eq!(material.family, MaterialFamily::Stone);
+            assert_eq!(material.budget, per_mille(table.normalize.floor));
+        }
     }
 
     #[test]

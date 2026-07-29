@@ -483,12 +483,36 @@ pub(crate) mod tests {
     use treepo_det::{Fx, Seed};
     use treepo_model::{NodeKind, Skeleton};
 
+    /// The content category a fixture path is treated as, from its extension.
+    ///
+    /// A miniature of `treepo-vcs::lang`, and deliberately not a call into it: this crate has
+    /// no dependency on the extractor and should not grow one for a test. Anything
+    /// unrecognized is `Unknown`, which is what the real catalogue does too.
+    fn category_of(path: &str) -> treepo_model::primitives::size::ContentCategory {
+        use treepo_model::primitives::size::ContentCategory as C;
+        match path.rsplit('.').next() {
+            Some("rs" | "py" | "ts" | "go") => C::Code,
+            Some("png" | "jpg" | "woff") => C::Asset,
+            Some("toml" | "json" | "yml") => C::Config,
+            Some("md" | "txt") => C::Docs,
+            Some("lock") => C::Generated,
+            Some("bin") => C::Binary,
+            _ => C::Unknown,
+        }
+    }
+
     /// Builds a manifest from a list of `(path, bytes)` files, synthesizing every ancestor
     /// directory and rolling the structural counts up as `treepo-vcs::walk` would.
     ///
     /// Worth the thirty lines: composition reads `child_count`, `descendant_*`,
     /// `max_subtree_depth`, `relative_bytes` and the branching histogram, and a fixture that
     /// left them at their defaults would exercise the code with every driver reading zero.
+    ///
+    /// `category_bytes` is filled and rolled up for the same reason, one phase later.
+    /// `treepo-gen::material` reads a directory's category mixture and relies on extraction
+    /// having summed it from the subtree; a fixture that left it empty would make every
+    /// directory [`Stone`](treepo_model::MaterialFamily::Stone) and every material assertion
+    /// vacuously true.
     pub(crate) fn manifest_of(files: &[(&str, u64)]) -> Manifest {
         let mut records: Vec<PathRecord> = Vec::new();
         let mut seen: Vec<RepoPath> = Vec::new();
@@ -504,6 +528,7 @@ pub(crate) mod tests {
             let path = RepoPath::new(text.as_bytes()).unwrap();
             let mut record = PathRecord::new(path.clone(), NodeKind::File);
             record.size.bytes = *bytes;
+            record.size.category_bytes = core::iter::once((category_of(text), *bytes)).collect();
             seen.push(path.clone());
             records.push(record);
 
@@ -547,6 +572,16 @@ pub(crate) mod tests {
                 })
                 .collect();
 
+            // Categories roll up exactly as `treepo-vcs::lang::roll_up_content` does, so a
+            // directory's mixture is its whole subtree's rather than its immediate files'.
+            // `treepo-gen::material` depends on that being true of real manifests.
+            let categories: Vec<(treepo_model::primitives::size::ContentCategory, u64)> = records
+                .iter()
+                .filter(|record| record.path.parent().as_ref() == Some(&path))
+                .flat_map(|record| record.size.category_bytes.iter())
+                .map(|(&category, &bytes)| (category, bytes))
+                .collect();
+
             let files = records
                 .iter()
                 .filter(|r| r.path.parent().as_ref() == Some(&path) && !r.kind.is_container())
@@ -557,6 +592,9 @@ pub(crate) mod tests {
                 .count();
 
             let record = &mut records[index];
+            for (category, bytes) in categories {
+                *record.size.category_bytes.entry(category).or_insert(0) += bytes;
+            }
             record.size.bytes = children.iter().map(|c| c.0).sum();
             record.structural.child_count = u32::try_from(children.len()).unwrap_or(u32::MAX);
             record.structural.descendant_file_count =

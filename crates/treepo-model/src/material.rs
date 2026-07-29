@@ -44,7 +44,9 @@
 //! contents"; the same collapse here would make a limb of mixed content indistinguishable
 //! from a container of assorted content, which are different pictures of different facts.
 
-use treepo_det::Fx;
+use crate::segment::NodeId;
+use alloc::vec::Vec;
+use treepo_det::{Digest, Fx, Sha256};
 
 /// The primary material of one limb — `F-MAT-1`.
 ///
@@ -281,10 +283,9 @@ impl Composition {
 
 /// What one skeleton node is made of.
 ///
-/// Keyed to a [`NodeId`](crate::segment::NodeId) by whatever holds the collection — the
-/// architecture's `MaterialMap`, which arrives with the phase that has two of these to
-/// compare. One node, one material: the mosaic that lets several contributors share a limb
-/// is an accent *over* this, not a replacement for it (`F-MAT-2`).
+/// Keyed to a [`NodeId`](crate::segment::NodeId) by [`MaterialMap`]. One node, one material:
+/// the mosaic that lets several contributors share a limb is an accent *over* this, not a
+/// replacement for it (`F-MAT-2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Material {
     /// The primary material — `F-MAT-1`.
@@ -303,6 +304,137 @@ pub struct Material {
     /// the floor precisely so that nothing here can carry one.
     pub budget: Fx,
 }
+
+/// Every node's material, indexed by [`NodeId`](crate::segment::NodeId).
+///
+/// A `Vec` rather than a map, for the reason [`Skeleton`](crate::Skeleton) stores its nodes in
+/// one: node ids *are* dense indices into creation order, so a map would pay a comparison per
+/// lookup to reproduce an offset, and the architecture's `WorldSnapshot` holds this alongside
+/// the segments it parallels.
+///
+/// Built by `treepo-gen::material::materialize` and consumed by `treepo-grow` (which diffs
+/// two) and `treepo-render` (which binds them). It is the material half of what
+/// [`Skeleton`](crate::Skeleton) is the geometric half of.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MaterialMap {
+    materials: Vec<Material>,
+}
+
+impl MaterialMap {
+    /// An empty map.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            materials: Vec::new(),
+        }
+    }
+
+    /// Appends the material for the next node, returning the id it was given.
+    ///
+    /// The only way to add one, so an id cannot be made to disagree with the position it
+    /// indexes — the same guarantee [`Skeleton::push_node`](crate::Skeleton::push_node) gives.
+    /// A caller walking a skeleton in node order therefore gets a map whose ids match by
+    /// construction rather than by care.
+    pub fn push(&mut self, material: Material) -> NodeId {
+        let id = NodeId::new(u32::try_from(self.materials.len()).unwrap_or(u32::MAX));
+        self.materials.push(material);
+        id
+    }
+
+    /// One node's material.
+    #[must_use]
+    pub fn get(&self, id: NodeId) -> Option<&Material> {
+        self.materials.get(id.index())
+    }
+
+    /// Every material, in node order.
+    #[must_use]
+    pub fn materials(&self) -> &[Material] {
+        &self.materials
+    }
+
+    /// Every material with the node it belongs to.
+    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &Material)> {
+        self.materials
+            .iter()
+            .enumerate()
+            .map(|(index, material)| (NodeId::new(index as u32), material))
+    }
+
+    /// How many nodes have a material.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.materials.len()
+    }
+
+    /// Whether nothing has a material.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.materials.is_empty()
+    }
+
+    /// Whether this map covers exactly the nodes of a skeleton.
+    ///
+    /// The invariant the pairing rests on, and cheap enough to assert at a phase boundary. A
+    /// map one entry short does not fail loudly on its own — it fails as a node rendering
+    /// with whatever the renderer does for `None`, several crates away from the walk that
+    /// dropped it.
+    #[must_use]
+    pub fn covers(&self, skeleton: &crate::Skeleton) -> bool {
+        self.materials.len() == skeleton.nodes().len()
+    }
+
+    /// The whole map as one number — `AC-DET-1`'s "byte-identical serialized … materials".
+    ///
+    /// > **AC-DET-1** — Two Grow runs on identical repository state produce byte-identical
+    /// > serialized skeletons, **materials**, and enrichment placements.
+    ///
+    /// The criterion names materials beside skeletons, so this is
+    /// [`Skeleton::digest`](crate::Skeleton::digest)'s counterpart and it lives here for the
+    /// same stated reason: there must be *one* encoding. `xtask determinism` gates on it and
+    /// `xtask budget` will report it, and two copies of a hash are two chances for the gate
+    /// and the report to disagree about what changed.
+    ///
+    /// Discriminants precede their payloads and the count precedes everything, so a limb that
+    /// became a container cannot encode to the same bytes as one that did not — the same rule
+    /// [`Skeleton::digest`] follows, and for the same reason.
+    #[must_use]
+    pub fn digest(&self) -> Digest {
+        let mut hasher = Sha256::new();
+        hasher.update(MATERIAL_DIGEST_TAG);
+        hasher.update(&(self.materials.len() as u64).to_le_bytes());
+
+        for material in &self.materials {
+            hasher.update(&[material.family.position() as u8]);
+            hasher.update(&material.budget.to_bits().to_le_bytes());
+            match &material.composition {
+                Composition::Pure => hasher.update(&[0]),
+                Composition::Blended { secondary, weight } => {
+                    hasher.update(&[1]);
+                    hasher.update(&[secondary.position() as u8]);
+                    hasher.update(&weight.to_bits().to_le_bytes());
+                }
+                Composition::Subordinate(mix) => {
+                    hasher.update(&[2]);
+                    // Every slot, present or not: a fixed-width encoding needs no count, and
+                    // the absent families are as much a statement about a container as the
+                    // present ones.
+                    for family in MaterialFamily::ALL {
+                        hasher.update(&mix.share_of(family).to_bits().to_le_bytes());
+                    }
+                }
+            }
+        }
+
+        hasher.finalize()
+    }
+}
+
+/// Namespaces [`MaterialMap::digest`], and dates its encoding.
+///
+/// Bumped whenever the encoding changes, so a digest from an older build cannot be mistaken
+/// for a disagreement about materials. Same discipline as `treepo-skeleton-v2`.
+const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v1";
 
 #[cfg(test)]
 mod tests {
@@ -398,5 +530,127 @@ mod tests {
 
         assert_eq!(Composition::Pure.secondary(), None);
         assert!(Composition::Pure.contents().is_none());
+    }
+
+    fn material(family: MaterialFamily, composition: Composition) -> Material {
+        Material {
+            family,
+            composition,
+            budget: Fx::from_ratio(1, 3),
+        }
+    }
+
+    /// A map with one of each composition, so the digest tests have every arm in them.
+    fn sample() -> MaterialMap {
+        let mut map = MaterialMap::new();
+        map.push(material(MaterialFamily::Heartwood, Composition::Pure));
+        map.push(material(
+            MaterialFamily::Heartwood,
+            Composition::Blended {
+                secondary: MaterialFamily::Ore,
+                weight: Fx::from_ratio(1, 4),
+            },
+        ));
+        let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
+        shares[MaterialFamily::Parchment.position()] = Fx::ONE;
+        map.push(material(
+            MaterialFamily::Parchment,
+            Composition::Subordinate(FamilyMix::new(shares)),
+        ));
+        map
+    }
+
+    #[test]
+    fn ids_index_the_order_materials_were_pushed_in() {
+        let map = sample();
+        assert_eq!(map.len(), 3);
+        assert_eq!(
+            map.get(NodeId::new(1)).unwrap().composition.secondary(),
+            Some(MaterialFamily::Ore)
+        );
+        assert!(map.get(NodeId::new(3)).is_none());
+
+        let ids: alloc::vec::Vec<NodeId> = map.iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, [NodeId::new(0), NodeId::new(1), NodeId::new(2)]);
+    }
+
+    #[test]
+    fn the_same_materials_hash_the_same_way_every_time() {
+        assert_eq!(sample().digest(), sample().digest());
+    }
+
+    /// The three things a material can differ by, each on its own. A digest blind to any of
+    /// them would call two different trees identical (`AC-DET-1`).
+    #[test]
+    fn every_part_of_a_material_reaches_the_digest() {
+        let baseline = sample().digest();
+
+        let mut recoloured = sample();
+        recoloured.materials[0].family = MaterialFamily::Stone;
+        assert_ne!(recoloured.digest(), baseline, "family");
+
+        let mut resized = sample();
+        resized.materials[0].budget = Fx::HALF;
+        assert_ne!(resized.digest(), baseline, "budget");
+
+        let mut reveined = sample();
+        reveined.materials[1].composition = Composition::Blended {
+            secondary: MaterialFamily::Stone,
+            weight: Fx::from_ratio(1, 4),
+        };
+        assert_ne!(reveined.digest(), baseline, "secondary family");
+
+        let mut reweighted = sample();
+        reweighted.materials[1].composition = Composition::Blended {
+            secondary: MaterialFamily::Ore,
+            weight: Fx::from_ratio(1, 5),
+        };
+        assert_ne!(reweighted.digest(), baseline, "blend weight");
+    }
+
+    /// The discriminant-first rule, on the case it exists for: a node that was made of one
+    /// material and now holds it is a different tree, however similar the numbers look.
+    #[test]
+    fn being_and_holding_do_not_collide_in_the_digest() {
+        let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
+        shares[MaterialFamily::Heartwood.position()] = Fx::ONE;
+
+        let mut made_of = MaterialMap::new();
+        made_of.push(material(MaterialFamily::Heartwood, Composition::Pure));
+
+        let mut holds = MaterialMap::new();
+        holds.push(material(
+            MaterialFamily::Heartwood,
+            Composition::Subordinate(FamilyMix::new(shares)),
+        ));
+
+        assert_ne!(made_of.digest(), holds.digest());
+    }
+
+    /// A container that absorbed something else stands for something else, and the tail is
+    /// exactly what `Subordinate` keeps that `Blended` does not.
+    #[test]
+    fn a_containers_whole_inventory_reaches_the_digest() {
+        let baseline = sample().digest();
+        let mut restocked = sample();
+        let Composition::Subordinate(mix) = &mut restocked.materials[2].composition else {
+            panic!("the sample's third material is the container");
+        };
+        let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
+        shares[MaterialFamily::Parchment.position()] = Fx::from_ratio(9, 10);
+        // A tenth of ore that a top-two reading would have dropped entirely.
+        shares[MaterialFamily::Ore.position()] = Fx::from_ratio(1, 10);
+        *mix = FamilyMix::new(shares);
+
+        assert_ne!(restocked.digest(), baseline);
+    }
+
+    #[test]
+    fn an_empty_map_still_hashes_and_covers_an_empty_skeleton() {
+        let empty = MaterialMap::new();
+        assert!(empty.is_empty());
+        assert_eq!(empty.digest(), MaterialMap::new().digest());
+        assert!(empty.covers(&crate::Skeleton::new()));
+        assert!(!sample().covers(&crate::Skeleton::new()));
     }
 }

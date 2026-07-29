@@ -8,15 +8,19 @@
 //! **The probes** hash the layer everything else is built on: every primitive in `treepo-det`,
 //! exercised over a fixed sample, reduced to one digest each. They were the whole of the
 //! harness in Phase 0, when there was no corpus and no skeleton to serialize. Phase 4 added
-//! two more, `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
-//! `AC-DET-2` about a different output and deserves the same evidence rather than an
-//! argument from `treepo-id` being integer-only.
+//! three more — `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
+//! `AC-DET-2` about a different output and deserves the same evidence rather than an argument
+//! from `treepo-id` being integer-only; and `material`, which sweeps `F-MAT-3`'s arithmetic
+//! over magnitudes and exact ties that no real repository reliably contains.
 //!
 //! **The corpus stage** is D2's sentence, arrived at in Phase 3. Every corpus fixture is
-//! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) is reduced to
-//! its digest. This is the stage that can fail for an interesting reason: the probes cover the
+//! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) and
+//! [`MaterialMap`](treepo_model::MaterialMap) are each reduced to a digest —
+//! `AC-DET-1` names skeletons and materials together, so both are re-derived from scratch on
+//! every run rather than the material being computed once over geometry already known to be
+//! stable. This is the stage that can fail for an interesting reason: the probes cover the
 //! arithmetic, and only this covers what the L-system, the composition order, the aggregation
-//! threshold, and the trunk column do *with* that arithmetic.
+//! threshold, the trunk column, and the role-driven material walk do *with* that arithmetic.
 //!
 //! Two properties are checked, and they are not the same property:
 //!
@@ -39,10 +43,20 @@
 //! tests; what is under test here is everything downstream of the seed.
 //!
 //! One consequence is visible in the report and worth expecting: `detached-head`, `shallow`,
-//! `no-remote`, and `multi-remote` hold the same files and differ only in refs and remotes, so
-//! under a fixed seed they grow the same skeleton and print the same digest. That is the
-//! correct answer here. Those four exist to exercise `F-MAN-3`, and it is `tests/identity.rs`
-//! that has to tell them apart.
+//! `no-remote`, and `multi-remote` differ only in refs and remotes, so under a fixed seed they
+//! grow the same skeleton and print the same skeleton digest. That is the correct answer here.
+//! Those four exist to exercise `F-MAN-3`, and it is `tests/identity.rs` that has to tell them
+//! apart.
+//!
+//! **Their material digests are all different, and that is also correct.** The four hold the
+//! same *structure* but not the same bytes — `tools/corpus` seeds generated line widths from
+//! the fixture's name, so the one `src/main.rs` runs to 1322, 1251, 883 and 2565 bytes
+//! respectively. The skeleton cannot see that, because its size driver is `relative_bytes` and
+//! a lone file is all of its parent whatever it weighs. `F-MAT-3`'s budget is measured against
+//! an **absolute** scale, deliberately and for the reasons `treepo-gen::normalize` records, so
+//! the material layer separates repositories the geometry cannot. Four identical skeleton
+//! digests beside four distinct material digests is that decision being visible rather than a
+//! disagreement between the two stages.
 //!
 //! Fixtures that only some platforms can build are excluded for the same reason: a report
 //! listing `symlinks` on two runners and not the third would differ for a reason that is not a
@@ -214,11 +228,12 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
     let root = corpus::default_root();
     let built = corpus::ensure(&root).map_err(|e| format!("building the corpus: {e}"))?;
 
-    println!("\nskeletons — every corpus fixture, grown {runs} times\n");
+    println!("\nskeletons and materials — every corpus fixture, grown {runs} times\n");
     println!("  corpus  {}", root.display());
-    println!("  table   built-in (assets/params/lsystem.ron)\n");
+    println!("  tables  built-in (assets/params/{{lsystem,materials}}.ron)\n");
 
     let table = treepo_gen::Table::built_in();
+    let materials = treepo_gen::MaterialTable::built_in();
 
     for shape in corpus::all_shapes() {
         // Shapes only some platforms can build would make the report differ for a reason that
@@ -233,12 +248,20 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
             ));
         };
 
-        let outcome = match manifest_for(&fixture.path) {
+        let (outcome, material) = match manifest_for(&fixture.path) {
             Ok(manifest) => {
-                let first = treepo_gen::grow(&manifest, &table).digest();
-                // AC-DET-1: the same repository state, grown again, must not move.
+                let skeleton = treepo_gen::grow(&manifest, &table);
+                let first = skeleton.digest();
+                let first_material =
+                    treepo_gen::materialize(&manifest, &skeleton, &materials).digest();
+
+                // AC-DET-1: the same repository state, grown again, must not move — and the
+                // criterion names materials beside skeletons, so both are re-derived from
+                // scratch each run rather than the material being computed once over a
+                // skeleton that is already known to be stable.
                 for repeat in 1..runs {
-                    let again = treepo_gen::grow(&manifest, &table).digest();
+                    let regrown = treepo_gen::grow(&manifest, &table);
+                    let again = regrown.digest();
                     if again != first {
                         return Err(format!(
                             "`{}` does not grow the same skeleton twice\n  \
@@ -248,12 +271,28 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
                             repeat + 1
                         ));
                     }
+                    let again_material =
+                        treepo_gen::materialize(&manifest, &regrown, &materials).digest();
+                    if again_material != first_material {
+                        return Err(format!(
+                            "`{}` grows the same skeleton but not the same materials\n  \
+                             run 1: {first_material}\n  run {}: {again_material}\n\
+                             The geometry is stable and the material pass is not, so the \
+                             ambient read is in `treepo-gen::material` or `::normalize`.",
+                            shape.name,
+                            repeat + 1
+                        ));
+                    }
                 }
-                first.to_string()
+
+                (
+                    first.to_string(),
+                    Some((first_material.to_string(), skeleton.nodes().len())),
+                )
             }
             Err(why) if REFUSED.contains(&shape.name) => {
                 println!("  {:<18} refused — {why}", shape.name);
-                "refused".to_owned()
+                ("refused".to_owned(), None)
             }
             Err(why) => {
                 return Err(format!(
@@ -265,13 +304,24 @@ fn corpus_skeletons(runs: usize, report: &mut String, overall: &mut Sha256) -> R
             }
         };
 
-        if outcome != "refused" {
-            println!("  {:<18} {outcome}", shape.name);
+        if let Some((material, nodes)) = &material {
+            println!("  {:<18} {outcome}  skeleton", shape.name);
+            println!("  {:<18} {material}  material, {nodes} nodes", "");
         }
+
+        // Report and digest in the order they are printed. A reader comparing two platforms'
+        // reports by eye should not have to hold a different order in their head from the one
+        // the terminal showed them.
         writeln!(report, "skeleton/{} {outcome}", shape.name)
             .expect("writing to a String cannot fail");
         overall.update(shape.name.as_bytes());
         overall.update(outcome.as_bytes());
+
+        if let Some((material, _)) = &material {
+            writeln!(report, "material/{} {material}", shape.name)
+                .expect("writing to a String cannot fail");
+            overall.update(material.as_bytes());
+        }
     }
 
     Ok(())
@@ -545,10 +595,14 @@ fn probe_material() -> Digest {
                     ..SizePrimitives::default()
                 };
                 let bytes = 4096 + (i as u64 * 7 + j as u64) * 131;
+                let mut sampled = treepo_model::MaterialMap::new();
                 for role in [&limb, &container] {
-                    let material = table.material_of(&size, bytes, role);
-                    hash_material(&mut hasher, &material);
+                    sampled.push(table.material_of(&size, bytes, role));
                 }
+                // Through the canonical encoding rather than a local one — `MaterialMap` owns
+                // it for the reason `Skeleton` owns its own, and a second copy here would be
+                // a second chance for the gate and the corpus lines below to disagree.
+                hasher.update(sampled.digest().as_bytes());
             }
         }
     }
@@ -563,7 +617,8 @@ fn probe_material() -> Digest {
                 .enumerate()
                 .map(|(i, key)| (key, (i as u64 % 17) + 1))
                 .collect();
-        let ownership = OwnershipPrimitives::from_line_counts(&counts, treepo_det::OrderedMap::new());
+        let ownership =
+            OwnershipPrimitives::from_line_counts(&counts, treepo_det::OrderedMap::new());
 
         for cells in [8u32, 64, 256] {
             let allocation = table.normalize.allocate(&ownership, cells);
@@ -578,27 +633,4 @@ fn probe_material() -> Digest {
     }
 
     hasher.finalize()
-}
-
-/// One material, canonically. Discriminants precede their payloads, as in `Skeleton::digest`,
-/// so a limb that became a container cannot encode to the same bytes.
-fn hash_material(hasher: &mut Sha256, material: &treepo_model::Material) {
-    use treepo_model::material::Composition;
-
-    hasher.update(&[material.family.position() as u8]);
-    hasher.update(&material.budget.to_bits().to_le_bytes());
-    match &material.composition {
-        Composition::Pure => hasher.update(&[0]),
-        Composition::Blended { secondary, weight } => {
-            hasher.update(&[1]);
-            hasher.update(&[secondary.position() as u8]);
-            hasher.update(&weight.to_bits().to_le_bytes());
-        }
-        Composition::Subordinate(mix) => {
-            hasher.update(&[2]);
-            for family in treepo_model::MaterialFamily::ALL {
-                hasher.update(&mix.share_of(family).to_bits().to_le_bytes());
-            }
-        }
-    }
 }
