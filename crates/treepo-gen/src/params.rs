@@ -1319,7 +1319,11 @@ impl fmt::Display for TableError {
 impl core::error::Error for TableError {}
 
 /// A per-mille integer as a ratio.
-fn per_mille(value: i32) -> Fx {
+///
+/// `pub(crate)` because [`PER_MILLE`] is the whole crate's unit convention rather than this
+/// module's — `materials.ron` writes its ratios the same way `lsystem.ron` does, and two
+/// conversions that rounded differently would be two subtly different trees.
+pub(crate) fn per_mille(value: i32) -> Fx {
     Fx::from_ratio(i64::from(value), PER_MILLE)
 }
 

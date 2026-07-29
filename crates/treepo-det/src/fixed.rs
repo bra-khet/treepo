@@ -32,6 +32,14 @@ use core::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAss
 /// Number of fractional bits in [`Fx`].
 pub const FRAC_BITS: u32 = 32;
 
+/// Fractional bits of the Q62 mantissa [`Fx::log2_u64`] squares.
+///
+/// Sixty-two rather than sixty-four so that a mantissa in `[1, 2)` and its square in
+/// `[1, 4)` both fit a `u64`'s worth of magnitude with the squaring done in a `u128`. It is
+/// unrelated to [`FRAC_BITS`] and deliberately larger: the extra bits are headroom against
+/// the truncation compounding over thirty-two iterations.
+const MANTISSA_BITS: u32 = 62;
+
 /// Clamp a 128-bit intermediate back into the representable range.
 const fn sat(v: i128) -> i64 {
     if v > i64::MAX as i128 {
@@ -273,6 +281,70 @@ impl Fx {
         } else {
             Some(Self(((self.0 as u128) << FRAC_BITS).isqrt() as i64))
         }
+    }
+
+    /// Base-2 logarithm of a count, or `None` for zero.
+    ///
+    /// `F-MAT-3` opens with "size normalization is logarithmic", and `#![deny(clippy::
+    /// float_arithmetic)]` puts `f64::log2` out of reach in every crate that would call it.
+    /// This is that logarithm, computed the way [`sqrt`](Self::sqrt) is: integer arithmetic
+    /// only, therefore identical on every platform (`AC-DET-2`).
+    ///
+    /// # Why the argument is a `u64` rather than an `Fx`
+    ///
+    /// What actually gets logged is a byte count, and byte counts outgrow [`Fx`]. Q32.32
+    /// tops out near 2.1 × 10⁹ — a repository with more than two gigabytes of content would
+    /// saturate on the way *in*, and every such repository would then normalize to the same
+    /// budget. A `u64` covers sixteen exabytes and returns a result no larger than 64, which
+    /// is comfortably inside the range. The narrower signature is the one with no failure
+    /// mode.
+    ///
+    /// Zero yields `None` rather than saturating at [`MIN`](Self::MIN). An empty directory
+    /// is an ordinary path, not an extreme one, and a caller that silently took the most
+    /// negative representable number for it would produce a budget nobody could explain.
+    /// `F-MAT-3`'s representation floor is the correct answer and the caller is where it is
+    /// applied.
+    ///
+    /// # How it works
+    ///
+    /// `log2(v) = e + log2(m)` where `v = 2ᵉ · m` and `m ∈ [1, 2)`. The integer part is
+    /// [`u64::ilog2`]; the fraction is read one bit at a time by repeatedly squaring the
+    /// mantissa — `m² ∈ [1, 4)`, and `m² ≥ 2` is exactly the statement that the next bit of
+    /// the fraction is set, after which halving returns the mantissa to `[1, 2)` for the
+    /// following bit. Thirty-two iterations produce thirty-two fractional bits, which is
+    /// every bit `Fx` has.
+    ///
+    /// Truncating rather than rounding, as [`sqrt`](Self::sqrt) does: the result is never
+    /// above the true value, and never more than one ulp below it. The thirty-two
+    /// truncations do not compound the way they might be expected to, because each one is
+    /// applied to a mantissa carrying thirty extra bits and the bit it feeds is worth
+    /// 2⁻ⁱ — `log2_stays_within_its_stated_accuracy` measures the bound rather than
+    /// arguing it.
+    #[must_use]
+    pub const fn log2_u64(value: u64) -> Option<Self> {
+        if value == 0 {
+            return None;
+        }
+
+        let exponent = value.ilog2();
+        // The mantissa in Q62 — `value / 2^exponent`, so exactly `[2^62, 2^63)`. Shifting
+        // left before right keeps every significant bit of a value up to `u64::MAX`, and
+        // `value << 62 < 2^126` stays inside a `u128`.
+        let mut mantissa = ((value as u128) << MANTISSA_BITS) >> exponent;
+
+        let mut fraction: u64 = 0;
+        let mut bit: u64 = 1 << (FRAC_BITS - 1);
+        while bit != 0 {
+            // `mantissa < 2^63`, so the square stays below `2^126` and cannot overflow.
+            mantissa = (mantissa * mantissa) >> MANTISSA_BITS;
+            if mantissa >= 2 << MANTISSA_BITS {
+                mantissa >>= 1;
+                fraction |= bit;
+            }
+            bit >>= 1;
+        }
+
+        Some(Self(((exponent as i64) << FRAC_BITS) | fraction as i64))
     }
 
     /// Linear interpolation: `self` at `t == 0`, `other` at `t == 1`.
@@ -588,6 +660,85 @@ mod tests {
         let two = Fx::from_int(2).sqrt();
         assert!((two.to_bits() - 6_074_001_000).abs() <= 1, "{two}");
         assert_eq!(Fx::NEG_ONE.checked_sqrt(), None);
+    }
+
+    #[test]
+    fn log2_is_exact_on_powers_of_two() {
+        for exponent in 0u32..64 {
+            assert_eq!(
+                Fx::log2_u64(1 << exponent),
+                Some(Fx::from_int(exponent as i32)),
+                "2^{exponent}"
+            );
+        }
+    }
+
+    /// The fraction is what makes the logarithm useful — without it every byte count between
+    /// two powers of two would normalize to the same budget (`F-MAT-3`).
+    ///
+    /// Measured against `f64::log2` rather than against hand-computed constants, because the
+    /// interesting property is the *bound* and a handful of constants cannot establish one.
+    /// The reference is only ever the thing being compared to; nothing computed here reaches
+    /// a generated value, which is the line architecture D2 draws.
+    #[test]
+    #[allow(clippy::float_arithmetic, clippy::float_cmp)]
+    fn log2_stays_within_its_stated_accuracy() {
+        let mut worst = 0i64;
+        let mut worst_at = 0u64;
+
+        // Powers of two, their neighbours, and a spread across the whole magnitude range —
+        // byte counts from one byte to sixteen exabytes.
+        let mut values: alloc::vec::Vec<u64> = (1..4_000).collect();
+        for exponent in 0..64u32 {
+            let power = 1u64 << exponent;
+            values.extend([power, power.saturating_add(1), power.saturating_sub(1)]);
+            values.push(power.saturating_add(power / 3));
+        }
+
+        for value in values.into_iter().filter(|&v| v > 0) {
+            let got = Fx::log2_u64(value).unwrap().to_bits();
+            let want = ((value as f64).log2() * 4_294_967_296.0) as i64;
+            let error = got - want;
+            // Truncating, so it may sit below the true value but never above it.
+            assert!(error <= 1, "log2({value}) overshot by {error}");
+            if (-error) > worst {
+                worst = -error;
+                worst_at = value;
+            }
+        }
+
+        // The bound the doc comment states: one ulp of Q32.32, which is as close as the
+        // `f64` reference can even be asked about. A regression here means the mantissa lost
+        // headroom, not that a platform disagreed — that half is `cargo xtask determinism`.
+        assert!(
+            worst <= 1,
+            "worst deviation {worst} ulps, at log2({worst_at})"
+        );
+    }
+
+    /// Truncating, never overshooting: a budget derived from this must not exceed the one a
+    /// real logarithm would give, or the soft clamp above it is reasoning about a value that
+    /// cannot occur.
+    #[test]
+    fn log2_never_overshoots_and_never_decreases() {
+        let mut previous = Fx::MIN;
+        for value in 1u64..2_000 {
+            let got = Fx::log2_u64(value).unwrap();
+            assert!(got >= previous, "log2({value}) went backwards");
+            previous = got;
+            // Truncated, so it sits in [floor(log2 v), floor(log2 v) + 1).
+            assert!(
+                got.floor() == i64::from(value.ilog2()),
+                "log2({value}) = {got}"
+            );
+        }
+    }
+
+    /// An empty path is an ordinary path. `F-MAT-3`'s floor is the answer, and it is applied
+    /// by the caller rather than guessed at here.
+    #[test]
+    fn log2_of_nothing_is_absent_not_saturated() {
+        assert_eq!(Fx::log2_u64(0), None);
     }
 
     #[test]

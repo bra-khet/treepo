@@ -1716,20 +1716,198 @@ Local gate green: fmt, clippy `-D warnings`, 464 tests, dep-guard (6 crates clea
 `cargo deny`, readonly-audit (18 fixtures, 0 writes), determinism unchanged at `7bd8896f…` —
 correct, since nothing in the generative path moved.
 
+### S10 — materials, first slice: families and the normalization (2026-07-29)
+
+`F-MAT-1` and `F-MAT-3`. `treepo-model::material` (the handoff types), `treepo-gen::material`
+and `treepo-gen::normalize` (the generation), `assets/params/materials.ron` (the table), and
+one new determinism primitive. `F-MAT-2`'s mosaic arrangement, `F-MAT-4`'s gradient and
+`F-MAT-5`/`F-MAT-6` are later slices.
+
+#### The prerequisite nobody had written down: there was no logarithm
+
+`F-MAT-3` opens with "size normalization is **logarithmic**", and
+`#![deny(clippy::float_arithmetic)]` puts `f64::log2` out of reach in every crate that would
+call it. Phase 0 built `sqrt` and a trig table and stopped there. So `Fx::log2_u64` landed
+first, beside `sqrt` and for the same reasons.
+
+It takes a `u64` rather than an `Fx`, and that is the decision worth recording. Q32.32 tops
+out near 2.1 × 10⁹ — a repository above two gigabytes would saturate on the way *in*, and
+every such repository would then normalize to the same budget. The narrower signature is the
+one with no failure mode.
+
+The algorithm is `log2(v) = e + log2(m)`: `u64::ilog2` for the integer part, then the
+mantissa squared thirty-two times, one fraction bit per squaring. Accuracy is **one ulp of
+Q32.32**, measured against `f64::log2` over a sweep rather than asserted — the first draft of
+that test asserted hand-computed constants, they were wrong by 28 ulps, and the
+implementation was blamed for it before the arithmetic was checked. The test now measures a
+bound instead of pinning five numbers, which is the property that actually matters.
+
+The `fixed` probe is byte-identical at `ced4738c…` afterwards, which is the evidence that
+adding a method perturbed nothing.
+
+#### The family question was escalated, and the answer improved the design
+
+**Decided: dominant category sets the family, the runner-up veins it — with a distinction
+between *secondary* and *subordinate* that the codebase turned out to be already drawing.**
+
+Three readings were on the table. A threshold ladder ("asset-heavy claims the limb at 35%")
+is closest to `F-MAT-1`'s literal wording and produces a worse picture: a directory that is
+55% source and 45% images would be drawn as though it held no source, when the honest answer
+— that it is both — was available. Winner-takes-all is simplest and makes a 51/49 directory
+read as pure, flipping family on one commit, which `F-GROW-8` would then play as a full
+material-family transformation for a trivial change.
+
+Blending won, and it disposes of the tie problem for free.
+`SizePrimitives::dominant_language` returns `None` on an exact tie precisely because breaking
+one "would flip on the next commit" — but a family cannot return `None`, since every limb
+needs a material. Under blending the flip is invisible: at an exact tie the weight is 1.0, so
+swapping which family is primary and which is the vein produces very nearly the same limb.
+Declaration order breaks the tie and nothing rests on it.
+
+**The secondary/subordinate distinction is the part that was not in any of the three
+options.** A limb whose bytes are part code and part image *is* a mixture. An `F-SKEL-7`
+container standing for a directory it does not draw *holds* materials without being made of
+them — the variety inside it is inventory, not surface. Those are different pictures of
+different facts.
+
+The distinction did not need a new flag, because `NodeRole` has drawn exactly this line since
+Phase 3: `Group` (several paths, each still drawn) against `Aggregate` (several paths, and
+this node *is* their representation), with a table in `segment.rs` explaining that collapsing
+them would make `F2`'s "fewer, thicker limbs" indistinguishable from "this directory and all
+its contents". `Composition` is that same line at the material layer, and the role selects
+which arm applies. A container of pure documentation is still holding rather than being.
+
+One consequence falls out that is worth expecting: `Blended` keeps the largest two families
+and `Subordinate` keeps the whole mix. Three interleaved materials on one limb read as mud;
+an inventory that dropped its tail would be answering `F-INSP-3` with a summary of itself.
+Nothing is destroyed either way — the full category breakdown stays in the `SizePrimitives`
+it came from, which is what `F-INSP-5`'s why-panel reads.
+
+#### `F-MAT-3` is one requirement and two mechanisms
+
+`Normalize::budget` normalizes a *path*; `Normalize::allocate` normalizes *contributors*.
+They are in one module because `F-MAT-3` states them in one sentence and both exist to stop a
+large thing erasing a small one.
+
+The budget is log → soft clamp → floor, in that order, and the order is load-bearing:
+clamping before flooring means the clamp shapes the top of the range without ever being able
+to push something below the floor. The clamp reuses the piecewise-linear shape
+`TrunkParams::support` already applies to carried limb width — the same problem twice, and two
+differently-shaped clamps would be two opinions about what "too big" means.
+
+`validate` refuses a knee/beyond pairing that would let *any* `u64` byte count reach a full
+budget. Without that check the `min(ONE)` in `budget` becomes a real ceiling and the largest
+paths all draw identically, which is the same failure `support_beyond == 0` is refused for,
+arriving by arithmetic instead of by configuration.
+
+**`AuthorShare::allocate` finally has a caller**, and its documentation turned out to be a
+specification: "rounds down, so `F-MAT-3`'s minimum quota is applied on top by the caller —
+a 2% contributor keeping visible presence (`AC-MAT-2`) is a material-policy decision, not an
+arithmetic one." `Normalize::allocate` is that policy.
+
+Two tiers. At or above `significant_ppm` a contributor gets their proportional share **or**
+the quota, whichever is larger; below it they get their share, which may round to zero. The
+table is refused above 2%, because `AC-MAT-2` names two percent and a table is not permitted
+to tune its way out of an acceptance criterion.
+
+The total may exceed the cells offered, and **that is the answer rather than a failure**.
+Capping the guarantee breaks `AC-MAT-2`; dropping contributors to fit requires choosing
+*which*, which is the ordering of people `N4` forbids. So the mosaic subdivides further. It
+cannot run away: at most `1_000_000 / significant_ppm` contributors can be significant — a
+hundred at one percent — so the overshoot is bounded by that count times the quota,
+independently of how many people touched the path. PRD §6's thousand-author repository is
+held to that bound by test rather than by hope.
+
+Cells left over are **not** redistributed. `F-MAT-2` makes ownership "accent, vein, and mosaic
+treatment **over** the primary material", so an unclaimed cell already has something to be.
+Handing the remainder to the largest holder would be both a ranking and a small lie about who
+wrote what.
+
+#### What the tests caught, and what caught the tests
+
+Three normalize tests failed on first run, all fixture bugs rather than code bugs, and one
+root cause: `AuthorKey::from_email` case-folds (`F-EXT-9` — one human with `Foo@` and `foo@`
+is one contributor), so `index.to_le_bytes()` collides wherever a byte lands on `A`–`Z`
+against `a`–`z`. Exactly 3 collisions in `0..100` and 104 in `0..1000`, which is why a
+thousand-author fixture produced 896 contributors. Fixtures now build decimal emails; digits
+do not case-fold. **A fixture that quietly produces fewer contributors than it asks for reads
+as an allocator that dropped people**, which is a bad afternoon to have later.
+
+The fourth failure was a vacuity guard doing its job. `holders_iterate_in_key_order_not_by_size`
+asserts key order, which proves nothing if key order happens to equal size order — so it
+computes the size order and asserts the two differ. On the original fixture (1/998/1 of a
+thousand lines) only *one* contributor survived allocation, and a one-element list is trivially
+both orders. Rewritten over eight contributors with eight distinct shares: two orderings of
+three items coincide once in six, which is a flaky test; once in forty thousand is not.
+
+#### `AC-DET-1` names materials, so the harness has a `material` probe
+
+> Two Grow runs on identical repository state produce byte-identical serialized skeletons,
+> **materials**, and enrichment placements.
+
+Synthetic mixtures rather than the corpus, in the same spirit as the `pseudonym` and
+`author-color` probes: what it covers is arithmetic, and sampled inputs exercise the extreme
+magnitudes and the exact ties no real repository reliably contains. Budgets sweep every power
+of two from one byte to sixteen exabytes; every ordered pair of categories is sampled at a tie
+and either side of one; both node roles, because the role selects blended against subordinate
+and a platform disagreeing about one would not necessarily disagree about the other.
+
+`Fx::log2_u64` is why the probe earns its place — the newest primitive in the generative path
+and the only one computing a transcendental without the trig table. If `RISK-2` had a second
+home this would be it.
+
+The corpus-wide material digest joins the `skeleton/*` lines when a walk over the skeleton
+exists to produce one. That walk is the next slice.
+
+```
+material      fc22bc3bca161458671dea777a3e5e326be676d7bc05944df42ecb4e76f1b6ca
+overall       2c83c2bdda407e540ef4b8b3acfced6147bd959a6b3372fdcb3a20bab800142a
+```
+
+`overall` moved from `7bd8896f…`; **all seven prior probes and all eighteen `skeleton/*`
+lines are byte-identical**, and the one new probe line is the whole difference. As at S8 and
+Phase 0, one machine proves only the within-platform half — `AC-DET-2` proper needs the CI
+run on this commit.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), 492 tests, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages — no new dependencies), `cargo deny`
+(advisories/bans/licences/sources ok), readonly-audit (18 fixtures, 17 extracted, 0 writes,
+detector 4/4), determinism reproducible over 3 runs.
+
 ---
 
 ## Next
 
-**Phase 4, continued — materials (`F-MAT-1`…`F-MAT-6`) in `treepo-gen`.** That is where the
-rest of Phase 4's end conditions live: `AC-MAT-2`'s 2%-share contributor keeping visible
-mosaic presence on the T2 fixture, and `AC-MAT-3`'s "no `treepo-model` type exposes an
-ordered contributor collection or a share as a figure" — which `treepo-model` already
-enforces at the type level and which now needs a test that says so.
+**Phase 4, continued — the material walk, then `F-MAT-2`.** The first slice (S10) built the
+families and the arithmetic; what it has no caller for is a walk over the skeleton.
 
-`material.rs` and `normalize.rs` are the first slice: `F-MAT-1`'s families driven by
-language and content category, and `F-MAT-3`'s log-clamp-floor, which is what makes
-`AC-MAT-2` achievable at all. `AuthorShare::allocate` was built for exactly this and has
-never had a caller.
+The next slice is **`materialize(manifest, skeleton, table) -> MaterialMap`** — one pass over
+`Skeleton::nodes()`, each node's `role.anchor()` looked up in the manifest, `material_of`
+called with the role. Three things fall out of it and nothing else can start until it exists:
+
+1. **`AC-MAT-2` on the real T2 fixture**, which is a Phase 4 end condition and is currently
+   held only by unit tests over synthetic shares. The 2% contributor has to keep presence on
+   an actual repository.
+2. **A corpus-wide `material/*` digest** beside the `skeleton/*` lines, which is the half of
+   `AC-DET-1` the synthetic `material` probe does not reach.
+3. **`F-MAT-2`'s mosaic** — arrangement rather than allocation. `Normalize::allocate` already
+   answers *how many cells each contributor holds*; what is missing is which cell is where,
+   and that wants a skeleton to lay cells out on.
+
+Note the aggregate case has a wrinkle worth expecting: an `AggregateNode` carries its own
+`bytes`, but its *category mix* has to be rolled up from the paths beneath its `members`,
+which the manifest holds and the aggregate does not. `material_of` already takes `bytes`
+separately for this reason; the rollup itself is the walk's job.
+
+Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
+an ordered contributor collection or a share as a figure"** — enforced at the type level
+already (`AuthorShare` implements neither `Ord` nor `PartialOrd`, with `compile_fail`
+doctests) and still needing a test that says so at the crate level rather than the type's.
+
+**`blend_floor` is the one material number set by argument rather than by looking.** 80 per
+mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until
+materials have an appearance, and it is the first thing the silhouette lab should be pointed
+at once they do.
 
 Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 

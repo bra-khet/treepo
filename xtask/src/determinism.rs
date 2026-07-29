@@ -102,6 +102,11 @@ const PROBES: &[Probe] = &[
         what: "palette draw over the same 512 contributors (F-ID-4, AC-ID-2)",
         run: probe_author_color,
     },
+    Probe {
+        name: "material",
+        what: "families, budgets and mosaic quotas over sampled mixtures (F-MAT-1/3, AC-DET-1)",
+        run: probe_material,
+    },
 ];
 
 /// The contributor set the two `AC-ID-2` probes run over.
@@ -475,4 +480,125 @@ fn probe_author_color() -> Digest {
         hasher.update(&lab.b.to_bits().to_le_bytes());
     }
     hasher.finalize()
+}
+
+/// `AC-DET-1`, the half that names materials.
+///
+/// > Two Grow runs on identical repository state produce byte-identical serialized skeletons,
+/// > **materials**, and enrichment placements.
+///
+/// Synthetic mixtures rather than the corpus, in the same spirit as the two probes above:
+/// what this covers is the *arithmetic*, and a probe over sampled inputs exercises the extreme
+/// magnitudes and the tie cases that no real repository reliably contains. The corpus-wide
+/// material digest joins `skeleton/*` when a walk over the skeleton exists to produce one.
+///
+/// `Fx::log2_u64` is the reason this probe earns its place. It is the newest primitive in the
+/// generative path and the only one computing a transcendental function without the trig
+/// table — if `RISK-2` had a second home, this would be it. The budgets below sweep it from
+/// one byte to sixteen exabytes.
+fn probe_material() -> Digest {
+    use treepo_model::primitives::ownership::OwnershipPrimitives;
+    use treepo_model::primitives::size::{ContentCategory, SizePrimitives};
+    use treepo_model::segment::NodeRole;
+
+    let table = treepo_gen::MaterialTable::built_in();
+    let mut hasher = Sha256::new();
+
+    // Every power of two, plus offsets either side, so the sweep lands on the boundaries where
+    // `ilog2` steps and on the mantissa work between them.
+    for exponent in 0..64u32 {
+        let power = 1u64 << exponent;
+        for bytes in [
+            power,
+            power.saturating_add(1),
+            power.saturating_sub(1),
+            power.saturating_add(power / 3),
+        ] {
+            hasher.update(&table.normalize.budget(bytes).to_bits().to_le_bytes());
+        }
+    }
+
+    // Category mixtures, including the exact ties and the single-category cases. Both roles,
+    // because the role is what selects blended against subordinate and a platform that
+    // disagreed about one would not necessarily disagree about the other.
+    let container = NodeRole::Aggregate(treepo_model::AggregateNode {
+        anchor: treepo_model::path::RepoPath::root(),
+        index: 0,
+        members: vec![treepo_model::path::RepoPath::root()],
+        bytes: 4096,
+        file_count: 7,
+        dir_count: 1,
+    });
+    let limb = NodeRole::Limb {
+        path: treepo_model::path::RepoPath::root(),
+    };
+
+    for (i, first) in ContentCategory::ALL.into_iter().enumerate() {
+        for (j, second) in ContentCategory::ALL.into_iter().enumerate() {
+            // 0, 250, 500, 750, 1000 of the first against the rest of the second — so every
+            // ordered pair is sampled at an exact tie and either side of one.
+            for share in [0u64, 250, 500, 750, 1000] {
+                let size = SizePrimitives {
+                    category_bytes: [(first, share), (second, 1000 - share)]
+                        .into_iter()
+                        .collect(),
+                    ..SizePrimitives::default()
+                };
+                let bytes = 4096 + (i as u64 * 7 + j as u64) * 131;
+                for role in [&limb, &container] {
+                    let material = table.material_of(&size, bytes, role);
+                    hash_material(&mut hasher, &material);
+                }
+            }
+        }
+    }
+
+    // `F-MAT-3`'s quota, over contributor counts that straddle the significance threshold:
+    // one holder, a handful, and more than the threshold physically permits.
+    for count in [1u32, 3, 8, 64, 512] {
+        let counts: treepo_det::OrderedMap<treepo_model::identity::AuthorKey, u64> =
+            probe_contributors()
+                .into_iter()
+                .take(count as usize)
+                .enumerate()
+                .map(|(i, key)| (key, (i as u64 % 17) + 1))
+                .collect();
+        let ownership = OwnershipPrimitives::from_line_counts(&counts, treepo_det::OrderedMap::new());
+
+        for cells in [8u32, 64, 256] {
+            let allocation = table.normalize.allocate(&ownership, cells);
+            hasher.update(&(allocation.len() as u64).to_le_bytes());
+            hasher.update(&allocation.total().to_le_bytes());
+            hasher.update(&allocation.unclaimed().to_le_bytes());
+            for (key, held) in allocation.holders() {
+                hasher.update(key.as_bytes());
+                hasher.update(&held.to_le_bytes());
+            }
+        }
+    }
+
+    hasher.finalize()
+}
+
+/// One material, canonically. Discriminants precede their payloads, as in `Skeleton::digest`,
+/// so a limb that became a container cannot encode to the same bytes.
+fn hash_material(hasher: &mut Sha256, material: &treepo_model::Material) {
+    use treepo_model::material::Composition;
+
+    hasher.update(&[material.family.position() as u8]);
+    hasher.update(&material.budget.to_bits().to_le_bytes());
+    match &material.composition {
+        Composition::Pure => hasher.update(&[0]),
+        Composition::Blended { secondary, weight } => {
+            hasher.update(&[1]);
+            hasher.update(&[secondary.position() as u8]);
+            hasher.update(&weight.to_bits().to_le_bytes());
+        }
+        Composition::Subordinate(mix) => {
+            hasher.update(&[2]);
+            for family in treepo_model::MaterialFamily::ALL {
+                hasher.update(&mix.share_of(family).to_bits().to_le_bytes());
+            }
+        }
+    }
 }

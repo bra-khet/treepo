@@ -1,9 +1,19 @@
 //! Turning a [`Manifest`](treepo_model::Manifest) into geometry.
 //!
-//! This is the crate the visual identity lives or dies in. It holds the structural skeleton
-//! — the first of the four generative layers `design/visual-construction.md` defines — and
-//! nothing else: topology, limb geometry, thickness, angles. Material, ownership colour,
-//! enrichment, and everything alive arrive in later layers and later phases.
+//! This is the crate the visual identity lives or dies in. It holds the first two of the four
+//! generative layers `design/visual-construction.md` defines:
+//!
+//! * **the structural skeleton** — topology, limb geometry, thickness, angles.
+//!   [`params`], [`lsystem`], [`trunk`] (`F-SKEL-1`…`F-SKEL-7`).
+//! * **material** — what each limb is made of and how much of the picture it may occupy.
+//!   [`material`], [`normalize`] (`F-MAT-1`, `F-MAT-3`).
+//!
+//! Enrichment placement and everything alive arrive in later layers and later phases.
+//!
+//! Both layers are pure functions of a [`Manifest`](treepo_model::Manifest) and a parameter
+//! table, and there are two tables — [`Table`] for the skeleton and [`MaterialTable`] for
+//! material — versioned independently, so that tuning a silhouette cannot invalidate a
+//! material and vice versa.
 //!
 //! # `F-SKEL-1`: the skeleton is a pure function
 //!
@@ -40,9 +50,17 @@
 extern crate alloc;
 
 pub mod lsystem;
+pub mod material;
+pub mod normalize;
 pub mod params;
 pub mod trunk;
 
 pub use lsystem::compose;
+pub use normalize::{Allocation, Normalize, NormalizeError};
 pub use params::{LimbParams, SkeletonInputs, Table, TableError, TrunkParams};
 pub use trunk::grow;
+
+// Renamed on the way out, not in its own module. Two parameter tables now exist and
+// `crate::Table` has meant the skeleton's since Phase 3; a second bare `Table` at the root
+// would make every import site ambiguous to a reader even where it compiles.
+pub use material::{MaterialError, Table as MaterialTable};

@@ -17,10 +17,12 @@
 //! * [`segment`] — [`Skeleton`], [`SkeletonNode`], and [`Segment`]: the geometry Phase 3
 //!   produces and Phases 5 and 6 consume.
 //! * [`aggregate`] — [`AggregateNode`], `F-SKEL-7`'s proportional container.
+//! * [`material`] — [`Material`] and [`MaterialFamily`]: what Phase 4 makes a limb out of.
 //!
-//! Material, snapshot, and enrichment types (`material.rs`, `snapshot.rs`, `enrichment.rs`
-//! in the architecture's file tree) arrive with the phases that produce them. Defining them
-//! now would be guessing at Phase 4's shape.
+//! Snapshot and enrichment types (`snapshot.rs`, `enrichment.rs` in the architecture's file
+//! tree) arrive with the phases that produce them. Defining them now would be guessing at
+//! their shape — which is what [`material`] stopped being a guess about when Phase 4's first
+//! material slice landed, and it arrived carrying only the fields that slice computes.
 //!
 //! # Three properties this crate is built to hold
 //!
@@ -60,6 +62,7 @@ extern crate alloc;
 pub mod aggregate;
 pub mod identity;
 pub mod manifest;
+pub mod material;
 pub mod path;
 pub mod primitives;
 pub mod segment;
@@ -70,6 +73,7 @@ pub use manifest::{
     AuthorEntry, AuthorTable, FilterOverrides, LanguageId, LanguageTable, Manifest, NodeKind,
     PathRecord, SCHEMA_VERSION,
 };
+pub use material::{Composition, FamilyMix, Material, MaterialFamily};
 pub use path::{PathError, RepoPath};
 pub use primitives::{
     DerivedSignals, FolderSignal, OwnershipPrimitives, SizePrimitives, StructuralPrimitives,

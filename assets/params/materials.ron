@@ -1,0 +1,123 @@
+// The material table — `F-MAT-1`, `F-MAT-3`, `design/feature-system.md` §8.4–§8.5.
+//
+// Read by `treepo-gen::material`. This file decides what a limb is made of and how much of
+// the picture it may occupy. Editing it changes every material treepo draws with no rebuild,
+// for the reason `assets/params/lsystem.ron` is data: §6's tuning loop is "look at the result
+// and adjust one family at a time", and that is only workable if adjusting one costs an edit.
+//
+// # What is *not* in this file, and why
+//
+// Two things a reader might come looking for are deliberately code rather than data.
+//
+// * **Which family a content category reads as.** `Code` is heartwood, `Asset` and `Binary`
+//   are ore, `Generated` is machined, `Docs` is parchment, `Config` is resin, and `Unknown` is
+//   stone. That is a statement of what a measurement *means*, and a meaning does not become a
+//   different sentence because a limb looked wrong. It lives in
+//   `treepo-model::material::MaterialFamily::of_category`, next to the families themselves.
+// * **Whether a mixed node is blended or holds an inventory.** Decided by the node's role: a
+//   limb is made of its mixture, an `F-SKEL-7` container holds one. Also a meaning.
+//
+// What is left is the one genuinely tunable decision — how much of a second material it takes
+// before you can see it — plus the `F-MAT-3` normalization constants. Both are below.
+//
+// # Units: integers, never floats
+//
+// `N3` keeps floats out of anything reaching generated output, so every number here is an
+// integer in a stated unit. Same convention as `lsystem.ron` and `author-palette.ron`.
+//
+// * **per mille** — ratios. `1000` is `1.0`. `450` reads as "0.45"; `450000` does not.
+// * **parts per million** — contribution shares, because that is the unit `AuthorShare`
+//   carries and converting at the boundary would round twice.
+// * **bytes** — absolute, and only for `full_scale_bytes`.
+(
+    version: 1,
+
+    // ---------------------------------------------------------------------------------
+    // F-MAT-1 — the blend threshold
+    // ---------------------------------------------------------------------------------
+
+    // The share of a node's bytes a second family must hold before the limb is visibly two
+    // materials. Below it the limb is pure.
+    //
+    // 80 per mille — eight percent. The number is answering a perceptual question rather
+    // than a statistical one: how much of something else has to be present before drawing it
+    // is information rather than noise. Eight percent of a limb's surface is roughly the point
+    // at which a vein reads as deliberate at medium zoom, which is the band `AC-MAT-4` cares
+    // about for the ownership mosaic and the same physical constraint applies here.
+    //
+    // It is the first thing to retune in the silhouette lab once materials have an appearance,
+    // and it is expected to move. Lower makes every directory faintly mottled; higher makes
+    // mixed directories read as pure and loses the `F-MAT-1` reading that a source folder full
+    // of fixtures is not the same as one without them.
+    //
+    // Refused above 500: the runner-up is by definition no larger than the winner, so a floor
+    // above half could never be cleared and blending would be off while looking configured.
+    blend_floor: 80,
+
+    // ---------------------------------------------------------------------------------
+    // F-MAT-3 — log, soft clamp, floor, and the contributor quota
+    // ---------------------------------------------------------------------------------
+    //
+    // > Size normalization is logarithmic with a soft clamp, a minimum representation floor
+    // > guaranteeing every surviving path a visible pixel budget, and a minimum visible quota
+    // > per significant contributor (`P7`).
+    normalize: (
+        // The byte count that reads as a full budget. Absolute, never the repository's own
+        // maximum — a repository-relative scale would renormalize every limb the moment one
+        // large file appeared, which loses `AC-GROW-4`'s confined Grow and makes `AC-DET-1`'s
+        // stability a coincidence of content. `treepo-gen::params` makes the same argument at
+        // length for the skeleton's `Scales`.
+        //
+        // 64 MiB. Only its order of magnitude matters, because it enters as a logarithm:
+        // doubling it moves every budget by the same small factor rather than reshuffling any
+        // ordering. It is set where a *directory* of that size is unambiguously one of the
+        // largest things in a normal repository, not where a file of that size is.
+        full_scale_bytes: 67108864,
+
+        // `P7`'s maximum soft clamp — "prevents a single enormous file or directory from
+        // consuming the entire visual budget of its parent". Above 0.8 of the scale, only a
+        // tenth of the excess still counts.
+        //
+        // The same piecewise-linear shape `lsystem.ron`'s `support_knee`/`support_beyond`
+        // uses on carried limb width, and the same reason `support_beyond` is not zero: a
+        // hard ceiling makes every large path draw at one size, which is the ordering lost
+        // rather than the picture tidied. `P6` bounds how much of the mass is shown; it does
+        // not permit a bigger thing to stop being bigger.
+        //
+        // `beyond` is also what keeps the budget below a full frame for every byte count a
+        // u64 can hold — `treepo-gen::normalize` refuses a pairing that would let the largest
+        // paths saturate and therefore draw identically.
+        clamp_knee: 800,
+        clamp_beyond: 100,
+
+        // The minimum representation floor. Every path that survives filtering and
+        // aggregation gets at least this much of the picture, and it is not taken from
+        // anyone — `AC-MAT-1`'s three-line file beside a fifty-thousand-line file is not
+        // competing with it.
+        //
+        // 25 per mille of a node's own budget scale. Small enough that a floored path does not
+        // distort its parent, large enough that it survives `F-NAV-1`'s far band, where the
+        // silhouette is all there is.
+        floor: 25,
+
+        // The share at or above which a contributor is guaranteed cells in a limb's mosaic.
+        //
+        // 10,000 ppm — one percent. `AC-MAT-2` names two percent as the case that must keep
+        // visible presence, and this sits below that so the criterion clears the bar rather
+        // than balancing on it. `treepo-gen::normalize` refuses anything above two percent,
+        // because a table is not permitted to tune its way out of an acceptance criterion.
+        //
+        // It is also the bound on PRD §6's thousand-author repository: at most 100
+        // contributors can hold one percent each, so the guaranteed cells are capped at 100
+        // times the quota however many people appear. The quota cannot fragment a limb into
+        // noise because arithmetic will not let it.
+        significant_ppm: 10000,
+
+        // Cells guaranteed to a significant contributor, whatever their share works out to.
+        //
+        // One. `design/feature-system.md` §3.4: "even a single pixel of a contributor's colour
+        // is considered high-value for emotional resonance". Raising it buys legibility at the
+        // cost of proportionality, and that trade wants to be made against a picture.
+        quota_cells: 1,
+    ),
+)
