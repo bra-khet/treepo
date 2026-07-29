@@ -1650,6 +1650,7 @@ dependencies = [
  "ron",
  "serde",
  "treepo-det",
+ "treepo-id",
  "treepo-model",
 ]
 

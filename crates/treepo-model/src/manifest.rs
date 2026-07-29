@@ -164,6 +164,20 @@ pub struct AuthorEntry {
     /// Whether this is the user running treepo (`F-ID-1`).
     ///
     /// The one contributor `N9` permits to be named, and only by their own choice.
+    ///
+    /// # The one field here that depends on who is looking
+    ///
+    /// Every other value in a manifest is a property of the repository. This one is
+    /// resolved from the local `user.email` (`treepo-vcs::self_ident`), so it is a property
+    /// of the *machine*. It reaches no generated value — `treepo-gen` never reads
+    /// [`AuthorTable`], so no skeleton and no determinism digest can move with it — but two
+    /// consequences follow and are worth expecting rather than debugging:
+    ///
+    /// * changing `user.email` and re-extracting produces a different `manifest.bin`. That
+    ///   is correct, and outside `AC-MAN-1`'s "unchanged repository state".
+    /// * a manifest shared through `F-MAN-11` would carry a bit saying "the sender is one of
+    ///   these keys", which against a public repository's author list is enough to name
+    ///   them. **`package.rs` must clear this**, and that is Phase 10's job.
     pub is_self: bool,
 }
 

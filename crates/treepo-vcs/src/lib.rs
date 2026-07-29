@@ -87,6 +87,7 @@ pub mod filter;
 pub mod lang;
 pub mod log_pass;
 pub mod mailmap;
+pub mod self_ident;
 pub mod signals;
 pub mod status;
 pub mod walk;
@@ -99,6 +100,7 @@ pub use lang::{
 };
 pub use log_pass::{History, HistoryError, HistoryOptions, PathHistory, log_pass};
 pub use mailmap::Identities;
+pub use self_ident::{IdentityScope, SelfIdentity, self_identity};
 pub use signals::{SignalDictionary, SignalEntry};
 pub use status::{
     Dirtiness, DirtyPath, DirtyState, Overlay, StatusError, StatusOptions, WorkingTreeStatus,

@@ -40,8 +40,14 @@ serde = { version = "1", features = ["derive"] }
 # Fixture builder for `tests/degenerate.rs`. Dev-only: it shells out to `git`, which the
 # product never does (R1, architecture D3), and building fixtures with a different tool than
 # the one under test is what keeps those tests from being circular.
+#
+# `treepo-id` is dev-only for `tests/privacy.rs`, which is the one place `AC-ID-1` can be
+# tested end to end: it needs extraction *and* the display gate. The dependency points this
+# way round on purpose — `treepo-id` is `no_std` and must never depend on a crate that opens
+# files. `xtask dep-guard` walks `--edges normal,build`, so a dev edge does not touch `N6`.
 [dev-dependencies]
 corpus = { path = "../../tools/corpus" }
+treepo-id = { workspace = true }
 
 [lints]
 workspace = true

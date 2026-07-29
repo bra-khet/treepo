@@ -146,6 +146,8 @@ pub fn extract(
     };
     manifest.reference_time = history.reference_time;
     manifest.is_shallow = matches!(target, Target::Repository(repo) if repo.is_shallow);
+    // `F-ID-1` is already resolved inside the history pass, where the author table is built
+    // — see `self_ident` and `log_pass`. Nothing to do here.
     manifest.authors = history.authors;
     manifest.languages = languages;
     manifest.set_paths(structure.records);

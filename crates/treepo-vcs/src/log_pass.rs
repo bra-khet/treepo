@@ -289,7 +289,10 @@ pub fn log_pass(
         .collect();
 
     let mut table = AuthorTable::new();
-    let self_key = self_author_key(repo, &identities);
+    // `F-ID-1`, resolved once here because this is where the author table is built. The
+    // resolution itself lives in `self_ident` — it used to be a private helper in this
+    // module, which made a named feature invisible to anyone looking for it.
+    let self_key = crate::self_ident::key_for(repo, &identities);
     for (key, mut entry) in authors {
         entry.is_self = Some(key) == self_key;
         table.insert(key, entry);
@@ -545,27 +548,6 @@ fn burstiness(events: &[(i64, u64)]) -> Fx {
     let coefficient = ((scaled_sigma - scaled_mu) * 1_000_000) / (scaled_sigma + scaled_mu);
     let mapped = (coefficient + 1_000_000) / 2;
     Fx::from_ratio(mapped.clamp(0, 1_000_000) as i64, 1_000_000)
-}
-
-/// The key for the user running treepo, from local git config (`F-ID-1`).
-///
-/// `None` when `user.email` is unset, or when the user has never committed here — the common
-/// case, since most repositories a user opens are ones they merely cloned. Every contributor
-/// is then pseudonymous, which `design/feature-system.md` §3.4 calls out as expected rather
-/// than degraded.
-fn self_author_key(repo: &gix::Repository, identities: &Identities) -> Option<AuthorKey> {
-    use gix::bstr::ByteSlice as _;
-    let config = repo.config_snapshot();
-    let configured = config.string("user.email")?;
-    let email = configured.trim();
-    if email.is_empty() {
-        return None;
-    }
-    Some(identities.key(gix::actor::SignatureRef {
-        name: "".into(),
-        email: email.as_bstr(),
-        time: "0 +0000",
-    }))
 }
 
 /// Merges history into the records a [`walk`](crate::walk) produced.

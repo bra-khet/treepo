@@ -1456,9 +1456,11 @@ entered the harness. **Superseded again by Phase 4's identity probes — see bel
 | `crates/treepo-id/src/pseudonym.rs` + `assets/wordlists/pseudonyms.ron` (`F-ID-3`) | **done** — 11 tests |
 | `crates/treepo-id/src/palette.rs` + `assets/palettes/author-palette.ron` (`F-ID-4`, `AC-MAT-4`) | **done** — 10 tests |
 | `pseudonym` / `author-color` probes in `cargo xtask determinism` (`AC-ID-2`) | **done** — local `AC-DET-1`; CI compare pending |
-| `crates/treepo-id/src/{self_ident,policy}.rs` (`F-ID-1`, `F-ID-5`/`6`/`7`, `AC-ID-1`) | next |
-| `crates/treepo-gen/src/{material,normalize,gradient,enrichment,classify}.rs` (`F-MAT-*`) | not started |
-| `tests/privacy.rs` (`AC-ID-1`/`3`/`4`, `AC-MAT-3`) | not started |
+| `crates/treepo-vcs/src/self_ident.rs` (`F-ID-1`) | **done** — moved out of `treepo-id`, see S9 |
+| `crates/treepo-id/src/policy.rs` (`F-ID-5`, `F-ID-7`) | **done** — 8 tests |
+| `crates/treepo-vcs/tests/privacy.rs` (`AC-ID-1`) | **done** — 7 tests |
+| `crates/treepo-gen/src/{material,normalize,gradient,enrichment,classify}.rs` (`F-MAT-*`) | next |
+| `F-ID-6` reveal opt-in in `config.json`; `AC-ID-3`/`AC-ID-4` | Phase 10 (settings), per the campaign |
 
 `treepo-id` is 14 packages, the same `ron` + `serde` as `treepo-gen`, and `no_std` for the
 same reason. `dep-guard` already listed it under Phase 4 and picked it up on sight.
@@ -1585,25 +1587,149 @@ Local gate green: fmt, clippy `-D warnings`, 449 tests, dep-guard (6 crates clea
 `cargo deny` (advisories/bans/licences/sources ok), readonly-audit (18 fixtures, 17
 extracted, 0 writes, detector 4/4).
 
+### S9 — the gate, and where `F-ID-1` lives (2026-07-29)
+
+**The open decision was taken: `treepo-vcs` reads `user.email`, `treepo-id` stays pure, and
+the architecture document was amended rather than the roles bent to fit it.**
+
+`treepo-id` is `no_std` with no I/O, and that is not a portability preference — it is what
+makes the crate *unable* to acquire a repository dependency or a filesystem read on some
+later afternoon. Giving it a `std` feature to open one config file would have traded a
+structural guarantee for a file placement. So the crate that already opens repositories and
+already reads `.mailmap` does this one too, and hands over an `AuthorKey`.
+`.planning/architecture-treepo.md` carries the amendment under the identity feature and in
+the file tree; only the *config read* moved, and the identity policy is entirely in
+`treepo-id::policy`.
+
+#### `F-ID-1` already existed, and that is why it got written twice
+
+Phase 1 resolved the viewer in a private `self_author_key` inside `log_pass.rs` — correct,
+tested through `is_self`, and invisible. A named feature with no file of its own is a
+feature the next person re-implements, and the next person did: a duplicate landed in
+`extract.rs` before the sabotage pass found it. A sabotage that *passes* is the signal —
+removing the new marking changed nothing because the old one was still running.
+
+Consolidated rather than shipped twice: the logic is in `self_ident.rs`, `log_pass` calls
+it, and `extract.rs` carries a comment saying where it happens. Two things improved on the
+way. `user.name` is now read and passed to `.mailmap`, because a mapping may be keyed on the
+full `(name, email)` pair and the old helper passed an empty name — a `Name <canonical>
+<alias>` rule would never have matched the viewer. And `IdentityScope` reports which config
+file won, so a user who cannot work out why treepo does not recognise them can be told where
+to look (`N2`).
+
+`AuthorTable::mark_self` was written for the duplicate and then removed — an uncalled public
+method is API surface with no caller. What survived is its documentation, moved onto
+`AuthorEntry::is_self` where anyone reading the field will see it.
+
+#### `is_self` is the one manifest field that depends on who is looking
+
+Worth recording because it has a consequence nobody would look for. Every other value in a
+manifest is a property of the repository; this one comes from the local git config. It
+reaches no generated value — `treepo-gen` never reads `AuthorTable`, verified by grep, so no
+skeleton and no digest can move with it — but:
+
+* changing `user.email` and re-extracting produces a different `manifest.bin`. Correct, and
+  outside `AC-MAN-1`'s "unchanged repository state".
+* **a manifest shared through `F-MAN-11` would carry a bit saying "the sender is one of
+  these keys"**, which against a public repository's author list is enough to name them.
+  `package.rs` must clear it. That is Phase 10's job and it is now written on the field.
+
+#### The viewer's own name is not carried anywhere, and that is a deliberate tightening
+
+`AC-ID-1` protects contributors "other than the user", so the PRD permits showing the
+viewer's real name. `Identification::Yourself` carries none and renders as `You`, and
+`self_ident` discards `user.name` after the mailmap lookup.
+
+What that buys is real: a rendered tree — and therefore an export, and therefore a
+screenshot someone posts — says "You" where the viewer appears, so publishing one does not
+announce who made it. The viewer already knows their own name, so nothing is lost.
+
+#### How `F-ID-5` is enforced rather than promised
+
+> One setting governs both live view and exports. It is not separable.
+
+Three properties, and only the third is discipline:
+
+1. **`IdentityView::identify` takes no policy argument.** The policy is fixed at
+   construction, so there is no call site at which an exporter could ask for a different
+   answer than the renderer got. "Not separable" is the absence of a parameter.
+2. **A pseudonymous view holds no real names at all.** `RealNames` is stored only by
+   `IdentityView::revealed`; the default constructor leaves the field `None`, so there is
+   nothing in the structure a name could come out of. `AC-ID-1` survives a bug in the
+   display path rather than depending on there being no bug.
+3. **Both consumers must be handed the same view.** Architectural, and it lands with Phase
+   10's settings where the view is built once per repository from `config.json` (`F-ID-6`).
+
+`RealNames`'s `Debug` prints `RealNames(4 withheld)`, for the reason `AuthorShare`'s prints
+a bucket: a debug dump, a log line, or a panic message that happens to include a view must
+not become the disclosure the crate exists to prevent.
+
+**`treepo-model` carries no names, so `RealNames` cannot be read out of a manifest** — it
+has to come from the repository. A stored or shared manifest therefore cannot be
+de-anonymized by toggling a setting; reveal needs the same access that would let someone run
+`git log` anyway.
+
+`Identification` is an enum rather than a string so a consumer can act on the *kind* without
+inspecting a policy — `F-ID-8` and `AC-EXP-2` are the motivating case, where an exporter
+writing file metadata refuses anything that is not `Pseudonymous` with a `match` rather than
+with a flag it has to remember to check.
+
+#### `AC-ID-1`, end to end
+
+The unit tests hold the gate; they prove it is shut, not that nothing routes around it.
+`crates/treepo-vcs/tests/privacy.rs` extracts three real fixtures whose contributors' names
+and addresses are known — sixty of them in `many-authors` — and asserts those strings appear
+nowhere in the manifest's debug output or in any rendered identification. Two layers,
+failing for different reasons: a name in the manifest means extraction smuggled one into a
+string field; a name in the rendering means the gate was bypassed.
+
+`revealing_is_what_makes_the_default_view_worth_asserting` is the guard against the whole
+file being vacuous — if a revealed view produced pseudonyms too, every assertion about the
+default view would prove nothing. Same lesson as S8's vacuous order test, applied before it
+could bite.
+
+The test lives in `treepo-vcs` with `treepo-id` as a **dev**-dependency, because the
+dependency must not point the other way. `dep-guard` walks `--edges normal,build`, so `N6`
+is untouched — and `treepo-vcs` still reports 131 packages, which is the proof.
+
+**`F-ID-7` is tested on a real repository, not a mock.** Every commit in the `mailmap`
+fixture is authored by someone other than the configured identity, which is the shape of
+every repository a user merely clones: the viewer is configured, `self_author()` is `None`,
+and every contributor including them is pseudonymous. Nothing errors, because nothing is
+wrong.
+
+#### What the gate said
+
+Three sabotages, each producing the named failure:
+
+| Sabotage | Caught by |
+|---|---|
+| `is_self` never set in `log_pass` | `a_contributing_viewer_is_marked_in_the_manifest` (`None` vs the key) and `no_rendered_identification_carries_a_contributor_identity` |
+| `IdentityView::revealed` ignores its names | `revealing_is_what_makes_the_default_view_worth_asserting` |
+| Extraction appends the viewer's address to `treepo_version` | `no_manifest_carries_a_contributor_identity`, naming the string |
+
+A fourth was attempted and could not be written: there is no way to make a pseudonymous view
+emit a real name, because it holds none. That the sabotage is hard to author is the property
+`F-ID-5` asked for.
+
+Local gate green: fmt, clippy `-D warnings`, 464 tests, dep-guard (6 crates clean),
+`cargo deny`, readonly-audit (18 fixtures, 0 writes), determinism unchanged at `7bd8896f…` —
+correct, since nothing in the generative path moved.
+
 ---
 
 ## Next
 
-**Phase 4, continued — `self_ident.rs` and `policy.rs`.** `F-ID-1` reads `user.email` from
-git config (repository, then global), `F-ID-5` makes one setting govern live view and
-exports together, and `F-ID-7` makes "you are not a contributor here" the default rather
-than an error. That is what turns `treepo-id` from two functions into the gate `N9` needs,
-and it is what `tests/privacy.rs` and `AC-ID-1` are written against.
+**Phase 4, continued — materials (`F-MAT-1`…`F-MAT-6`) in `treepo-gen`.** That is where the
+rest of Phase 4's end conditions live: `AC-MAT-2`'s 2%-share contributor keeping visible
+mosaic presence on the T2 fixture, and `AC-MAT-3`'s "no `treepo-model` type exposes an
+ordered contributor collection or a share as a figure" — which `treepo-model` already
+enforces at the type level and which now needs a test that says so.
 
-One decision is open and belongs to that sprint rather than this one: **where the git-config
-read lives.** The architecture puts `self_ident.rs` in `treepo-id`, but `treepo-id` is
-`no_std` and has no I/O — so either the crate gains a `std` feature, or `treepo-vcs` reads
-the config and hands an email in. The second keeps `treepo-id` pure and keeps every
-filesystem read in the crate that already advertises them; the first keeps `F-ID-1` in the
-file the architecture names. Worth ten minutes before writing code.
-
-Then materials (`F-MAT-*`) in `treepo-gen`, which is where the rest of Phase 4's end
-conditions live — `AC-MAT-2`'s 2%-share mosaic and `AC-MAT-3`'s no-ordered-collections.
+`material.rs` and `normalize.rs` are the first slice: `F-MAT-1`'s families driven by
+language and content category, and `F-MAT-3`'s log-clamp-floor, which is what makes
+`AC-MAT-2` achievable at all. `AuthorShare::allocate` was built for exactly this and has
+never had a caller.
 
 Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 

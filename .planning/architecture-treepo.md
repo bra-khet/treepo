@@ -127,16 +127,16 @@ treepo/
 │   │       ├── log_pass.rs                 # F-EXT-2 single history traversal
 │   │       ├── blame.rs                    # F-EXT-3 deferred, resumable, sampled
 │   │       ├── mailmap.rs                  # F-EXT-9
+│   │       ├── self_ident.rs               # F-ID-1 — moved here from treepo-id, see below
 │   │       ├── status.rs                   # F-THR-4 dirtiness read
 │   │       └── lang.rs                     # F-EXT-4 language/LOC classification
 │   │
-│   ├── treepo-id/                          # N9 identity policy — no bevy
+│   ├── treepo-id/                          # N9 identity policy — no bevy, no std, no I/O
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── pseudonym.rs                # F-ID-3
 │   │       ├── palette.rs                  # F-ID-4
-│   │       ├── self_ident.rs               # F-ID-1
 │   │       └── policy.rs                   # F-ID-5 — single gate for live view + export
 │   │
 │   ├── treepo-store/                       # app-data persistence — no bevy
@@ -302,9 +302,22 @@ treepo/
 - **Complexity**: medium
 
 ### Feature: Contributor identity policy (`F-ID-1`…`F-ID-8`, `N9`, `N4`)
-- **Files**: `crates/treepo-id/**`
+- **Files**: `crates/treepo-id/**`, `crates/treepo-vcs/src/self_ident.rs` (`F-ID-1` only)
 - **Dependencies**: `treepo-det`, `treepo-model`
 - **Complexity**: low-medium — the difficulty is type discipline, not algorithms
+
+**Amended 2026-07-29 — `F-ID-1` moved to `treepo-vcs`.** The file tree above originally put
+`self_ident.rs` in `treepo-id`. Reading `user.email` means opening a git config, and
+`treepo-id` is `no_std` with no I/O — which is the property that keeps it from quietly
+acquiring a repository dependency or a filesystem read later. Giving it a `std` feature for
+one config file would have traded a structural guarantee for a file placement, so the crate
+that already opens repositories and already reads `.mailmap` does this too and hands
+`treepo-id` an `AuthorKey`.
+
+`treepo-id` is therefore a pure function of a key with no way to reach a repository, which is
+what lets it be the `N9` gate rather than merely the place the gate is written down. The
+identity *policy* — who is pseudonymous, who is revealed, what a viewer sees — stays entirely
+in `treepo-id::policy`; only the config read moved.
 
 ### Feature: Skeleton generation (`F-SKEL-1`…`F-SKEL-7`)
 - **Files**: `crates/treepo-gen/src/{params,lsystem/**,trunk,aggregate}.rs`
@@ -704,9 +717,11 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
 ### Phase 4: Identity policy, materials & enrichment
 - **Goal**: Give the skeleton material, ownership and enrichment — pseudonymous from the first
   commit.
-- **Files**: `crates/treepo-id/**`, `crates/treepo-gen/src/{material,normalize,gradient,
+- **Files**: `crates/treepo-id/**`, `crates/treepo-vcs/src/self_ident.rs` (`F-ID-1` — see the
+  amendment under the feature above), `crates/treepo-gen/src/{material,normalize,gradient,
   enrichment,classify}.rs`, `assets/palettes/**`, `assets/wordlists/pseudonyms.ron`,
-  `assets/params/{materials,enrichment,classify}.ron`, `tests/privacy.rs`
+  `assets/params/{materials,enrichment,classify}.ron`,
+  `crates/treepo-vcs/tests/privacy.rs`
 - **Dependencies**: Phase 3
 - **End Conditions**:
   - [ ] Pseudonyms and author colors are identical across all three platforms (`AC-ID-2`)
