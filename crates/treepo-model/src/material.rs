@@ -1,4 +1,5 @@
-//! What a limb is made of — `F-MAT-1`, `F-MAT-3`, `design/feature-system.md` §8.4–§8.5.
+//! What a limb is made of and who is drawn on it — `F-MAT-1`, `F-MAT-2`, `F-MAT-3`,
+//! `design/feature-system.md` §8.4–§8.5.
 //!
 //! These types live here for the reason [`segment`](crate::segment)'s do: they are a
 //! *handoff*. `treepo-gen` decides them, `treepo-grow` interpolates between two of them
@@ -8,15 +9,23 @@
 //! # This module arrives incomplete, on purpose
 //!
 //! The crate header said material types would "arrive with the phases that produce them",
-//! and Phase 4 produces them in slices. What is here is what the first slice decides:
-//! [`MaterialFamily`], the primary material of `F-MAT-1`; [`Composition`], what the rest of a
-//! node is made of or holds; and [`Material::budget`], the normalized representation of
-//! `F-MAT-3`.
+//! and Phase 4 produces them in slices. What is here is [`MaterialFamily`], the primary
+//! material of `F-MAT-1`; [`Composition`], what the rest of a node is made of or holds;
+//! [`Material::budget`], the normalized representation of `F-MAT-3`; and [`Mosaic`], the
+//! ownership partition of `F-MAT-2`.
 //!
-//! What is deliberately *not* here yet is the ownership mosaic (`F-MAT-2`), the age/recency
-//! gradient (`F-MAT-4`), and the stress signals (`F-MAT-6`). Each is a field on [`Material`]
-//! when the slice that computes it lands. Declaring them now would be the guess the crate
-//! header warned about — a field nothing writes is a field a renderer will read anyway.
+//! What is deliberately *not* here yet is the age/recency gradient (`F-MAT-4`) and the stress
+//! signals (`F-MAT-6`). Each is a field on [`Material`] when the slice that computes it lands.
+//! Declaring them now would be the guess the crate header warned about — a field nothing
+//! writes is a field a renderer will read anyway.
+//!
+//! # Made of, against owned by
+//!
+//! [`Composition`] and [`Mosaic`] are separate fields rather than two arms of one enum,
+//! because a limb that is *made of* heartwood and *owned by* three people is two facts about
+//! it and not one. `F-MAT-2` says so in its own wording — ownership is "accent, vein, and
+//! mosaic treatment **over** the primary material" — and a type that made them alternatives
+//! would have no way to say both.
 //!
 //! # Family is not category
 //!
@@ -44,9 +53,10 @@
 //! contents"; the same collapse here would make a limb of mixed content indistinguishable
 //! from a container of assorted content, which are different pictures of different facts.
 
+use crate::identity::AuthorKey;
 use crate::segment::NodeId;
 use alloc::vec::Vec;
-use treepo_det::{Digest, Fx, Sha256};
+use treepo_det::{Digest, Fx, OrderedMap, Sha256};
 
 /// The primary material of one limb — `F-MAT-1`.
 ///
@@ -281,12 +291,146 @@ impl Composition {
     }
 }
 
-/// What one skeleton node is made of.
+/// Who is drawn on one node, and over how much of it — `F-MAT-2`.
 ///
-/// Keyed to a [`NodeId`](crate::segment::NodeId) by [`MaterialMap`]. One node, one material:
-/// the mosaic that lets several contributors share a limb is an accent *over* this, not a
-/// replacement for it (`F-MAT-2`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// > Ownership drives accent, vein, and mosaic treatment over the primary material —
+/// > proportional partitioning only, never a figure or ranking (`N4`).
+///
+/// # What a cell is
+///
+/// One indivisible unit of a node's surface, and the mosaic is [`cells`](Self::cells) of them
+/// **running base to tip along the limb**. A holder occupies a contiguous run, and the runs
+/// follow [`AuthorKey`] order — so the arrangement is not stored, it *is* [`holders`] read in
+/// sequence, and there is no second structure that could disagree with the first.
+///
+/// The length axis rather than the width, for three reasons that all point the same way. A
+/// limb is long and thin, so a partition across the width turns the 2% contributor of
+/// `AC-MAT-2` into a sliver and loses `AC-MAT-4`'s legibility first. `F-EXT-3`'s blame
+/// segments are line ranges, which are sequential within a file, so when they land they refine
+/// this arrangement instead of replacing its geometry. And `design/feature-system.md` §8.3's
+/// Grow migration moves material *along* a limb — a mosaic on the width axis would be
+/// scrambled by the animation that is meant to carry it.
+///
+/// A cell is not a pixel. How many pixels one covers depends on zoom and on
+/// [`Material::budget`], for the same reason the budget is a proportion rather than a count.
+///
+/// # `N4`, and what this type will not answer
+///
+/// A cell count is a contribution share wearing different units, which
+/// `design/feature-system.md` §3.4 permits explicitly: share "may size a mosaic, allocate
+/// material, or seed an accent". What `N4` forbids is *surfacing* it, and `AC-MAT-3` binds the
+/// UI rather than this arithmetic.
+///
+/// Two properties keep the type itself clean. Iteration is in key order, which is hash order
+/// and carries no information about contribution. And there is no accessor for the largest
+/// holder, the ordering, or the remainder-by-rank — supplying one would put a leaderboard a
+/// call away.
+///
+/// Unlike [`AuthorShare`](crate::primitives::AuthorShare), which closes the route at the type
+/// level by implementing neither [`Ord`] nor [`PartialOrd`], the protection here is the shape
+/// of the API and not something the compiler holds: a cell count is a `u32` and a caller who
+/// collects [`holders`] can sort it. That is accepted rather than overlooked. Cells are a
+/// geometric quantity — a renderer has to count them, compare them to a quota, and lay them
+/// out — and a count that could not be compared would be obstructive to every legitimate use
+/// in order to inconvenience one illegitimate one. The gate that matters sits upstream, where
+/// the shares are: there is no way to reach a ranking without passing through
+/// [`allocate`](../../treepo_gen/normalize/struct.Normalize.html#method.allocate), and by then
+/// the numbers are a drawing instruction. `AC-MAT-3` binds the surface that would display one.
+///
+/// # Unclaimed cells are the normal case
+///
+/// `F-MAT-2` makes ownership an accent *over* the primary material, so a cell no contributor
+/// holds already has something to be: the node's own [`MaterialFamily`]. Handing the remainder
+/// to the largest holder would be both a ranking and a small lie about who wrote what.
+///
+/// [`holders`]: Self::holders
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Mosaic {
+    held: OrderedMap<AuthorKey, u32>,
+    cells: u32,
+    claimed: u32,
+}
+
+impl Mosaic {
+    /// A mosaic from per-contributor cell counts and the cell count the node was sized for.
+    ///
+    /// Contributors holding nothing are dropped rather than recorded as zero, so every key in
+    /// the map is someone who is actually drawn. Recording a zero would make this a
+    /// contributor list rather than a description of a surface, and every caller would have to
+    /// filter it before every use.
+    ///
+    /// The mosaic grows past `budgeted` where the guaranteed quotas of `F-MAT-3` ask for more
+    /// cells than were offered — see
+    /// [`Normalize::allocate`](../../treepo_gen/normalize/struct.Normalize.html#method.allocate)
+    /// for why growing is the answer rather than a failure.
+    #[must_use]
+    pub fn new(mut held: OrderedMap<AuthorKey, u32>, budgeted: u32) -> Self {
+        held.retain(|_, cells| *cells > 0);
+        let claimed = held
+            .values()
+            .fold(0u32, |sum, &cells| sum.saturating_add(cells));
+        Self {
+            cells: budgeted.max(claimed),
+            claimed,
+            held,
+        }
+    }
+
+    /// Every contributor drawn here and how many cells they hold, in key order.
+    pub fn holders(&self) -> impl Iterator<Item = (&AuthorKey, &u32)> {
+        self.held.iter()
+    }
+
+    /// How many cells one contributor holds. Zero if they are not drawn here.
+    #[must_use]
+    pub fn cells_for(&self, author: &AuthorKey) -> u32 {
+        self.held.get(author).copied().unwrap_or(0)
+    }
+
+    /// Whether this contributor appears at all.
+    ///
+    /// The `AC-MAT-2` predicate, and the one a caller should reach for: presence is what `N4`
+    /// permits asking about, magnitude is what it does not.
+    #[must_use]
+    pub fn is_present(&self, author: &AuthorKey) -> bool {
+        self.held.contains_key(author)
+    }
+
+    /// How many contributors are drawn.
+    #[must_use]
+    pub fn holder_count(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Whether nobody is drawn — an unattributed path, which is an ordinary case (PRD §6).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+
+    /// How many cells this node's surface is divided into.
+    #[must_use]
+    pub const fn cells(&self) -> u32 {
+        self.cells
+    }
+
+    /// How many of them contributors hold.
+    #[must_use]
+    pub const fn claimed(&self) -> u32 {
+        self.claimed
+    }
+
+    /// How many the primary material shows through — see the type header.
+    #[must_use]
+    pub const fn unclaimed(&self) -> u32 {
+        self.cells.saturating_sub(self.claimed)
+    }
+}
+
+/// What one skeleton node is made of, and who is drawn on it.
+///
+/// Keyed to a [`NodeId`](crate::segment::NodeId) by [`MaterialMap`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Material {
     /// The primary material — `F-MAT-1`.
     pub family: MaterialFamily,
@@ -303,6 +447,11 @@ pub struct Material {
     /// which is `P7` broken — [`normalize`](../../treepo_gen/normalize/index.html) applies
     /// the floor precisely so that nothing here can carry one.
     pub budget: Fx,
+    /// Who is drawn on it and over how much of it — `F-MAT-2`.
+    ///
+    /// Empty for an unattributed path, which is an ordinary case rather than a gap: a
+    /// repository with no `.git` renders as a whole tree of primary material (PRD §6).
+    pub mosaic: Mosaic,
 }
 
 /// Every node's material, indexed by [`NodeId`](crate::segment::NodeId).
@@ -407,6 +556,18 @@ impl MaterialMap {
         for material in &self.materials {
             hasher.update(&[material.family.position() as u8]);
             hasher.update(&material.budget.to_bits().to_le_bytes());
+
+            // Count first, then the holders in key order — the same rule the roles follow in
+            // `Skeleton::digest`, so a limb that gained a contributor cannot run into one that
+            // merely redistributed its cells.
+            hasher.update(&material.mosaic.cells().to_le_bytes());
+            hasher.update(&material.mosaic.claimed().to_le_bytes());
+            hasher.update(&(material.mosaic.holder_count() as u64).to_le_bytes());
+            for (author, cells) in material.mosaic.holders() {
+                hasher.update(author.as_bytes());
+                hasher.update(&cells.to_le_bytes());
+            }
+
             match &material.composition {
                 Composition::Pure => hasher.update(&[0]),
                 Composition::Blended { secondary, weight } => {
@@ -433,8 +594,9 @@ impl MaterialMap {
 /// Namespaces [`MaterialMap::digest`], and dates its encoding.
 ///
 /// Bumped whenever the encoding changes, so a digest from an older build cannot be mistaken
-/// for a disagreement about materials. Same discipline as `treepo-skeleton-v2`.
-const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v1";
+/// for a disagreement about materials. Same discipline as `treepo-skeleton-v2`. `v1` predated
+/// the ownership mosaic and could not tell two differently-owned limbs apart.
+const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v2";
 
 #[cfg(test)]
 mod tests {
@@ -532,12 +694,83 @@ mod tests {
         assert!(Composition::Pure.contents().is_none());
     }
 
+    fn author(byte: u8) -> AuthorKey {
+        AuthorKey::from_email(&[byte])
+    }
+
+    fn mosaic(held: &[(AuthorKey, u32)], budgeted: u32) -> Mosaic {
+        Mosaic::new(held.iter().copied().collect(), budgeted)
+    }
+
     fn material(family: MaterialFamily, composition: Composition) -> Material {
         Material {
             family,
             composition,
             budget: Fx::from_ratio(1, 3),
+            mosaic: mosaic(&[(author(1), 6), (author(2), 2)], 16),
         }
+    }
+
+    /// The three numbers must agree with the map, or a renderer draws a mosaic whose parts do
+    /// not add up to its whole.
+    #[test]
+    fn a_mosaic_counts_what_it_actually_holds() {
+        let m = mosaic(&[(author(1), 6), (author(2), 2)], 16);
+        assert_eq!(m.holder_count(), 2);
+        assert_eq!(m.claimed(), 8);
+        assert_eq!(m.cells(), 16);
+        assert_eq!(
+            m.unclaimed(),
+            8,
+            "the primary material shows through the rest"
+        );
+        assert_eq!(m.cells_for(&author(1)), 6);
+        assert!(m.is_present(&author(2)));
+        assert!(!m.is_present(&author(9)));
+        assert_eq!(m.cells_for(&author(9)), 0);
+    }
+
+    /// A contributor holding nothing is not drawn, so recording them would make this a
+    /// contributor list rather than a description of a surface.
+    #[test]
+    fn a_contributor_holding_nothing_is_not_in_the_mosaic() {
+        let m = mosaic(&[(author(1), 4), (author(2), 0)], 8);
+        assert_eq!(m.holder_count(), 1);
+        assert!(!m.is_present(&author(2)));
+        assert_eq!(m.claimed(), 4);
+    }
+
+    /// `F-MAT-3`'s guaranteed quotas can ask for more cells than the node was sized for, and
+    /// the mosaic subdivides further rather than dropping anyone — which would require picking
+    /// *which*, and that is the ordering `N4` forbids.
+    #[test]
+    fn a_mosaic_grows_rather_than_losing_someone() {
+        let crowded = mosaic(&[(author(1), 5), (author(2), 5), (author(3), 5)], 8);
+        assert_eq!(crowded.cells(), 15, "sized for 8, and 15 are held");
+        assert_eq!(crowded.unclaimed(), 0);
+        assert_eq!(crowded.holder_count(), 3);
+    }
+
+    /// PRD §6, "No `.git`": an unattributed path is ordinary, and the whole surface is
+    /// primary material.
+    #[test]
+    fn an_unattributed_node_has_an_empty_mosaic() {
+        let bare = mosaic(&[], 16);
+        assert!(bare.is_empty());
+        assert_eq!(bare.claimed(), 0);
+        assert_eq!(bare.unclaimed(), 16);
+        assert!(Mosaic::default().is_empty());
+    }
+
+    /// `N4`: holders come out in key order, which is hash order and uncorrelated with what
+    /// anyone holds, so consuming this in sequence cannot produce a ranking.
+    #[test]
+    fn holders_come_out_in_key_order() {
+        let m = mosaic(&[(author(3), 1), (author(1), 9), (author(2), 4)], 16);
+        let iterated: alloc::vec::Vec<AuthorKey> = m.holders().map(|(&key, _)| key).collect();
+        let mut by_key = iterated.clone();
+        by_key.sort();
+        assert_eq!(iterated, by_key);
     }
 
     /// A map with one of each composition, so the digest tests have every arm in them.
@@ -606,6 +839,45 @@ mod tests {
             weight: Fx::from_ratio(1, 5),
         };
         assert_ne!(reweighted.digest(), baseline, "blend weight");
+    }
+
+    /// `F-MAT-2` in `AC-DET-1`: a limb whose contributors changed is a different tree, and
+    /// every way that can happen has to reach the digest.
+    #[test]
+    fn every_part_of_a_mosaic_reaches_the_digest() {
+        let baseline = sample().digest();
+
+        let mut rehoused = sample();
+        rehoused.materials[0].mosaic = mosaic(&[(author(1), 6), (author(3), 2)], 16);
+        assert_ne!(rehoused.digest(), baseline, "a different contributor");
+
+        let mut redistributed = sample();
+        redistributed.materials[0].mosaic = mosaic(&[(author(1), 5), (author(2), 3)], 16);
+        assert_ne!(redistributed.digest(), baseline, "the same two, shifted");
+
+        let mut resized = sample();
+        resized.materials[0].mosaic = mosaic(&[(author(1), 6), (author(2), 2)], 32);
+        assert_ne!(resized.digest(), baseline, "a finer subdivision");
+
+        let mut vacated = sample();
+        vacated.materials[0].mosaic = mosaic(&[], 16);
+        assert_ne!(vacated.digest(), baseline, "nobody at all");
+    }
+
+    /// The count-first rule, on the case it exists for. Both mosaics claim eight cells of
+    /// sixteen; a length-blind encoding would run the holders together and call them equal.
+    #[test]
+    fn a_gained_contributor_does_not_collide_with_a_redistribution() {
+        let two = material(MaterialFamily::Heartwood, Composition::Pure);
+        let mut three = two.clone();
+        three.mosaic = mosaic(&[(author(1), 4), (author(2), 2), (author(3), 2)], 16);
+
+        let mut first = MaterialMap::new();
+        first.push(two);
+        let mut second = MaterialMap::new();
+        second.push(three);
+
+        assert_ne!(first.digest(), second.digest());
     }
 
     /// The discriminant-first rule, on the case it exists for: a node that was made of one

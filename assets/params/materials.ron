@@ -1,4 +1,4 @@
-// The material table — `F-MAT-1`, `F-MAT-3`, `design/feature-system.md` §8.4–§8.5.
+// The material table — `F-MAT-1`, `F-MAT-2`, `F-MAT-3`, `design/feature-system.md` §8.4–§8.5.
 //
 // Read by `treepo-gen::material`. This file decides what a limb is made of and how much of
 // the picture it may occupy. Editing it changes every material treepo draws with no rebuild,
@@ -16,9 +16,14 @@
 //   `treepo-model::material::MaterialFamily::of_category`, next to the families themselves.
 // * **Whether a mixed node is blended or holds an inventory.** Decided by the node's role: a
 //   limb is made of its mixture, an `F-SKEL-7` container holds one. Also a meaning.
+// * **How the mosaic's cells are arranged.** Contiguous runs in key order, along the limb's
+//   length. That is a statement about what a cell *is*, and it lives on
+//   `treepo-model::material::Mosaic` with the reasoning. What is tunable is how many of them
+//   there are, which is below.
 //
-// What is left is the one genuinely tunable decision — how much of a second material it takes
-// before you can see it — plus the `F-MAT-3` normalization constants. Both are below.
+// What is left is the one genuinely tunable material decision — how much of a second material
+// it takes before you can see it — plus the `F-MAT-3` normalization constants and the mosaic's
+// granularity. All of them are below.
 //
 // # Units: integers, never floats
 //
@@ -119,5 +124,26 @@
         // is considered high-value for emotional resonance". Raising it buys legibility at the
         // cost of proportionality, and that trade wants to be made against a picture.
         quota_cells: 1,
+
+        // How finely a node's surface subdivides, from a floored budget to a full one. A cell
+        // is a unit of the limb's length, base to tip — see `treepo-model::material::Mosaic`
+        // for why the length axis and not the width.
+        //
+        // 8 to 64, linear in the budget between them, so a cell covers about the same area
+        // wherever it appears. That is what keeps `AC-MAT-4`'s "distinguishable at medium zoom"
+        // a property of the palette rather than of how big the limb happened to be.
+        //
+        // Eight at the coarse end because a small node divided finely produces cells nobody can
+        // see (`P6` — legibility bounds detail). The eight is the count at a *zero* budget,
+        // which nothing carries — the floor above is 25 per mille, so the smallest real node
+        // comes out at nine. Sixty-four at the fine end because it is where a 2% contributor
+        // earns a cell on the arithmetic alone, so the guaranteed quota above is a floor under
+        // the small case rather than the mechanism the whole criterion rests on.
+        //
+        // Both are set by argument rather than by looking, like `blend_floor`, and for the
+        // same reason: a mosaic has no appearance yet. They are the second thing to point the
+        // silhouette lab at once it does.
+        mosaic_min_cells: 8,
+        mosaic_max_cells: 64,
     ),
 )

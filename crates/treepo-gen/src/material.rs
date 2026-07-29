@@ -1,4 +1,5 @@
-//! `F-MAT-1` — what a limb is made of, and the table that decides it.
+//! `F-MAT-1` and `F-MAT-2` — what a limb is made of, who is drawn on it, and the table that
+//! decides both.
 //!
 //! > Primary material family is driven by language, binary-vs-text, and asset class. Binary
 //! > and asset-heavy regions render as resource-like material rather than living wood.
@@ -34,17 +35,32 @@
 //! Which reading applies is chosen by the node's [`NodeRole`], not by its content. A limb or a
 //! group *is* its mixture; an [`Aggregate`](NodeRole::Aggregate) *holds* one. See
 //! [`treepo_model::material`] for why that distinction is worth a type.
+//!
+//! # And who wrote it — `F-MAT-2`
+//!
+//! [`materialize`] gathers a node's contributors from the same records it gathers the mixture
+//! from, and hands them to
+//! [`Normalize::mosaic`](crate::normalize::Normalize::mosaic). Ownership is an accent *over*
+//! the primary material rather than a competing reading of it, so it is a separate field on
+//! [`Material`] and none of the family arithmetic above changes because someone committed.
+//!
+//! The gathering has one trap the mixture does not. A share is a proportion of *one record's
+//! own* attributed lines, so several records' shares cannot simply be added — see
+//! [`ownership_over`].
 
 use crate::normalize::{Normalize, NormalizeError};
 use crate::params::per_mille;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
 use serde::Deserialize;
-use treepo_det::Fx;
+use treepo_det::{Fx, OrderedMap};
+use treepo_model::identity::AuthorKey;
 use treepo_model::material::{Composition, FamilyMix, Material, MaterialFamily, MaterialMap};
+use treepo_model::primitives::ownership::OwnershipPrimitives;
 use treepo_model::primitives::size::SizePrimitives;
 use treepo_model::segment::NodeRole;
-use treepo_model::{Manifest, RepoPath, Skeleton};
+use treepo_model::{Manifest, PathRecord, RepoPath, Skeleton};
 
 /// The compiled-in table. Same reasoning as [`params`](crate::params): this crate is `no_std`
 /// and could not open a file if it wanted to, and a compiled-in copy guarantees a usable
@@ -58,13 +74,14 @@ const BUILT_IN_RON: &str = include_str!("../../../assets/params/materials.ron");
 /// version separately, and an edit to one must not invalidate the others.
 pub const TABLE_VERSION: u32 = 1;
 
-/// The material table — `F-MAT-1` and `F-MAT-3` as data.
+/// The material table — `F-MAT-1`, `F-MAT-2` and `F-MAT-3` as data.
 ///
 /// Small on purpose. `design/l-system-parameterization.md` §6's one-family-at-a-time tuning
 /// loop needs knobs that a person can hold in their head, and the material rule has exactly
 /// one real decision in it — how much of a second family it takes before a limb is visibly
 /// two materials. Everything else is either a measurement or a meaning, and neither of those
-/// is tunable.
+/// is tunable. The mosaic's granularity is in the [`normalize`](crate::normalize) section
+/// beside the quota it interacts with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Table {
@@ -80,7 +97,8 @@ pub struct Table {
     /// It does not apply to a container's [`Subordinate`](Composition::Subordinate) inventory,
     /// which keeps everything: a shelf listing what is on it does not round its contents away.
     pub blend_floor: i32,
-    /// `F-MAT-3` — log, soft clamp, floor, and the contributor quota.
+    /// `F-MAT-3` — log, soft clamp, floor, the contributor quota, and how finely a node's
+    /// surface subdivides into mosaic cells.
     pub normalize: Normalize,
 }
 
@@ -139,8 +157,8 @@ impl Table {
 
     /// The material for one node.
     ///
-    /// `size` is the node's own size primitives; `role` decides whether the mixture inside it
-    /// is read as what the node is made of or as what it holds.
+    /// `size` and `ownership` are the node's own primitives; `role` decides whether the
+    /// mixture inside it is read as what the node is made of or as what it holds.
     ///
     /// `bytes` is passed separately rather than taken from `size`, because an
     /// [`Aggregate`](NodeRole::Aggregate) knows its own byte total
@@ -148,8 +166,14 @@ impl Table {
     /// several paths whose primitives have been rolled up — and `F-MAT-3`'s budget must be
     /// the container's, not one member's.
     #[must_use]
-    pub fn material_of(&self, size: &SizePrimitives, bytes: u64, role: &NodeRole) -> Material {
-        self.material_from(self.mix_of(size), bytes, role)
+    pub fn material_of(
+        &self,
+        size: &SizePrimitives,
+        bytes: u64,
+        ownership: &OwnershipPrimitives,
+        role: &NodeRole,
+    ) -> Material {
+        self.material_from(self.mix_of(size), bytes, ownership, role)
     }
 
     /// The material for one node whose mixture has already been gathered.
@@ -158,7 +182,13 @@ impl Table {
     /// for a [`Group`](NodeRole::Group) or an [`Aggregate`](NodeRole::Aggregate) — where the
     /// mixture is a sum over several records and no single [`SizePrimitives`] describes it.
     #[must_use]
-    pub fn material_from(&self, mix: FamilyMix, bytes: u64, role: &NodeRole) -> Material {
+    pub fn material_from(
+        &self,
+        mix: FamilyMix,
+        bytes: u64,
+        ownership: &OwnershipPrimitives,
+        role: &NodeRole,
+    ) -> Material {
         let family = dominant(&mix);
 
         let composition = match role {
@@ -174,10 +204,15 @@ impl Table {
             }
         };
 
+        // The budget first, because it is what decides how finely the surface subdivides —
+        // `F-MAT-2` is an accent *over* a node the size normalization has already settled.
+        let budget = self.normalize.budget(bytes);
+
         Material {
             family,
             composition,
-            budget: self.normalize.budget(bytes),
+            budget,
+            mosaic: self.normalize.mosaic(ownership, budget),
         }
     }
 
@@ -223,7 +258,7 @@ impl Table {
 /// Each [`NodeRole`] names its content differently, and getting this wrong is invisible —
 /// every variant produces *a* material, just the wrong one.
 ///
-/// | Role | Mixture from | Bytes from |
+/// | Role | Mixture and contributors from | Bytes from |
 /// |---|---|---|
 /// | [`Limb`](NodeRole::Limb) | its own record | its own record |
 /// | [`Group`](NodeRole::Group) | its members' records | its members' records |
@@ -233,8 +268,9 @@ impl Table {
 /// A [`Group`](NodeRole::Group) is the one worth stating plainly: its `anchor` is the *parent*
 /// of the paths it gathered, and that parent generally has other children which are not in
 /// this group. Reading the mixture off the anchor would describe a directory the stem does not
-/// carry. `F2` groups small siblings, so the difference is largest exactly where the group
-/// matters most.
+/// carry, and reading the *ownership* off it would draw people who wrote none of what the stem
+/// carries — which is the same bug with a person's colour on it. `F2` groups small siblings,
+/// so the difference is largest exactly where the group matters most.
 ///
 /// An [`Aggregate`](NodeRole::Aggregate) takes its bytes from its own field rather than from
 /// the sum, because that field is already "bytes across everything beneath the members,
@@ -242,31 +278,60 @@ impl Table {
 ///
 /// # Why summing member records is not a deep walk
 ///
-/// `treepo-vcs`'s extraction rolls `category_bytes` from children into parents, so a
-/// directory's mixture is already its whole subtree's. Summing the member records is therefore
-/// the complete answer, not an approximation of one — which is what keeps this `O(nodes ×
-/// members × log paths)` instead of a traversal per container.
+/// `treepo-vcs`'s extraction rolls both `category_bytes` and per-author line counts from
+/// children into parents — the log pass credits "every ancestor" of every touched path — so a
+/// directory's mixture and its contributor set are already its whole subtree's. Summing the
+/// member records is therefore the complete answer, not an approximation of one, which is what
+/// keeps this `O(nodes × members × log paths)` instead of a traversal per container.
+///
+/// # Binary content has no mosaic, and that is the honest answer
+///
+/// Ownership is *line*-attributed: `F-EXT-2` derives it from `git log --numstat`, and numstat
+/// reports `-` rather than a line count for a binary blob, which `treepo-vcs` records as a
+/// touch carrying no lines. So an asset or a binary has contributors holding a zero share, and
+/// a zero share earns no cells.
+///
+/// The result is that [`Ore`](MaterialFamily::Ore) limbs generally render as pure material with
+/// nobody's colour in them, and it is the right picture rather than a gap to be papered over:
+/// nobody *wrote* those bytes in the sense a mosaic depicts, and inventing an attribution from
+/// commit counts would be putting a person's name on a thing they did not author.
 ///
 /// # A node whose path is not in the manifest
 ///
 /// Contributes nothing, and a node with no resolvable content becomes
-/// [`Stone`](MaterialFamily::Stone) at the representation floor. That is a defect rather than
-/// an expected case — every role's paths come from the manifest the skeleton was composed
-/// from — but the honest degradation is better than a panic in the generative path, and
-/// `Stone` already means "treepo knows nothing about this". `every_node_of_every_fixture_resolves`
-/// is what would notice.
+/// [`Stone`](MaterialFamily::Stone) at the representation floor with an empty mosaic. That is a
+/// defect rather than an expected case — every role's paths come from the manifest the skeleton
+/// was composed from — but the honest degradation is better than a panic in the generative
+/// path, and `Stone` already means "treepo knows nothing about this".
+/// `every_node_of_the_fixture_resolves_to_real_content` is what would notice.
+///
+/// An empty mosaic is *not* that failure, and the two must not be conflated when reading a
+/// bare-looking limb: no contributors at all is a repository with no history (PRD §6), and
+/// contributors with no lines is the binary case above.
 #[must_use]
 pub fn materialize(manifest: &Manifest, skeleton: &Skeleton, table: &Table) -> MaterialMap {
     let mut map = MaterialMap::new();
     for node in skeleton.nodes() {
-        let (mix, bytes) = resolve(manifest, &node.role);
-        map.push(table.material_from(mix, bytes, &node.role));
+        let content = resolve(manifest, &node.role);
+        map.push(table.material_from(content.mix, content.bytes, &content.ownership, &node.role));
     }
     map
 }
 
-/// What one node is made of and how big it is — see [`materialize`] for the table.
-fn resolve(manifest: &Manifest, role: &NodeRole) -> (FamilyMix, u64) {
+/// What one node is made of, how big it is, and who wrote it.
+///
+/// The ownership is borrowed for a node standing for one path and owned for one standing for
+/// several — a limb is the overwhelmingly common case, and cloning a contributor map for each
+/// of eighty thousand of them would be eighty thousand allocations to copy something already
+/// in the manifest.
+struct Content<'a> {
+    mix: FamilyMix,
+    bytes: u64,
+    ownership: Cow<'a, OwnershipPrimitives>,
+}
+
+/// Gathers one node's content — see [`materialize`] for the table this implements.
+fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
     match role {
         NodeRole::Limb { path } => single(manifest, path),
         // The repository root, so every node of the cluster reads as the repository it stands
@@ -274,28 +339,43 @@ fn resolve(manifest: &Manifest, role: &NodeRole) -> (FamilyMix, u64) {
         // lookup keeps one code path rather than a special case that could drift.
         NodeRole::RootMass { anchor, .. } => single(manifest, anchor),
         NodeRole::Group { members, .. } => {
-            let sizes = members.iter().filter_map(|path| manifest.path(path));
-            let bytes = sizes.clone().fold(0u64, |total, record| {
+            let records = members.iter().filter_map(|path| manifest.path(path));
+            let bytes = records.clone().fold(0u64, |total, record| {
                 total.saturating_add(record.size.bytes)
             });
-            (mix_over(sizes.map(|record| &record.size)), bytes)
+            Content {
+                mix: mix_over(records.clone().map(|record| &record.size)),
+                bytes,
+                ownership: Cow::Owned(ownership_over(records)),
+            }
         }
         NodeRole::Aggregate(aggregate) => {
-            let sizes = aggregate
+            let records = aggregate
                 .members
                 .iter()
-                .filter_map(|path| manifest.path(path))
-                .map(|record| &record.size);
-            (mix_over(sizes), aggregate.bytes)
+                .filter_map(|path| manifest.path(path));
+            Content {
+                mix: mix_over(records.clone().map(|record| &record.size)),
+                bytes: aggregate.bytes,
+                ownership: Cow::Owned(ownership_over(records)),
+            }
         }
     }
 }
 
-/// One path's mixture and byte total, or nothing at all where the manifest has no record.
-fn single(manifest: &Manifest, path: &RepoPath) -> (FamilyMix, u64) {
+/// One path's content, or nothing at all where the manifest has no record.
+fn single<'a>(manifest: &'a Manifest, path: &RepoPath) -> Content<'a> {
     manifest.path(path).map_or_else(
-        || (FamilyMix::default(), 0),
-        |record| (mix_over(core::iter::once(&record.size)), record.size.bytes),
+        || Content {
+            mix: FamilyMix::default(),
+            bytes: 0,
+            ownership: Cow::Owned(OwnershipPrimitives::default()),
+        },
+        |record| Content {
+            mix: mix_over(core::iter::once(&record.size)),
+            bytes: record.size.bytes,
+            ownership: Cow::Borrowed(&record.ownership),
+        },
     )
 }
 
@@ -325,6 +405,52 @@ fn mix_over<'a>(sizes: impl Iterator<Item = &'a SizePrimitives>) -> FamilyMix {
         *share = Fx::from_ratio(count as i64, total as i64);
     }
     FamilyMix::new(shares)
+}
+
+/// Every contributor across a set of records, with their shares of the whole.
+///
+/// The ownership counterpart to [`mix_over`], and it faces the same trap in a sharper form:
+/// shares are proportions of *each record's own* attributed lines, so adding two of them
+/// together would give a ten-line file the same say as a ten-thousand-line one. The person who
+/// touched the small file once would come out holding half the limb.
+///
+/// So each record's shares are weighted back into line counts before they are summed, and the
+/// weight is [`ChurnWindows::lifetime`](treepo_model::primitives::temporal::ChurnWindows) —
+/// not an approximation of the denominator but the denominator itself. `treepo-vcs`'s log pass
+/// accumulates a path's lifetime churn and its per-author line counts from the same
+/// per-commit tally, so the one is exactly the sum of the other. Every division here therefore
+/// undoes a division extraction already did, and the only loss is the parts-per-million
+/// rounding a share is carried in anyway.
+///
+/// Recency merges as the latest per author, which is what "this contributor's most recent
+/// commit anywhere in the group" means. Nothing reads it yet; `F-MAT-4` will, and a merged
+/// value that was quietly empty would be a gradient with no data behind it.
+fn ownership_over<'a>(records: impl Iterator<Item = &'a PathRecord>) -> OwnershipPrimitives {
+    let mut counts: OrderedMap<AuthorKey, u64> = OrderedMap::new();
+    let mut recency: OrderedMap<AuthorKey, i64> = OrderedMap::new();
+
+    for record in records {
+        // Zero-line history is an ordinary path, not an absent one: a binary blob, which
+        // `numstat` reports as a touch with no lines, or a file that only ever moved. Its
+        // contributors are still carried through at zero, so a container of nothing but assets
+        // reports the same contributor set one asset does — an empty mosaic either way, and
+        // one honest answer rather than two shapes of nothing.
+        let attributed = record.temporal.churn.lifetime;
+        for (&key, share) in record.ownership.shares() {
+            let lines = if attributed == 0 {
+                0
+            } else {
+                (u64::from(share.to_ppm()) * attributed) / 1_000_000
+            };
+            *counts.entry(key).or_insert(0) += lines;
+        }
+        for (&key, &when) in record.ownership.recency() {
+            let latest = recency.entry(key).or_insert(when);
+            *latest = (*latest).max(when);
+        }
+    }
+
+    OwnershipPrimitives::from_line_counts(&counts, recency)
 }
 
 /// The largest family in a mix, in [`MaterialFamily::ALL`] order on a tie.
@@ -424,6 +550,20 @@ mod tests {
         }
     }
 
+    /// A path nobody is recorded as having written — PRD §6's "No `.git`", and the right
+    /// input for every test in this file that is about what a node is *made of*.
+    fn unowned() -> OwnershipPrimitives {
+        OwnershipPrimitives::default()
+    }
+
+    fn owned(counts: &[(AuthorKey, u64)]) -> OwnershipPrimitives {
+        OwnershipPrimitives::from_line_counts(&counts.iter().copied().collect(), OrderedMap::new())
+    }
+
+    fn author(byte: u8) -> AuthorKey {
+        AuthorKey::from_email(&[byte])
+    }
+
     #[test]
     fn the_built_in_table_parses_and_validates() {
         let table = Table::built_in();
@@ -446,7 +586,8 @@ mod tests {
             (ContentCategory::Unknown, MaterialFamily::Stone),
         ];
         for (category, family) in cases {
-            let material = table.material_of(&sized(&[(category, 1000)]), 1000, &limb());
+            let material =
+                table.material_of(&sized(&[(category, 1000)]), 1000, &unowned(), &limb());
             assert_eq!(material.family, family, "{category:?}");
             assert_eq!(
                 material.composition,
@@ -467,7 +608,7 @@ mod tests {
             (ContentCategory::Binary, 300),
             (ContentCategory::Code, 400),
         ]);
-        let material = table.material_of(&size, 1000, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), &limb());
         // 60% together beats 40% of code; separately, 30% each would have lost.
         assert_eq!(material.family, MaterialFamily::Ore);
         assert_eq!(
@@ -482,7 +623,7 @@ mod tests {
     fn a_mixed_limb_is_veined_rather_than_reassigned() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 550), (ContentCategory::Asset, 450)]);
-        let material = table.material_of(&size, 1000, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), &limb());
 
         assert_eq!(material.family, MaterialFamily::Heartwood);
         let Composition::Blended { secondary, weight } = material.composition else {
@@ -508,7 +649,9 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            table.material_of(&size, 2000, &limb()).composition,
+            table
+                .material_of(&size, 2000, &unowned(), &limb())
+                .composition,
             Composition::Pure
         );
     }
@@ -519,7 +662,7 @@ mod tests {
     fn an_exact_tie_resolves_and_carries_the_loser_at_full_weight() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 500), (ContentCategory::Docs, 500)]);
-        let material = table.material_of(&size, 1000, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), &limb());
         assert_eq!(
             material.family,
             MaterialFamily::Heartwood,
@@ -545,7 +688,7 @@ mod tests {
             (ContentCategory::Config, 100),
         ]);
 
-        let held = table.material_of(&size, 4096, &container());
+        let held = table.material_of(&size, 4096, &unowned(), &container());
         assert_eq!(held.family, MaterialFamily::Parchment);
         let contents = held
             .composition
@@ -560,7 +703,7 @@ mod tests {
         assert_eq!(held.composition.secondary(), None);
 
         // The same content drawn as a limb is a different reading of the same fact.
-        let made_of = table.material_of(&size, 4096, &limb());
+        let made_of = table.material_of(&size, 4096, &unowned(), &limb());
         assert_eq!(made_of.family, held.family);
         assert_eq!(made_of.composition.secondary(), Some(MaterialFamily::Ore));
     }
@@ -570,7 +713,7 @@ mod tests {
     #[test]
     fn a_node_with_no_content_is_stone_at_the_floor() {
         let table = Table::built_in();
-        let material = table.material_of(&SizePrimitives::default(), 0, &limb());
+        let material = table.material_of(&SizePrimitives::default(), 0, &unowned(), &limb());
         assert_eq!(material.family, MaterialFamily::Stone);
         assert_eq!(material.composition, Composition::Pure);
         assert_eq!(material.budget, per_mille(table.normalize.floor));
@@ -580,14 +723,54 @@ mod tests {
         );
     }
 
+    /// `F-MAT-2` — ownership is an accent *over* the primary material, so the two are
+    /// independent facts about the same node rather than alternatives.
+    #[test]
+    fn ownership_accents_the_material_rather_than_replacing_it() {
+        let table = Table::built_in();
+        let size = sized(&[(ContentCategory::Code, 1000)]);
+        let pair = owned(&[(author(1), 60), (author(2), 40)]);
+
+        let bare = table.material_of(&size, 1000, &unowned(), &limb());
+        let shared = table.material_of(&size, 1000, &pair, &limb());
+
+        // Same wood, same size — the mosaic is what differs.
+        assert_eq!(bare.family, shared.family);
+        assert_eq!(bare.budget, shared.budget);
+        assert!(bare.mosaic.is_empty(), "nobody attributed, nobody drawn");
+        assert_eq!(bare.mosaic.unclaimed(), bare.mosaic.cells());
+        assert_eq!(shared.mosaic.holder_count(), 2);
+        assert!(shared.mosaic.is_present(&author(1)));
+        assert!(shared.mosaic.is_present(&author(2)));
+    }
+
+    /// The mosaic is sized from the node's own budget, so a node drawn larger is subdivided
+    /// more finely and a cell covers about the same area wherever it appears.
+    #[test]
+    fn a_bigger_node_carries_a_finer_mosaic() {
+        let table = Table::built_in();
+        let size = sized(&[(ContentCategory::Code, 1000)]);
+        let sole = owned(&[(author(1), 100)]);
+
+        let small = table.material_of(&size, 1, &sole, &limb());
+        let large = table.material_of(&size, 60_000_000, &sole, &limb());
+
+        assert!(small.mosaic.cells() >= table.normalize.mosaic_min_cells);
+        assert!(large.mosaic.cells() > small.mosaic.cells());
+        assert!(large.mosaic.cells() <= table.normalize.mosaic_max_cells);
+        // And the sole contributor holds all of both, whichever size they came out.
+        assert_eq!(small.mosaic.cells_for(&author(1)), small.mosaic.cells());
+        assert_eq!(large.mosaic.cells_for(&author(1)), large.mosaic.cells());
+    }
+
     /// A container's budget is its own, not one member's — the reason `bytes` is a separate
     /// argument.
     #[test]
     fn a_container_is_budgeted_for_what_it_stands_for() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 100)]);
-        let small = table.material_of(&size, 100, &container());
-        let large = table.material_of(&size, 100_000_000, &container());
+        let small = table.material_of(&size, 100, &unowned(), &container());
+        let large = table.material_of(&size, 100_000_000, &unowned(), &container());
         assert!(large.budget > small.budget);
     }
 
@@ -683,22 +866,35 @@ mod tests {
                 material.budget > Fx::ZERO,
                 "node {id:?} was drawn with no pixels — P7"
             );
+            assert!(
+                material.mosaic.cells() > 0,
+                "node {id:?} has a surface with nothing to draw on it"
+            );
+            assert!(
+                !material.mosaic.is_empty(),
+                "node {id:?} resolved to nobody — the fixture attributes every path"
+            );
         }
     }
 
     /// Every role's paths come from the manifest the skeleton was composed from, so nothing
     /// should fall through to the `Stone`-at-the-floor path. A fixture where everything
-    /// resolved to `Stone` would make every other assertion here vacuous.
+    /// resolved to `Stone` — or to nobody — would make every other assertion here vacuous.
     #[test]
     fn every_node_of_the_fixture_resolves_to_real_content() {
         let manifest = shaped_repository();
         let skeleton = crate::grow(&manifest, &crate::Table::built_in());
 
         for node in skeleton.nodes() {
-            let (mix, bytes) = resolve(&manifest, &node.role);
+            let content = resolve(&manifest, &node.role);
             assert!(
-                mix.count() > 0 && bytes > 0,
+                content.mix.count() > 0 && content.bytes > 0,
                 "{:?} resolved to nothing — its paths are not in the manifest",
+                node.role
+            );
+            assert!(
+                content.ownership.author_count() > 0,
+                "{:?} resolved to nobody — every mosaic assertion here would be vacuous",
                 node.role
             );
         }
@@ -724,7 +920,7 @@ mod tests {
             groups += 1;
 
             let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
-            let from_members = resolve(&manifest, &node.role).0;
+            let from_members = resolve(&manifest, &node.role).mix;
             let from_anchor = table.mix_of(&manifest.path(anchor).unwrap().size);
 
             assert_eq!(material.family, dominant(&from_members));
@@ -738,6 +934,170 @@ mod tests {
             );
         }
         assert!(groups > 0, "the fixture should produce F2 groups");
+    }
+
+    /// The same trap as the mixture, with a person's colour on it. A group's `anchor` is the
+    /// parent of the paths it gathered, and that parent has other children the stem does not
+    /// carry — so reading ownership off the anchor draws people who wrote none of it.
+    #[test]
+    fn an_owned_group_is_owned_by_its_members_not_by_its_anchor() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let mut groups = 0;
+        for (id, node) in skeleton.nodes().iter().enumerate() {
+            let NodeRole::Group { anchor, .. } = &node.role else {
+                continue;
+            };
+            groups += 1;
+
+            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
+            let from_members = resolve(&manifest, &node.role).ownership.into_owned();
+            let from_anchor = &manifest.path(anchor).unwrap().ownership;
+
+            // Everyone drawn on the stem wrote something the stem carries.
+            for (key, _) in material.mosaic.holders() {
+                assert!(
+                    from_members.share_of(key).is_present(),
+                    "a contributor with no lines in this group holds cells in its mosaic"
+                );
+            }
+
+            // And the anchor knows people the group does not, or this fixture could not tell
+            // the two readings apart and the assertion above would pass under the bug.
+            let outsiders: alloc::vec::Vec<treepo_model::identity::AuthorKey> = from_anchor
+                .shares()
+                .filter(|(_, share)| share.is_present())
+                .map(|(&key, _)| key)
+                .filter(|key| !from_members.share_of(key).is_present())
+                .collect();
+            assert!(
+                !outsiders.is_empty(),
+                "anchor and members share every contributor here, so this fixture cannot tell \
+                 them apart"
+            );
+            for key in outsiders {
+                assert!(!material.mosaic.is_present(&key));
+            }
+        }
+        assert!(groups > 0, "the fixture should produce F2 groups");
+    }
+
+    /// Shares are proportions of each record's *own* lines, so merging them has to weight by
+    /// how many lines each record has. Adding two shares together would give the person who
+    /// touched a two-line file the same say as the one who wrote ten thousand.
+    #[test]
+    fn a_gathered_mosaic_is_weighted_by_lines_not_by_record_count() {
+        let manifest = manifest_of(&[("big/a.rs", 400_000), ("small/b.rs", 80)]);
+        let big = manifest.path(&path("big")).unwrap();
+        let small = manifest.path(&path("small")).unwrap();
+
+        // The fixture keys an owner off each top-level directory — see `authors_of`.
+        let major = AuthorKey::from_email(b"big@example.test");
+        let minor = AuthorKey::from_email(b"small@example.test");
+
+        let merged = ownership_over([big, small].into_iter());
+        assert_eq!(merged.dominant_author(), Some(major));
+        assert!(
+            merged.share_of(&minor).to_ppm() < 1_000,
+            "the two-line file's author came out holding {} ppm — an unweighted merge would \
+             have given them a quarter of the limb",
+            merged.share_of(&minor).to_ppm()
+        );
+        assert!(
+            merged.share_of(&minor).is_present(),
+            "and they are still there: weighted down is not erased"
+        );
+    }
+
+    /// Ownership is line-attributed, and `numstat` gives a binary no lines — so an asset has
+    /// contributors who hold nothing, and renders as pure material.
+    ///
+    /// The `huge-file` corpus fixture is where this first showed up: `assets/enormous.bin` and
+    /// the directory holding it were the only two nodes in the whole corpus drawn to nobody.
+    /// It is the right picture — nobody wrote those bytes in the sense a mosaic depicts — and
+    /// it must not be mistaken for the "path missing from the manifest" degradation, which
+    /// looks the same from the outside and is a defect.
+    #[test]
+    fn a_binary_has_contributors_and_still_no_mosaic() {
+        let table = Table::built_in();
+        let blob = owned(&[(author(1), 0), (author(2), 0)]);
+
+        assert_eq!(blob.author_count(), 2, "they touched it");
+        assert!(!blob.share_of(&author(1)).is_present(), "with no lines");
+
+        let material = table.material_of(
+            &sized(&[(ContentCategory::Binary, 8_000_000)]),
+            8_000_000,
+            &blob,
+            &limb(),
+        );
+        assert_eq!(material.family, MaterialFamily::Ore);
+        assert!(material.mosaic.is_empty());
+        assert_eq!(
+            material.mosaic.unclaimed(),
+            material.mosaic.cells(),
+            "the whole surface is ore, and none of it is anyone's"
+        );
+    }
+
+    /// And the merge keeps them, so a container of nothing but assets reports the same
+    /// contributor set one asset does rather than a second shape of nothing.
+    #[test]
+    fn a_container_of_binaries_still_knows_who_touched_it() {
+        let mut blob = PathRecord::new(path("assets/enormous.bin"), treepo_model::NodeKind::File);
+        blob.size.bytes = 8_000_000;
+        blob.ownership = owned(&[(author(1), 0)]);
+        assert_eq!(blob.temporal.churn.lifetime, 0, "a touch with no lines");
+
+        let merged = ownership_over(core::iter::once(&blob));
+        assert_eq!(merged.author_count(), 1);
+        assert!(!merged.share_of(&author(1)).is_present());
+    }
+
+    /// `AC-MAT-2` over a whole tree rather than over one synthetic share. The fixture gives
+    /// every path a two-percent contributor, which is the case the criterion names by number.
+    #[test]
+    fn a_two_percent_contributor_is_drawn_on_every_node_they_touched() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let mut checked = 0;
+        let mut saved_by_the_quota = 0;
+        for (id, node) in skeleton.nodes().iter().enumerate() {
+            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
+            let ownership = resolve(&manifest, &node.role).ownership.into_owned();
+
+            for (key, share) in ownership.shares() {
+                if share.to_ppm() < table.normalize.significant_ppm {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    material.mosaic.is_present(key),
+                    "a significant contributor vanished from {:?}'s mosaic of {} cells",
+                    node.role,
+                    material.mosaic.cells()
+                );
+                if share.allocate(material.mosaic.cells()) == 0 {
+                    saved_by_the_quota += 1;
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "the fixture attributes nothing — nothing was tested"
+        );
+        assert!(
+            saved_by_the_quota > 0,
+            "every contributor here earned a cell on the arithmetic alone, so the guaranteed \
+             quota was never the thing keeping anyone visible and this proves less than it looks"
+        );
     }
 
     /// A container's budget comes from its own byte total — already "everything beneath the
@@ -779,7 +1139,7 @@ mod tests {
         let materials = materialize(&manifest, &skeleton, &table);
 
         let root = manifest.path(&treepo_model::RepoPath::root()).unwrap();
-        let expected = table.material_of(&root.size, root.size.bytes, &limb());
+        let expected = table.material_of(&root.size, root.size.bytes, &root.ownership, &limb());
 
         let mut roots = 0;
         for (id, node) in skeleton.nodes().iter().enumerate() {
@@ -852,6 +1212,11 @@ mod tests {
         for (_, material) in materials.iter() {
             assert_eq!(material.family, MaterialFamily::Stone);
             assert_eq!(material.budget, per_mille(table.normalize.floor));
+            // PRD §6 again, for the mosaic: nobody attributed is an ordinary path, and the
+            // whole surface is primary material rather than a hole.
+            assert!(material.mosaic.is_empty());
+            assert!(material.mosaic.cells() >= table.normalize.mosaic_min_cells);
+            assert_eq!(material.mosaic.unclaimed(), material.mosaic.cells());
         }
     }
 

@@ -501,28 +501,53 @@ pub(crate) mod tests {
         }
     }
 
+    /// Per-author attributed lines for one fixture file.
+    ///
+    /// A miniature of `treepo-vcs::log_pass`, and shaped for the two things the material walk
+    /// needs to be able to tell apart. Each top-level subtree has its own owner, so a node
+    /// gathering paths from one subtree does not resolve to the same contributors as a node
+    /// gathering another — without which
+    /// `an_owned_group_is_owned_by_its_members_not_by_its_anchor` could not fail under the bug
+    /// it exists to catch. And one contributor touches everything lightly, so every node has a
+    /// minority holder and `AC-MAT-2` has something to be true of.
+    fn authors_of(path: &str, bytes: u64) -> Vec<(treepo_model::identity::AuthorKey, u64)> {
+        use treepo_model::identity::AuthorKey;
+        let top = path.split('/').next().unwrap_or(path);
+        let owner = AuthorKey::from_email(alloc::format!("{top}@example.test").as_bytes());
+        let visitor = AuthorKey::from_email(b"visitor@example.test");
+
+        // Forty bytes a line, near enough for a fixture; the ratio between files is what the
+        // weighted merge is measured on, not the absolute count.
+        //
+        // The visitor holds a fiftieth — two percent, which is the contributor `AC-MAT-2` names
+        // by number. Set here rather than at some comfortable ten percent so the criterion is
+        // carried by the fixture the walk actually runs on, and so the guaranteed quota is
+        // load-bearing on a coarse mosaic instead of only in a unit test.
+        let lines = (bytes / 40).max(2);
+        let minority = (lines / 50).max(1);
+        vec![(owner, lines - minority), (visitor, minority)]
+    }
+
     /// Builds a manifest from a list of `(path, bytes)` files, synthesizing every ancestor
     /// directory and rolling the structural counts up as `treepo-vcs::walk` would.
     ///
-    /// Worth the thirty lines: composition reads `child_count`, `descendant_*`,
+    /// Worth the sixty lines: composition reads `child_count`, `descendant_*`,
     /// `max_subtree_depth`, `relative_bytes` and the branching histogram, and a fixture that
     /// left them at their defaults would exercise the code with every driver reading zero.
     ///
-    /// `category_bytes` is filled and rolled up for the same reason, one phase later.
-    /// `treepo-gen::material` reads a directory's category mixture and relies on extraction
-    /// having summed it from the subtree; a fixture that left it empty would make every
-    /// directory [`Stone`](treepo_model::MaterialFamily::Stone) and every material assertion
-    /// vacuously true.
+    /// `category_bytes` and per-author line counts are filled and rolled up for the same
+    /// reason, one phase later. `treepo-gen::material` reads a directory's category mixture and
+    /// its contributor set, and relies on extraction having summed both from the subtree; a
+    /// fixture that left them empty would make every directory
+    /// [`Stone`](treepo_model::MaterialFamily::Stone) with an empty mosaic, and every material
+    /// assertion vacuously true.
     pub(crate) fn manifest_of(files: &[(&str, u64)]) -> Manifest {
-        let mut records: Vec<PathRecord> = Vec::new();
-        let mut seen: Vec<RepoPath> = Vec::new();
+        use treepo_det::OrderedMap;
+        use treepo_model::identity::AuthorKey;
 
-        let ensure_dir = |path: RepoPath, seen: &mut Vec<RepoPath>, out: &mut Vec<PathRecord>| {
-            if !seen.contains(&path) {
-                seen.push(path.clone());
-                out.push(PathRecord::new(path, NodeKind::Directory));
-            }
-        };
+        let mut records: Vec<PathRecord> = Vec::new();
+        let mut counts: Vec<OrderedMap<AuthorKey, u64>> = Vec::new();
+        let mut seen: Vec<RepoPath> = Vec::new();
 
         for (text, bytes) in files {
             let path = RepoPath::new(text.as_bytes()).unwrap();
@@ -531,25 +556,49 @@ pub(crate) mod tests {
             record.size.category_bytes = core::iter::once((category_of(text), *bytes)).collect();
             seen.push(path.clone());
             records.push(record);
+            counts.push(authors_of(text, *bytes).into_iter().collect());
 
             let mut ancestor = path.parent();
             while let Some(current) = ancestor {
                 ancestor = current.parent();
-                ensure_dir(current, &mut seen, &mut records);
+                if !seen.contains(&current) {
+                    seen.push(current.clone());
+                    records.push(PathRecord::new(current, NodeKind::Directory));
+                    counts.push(OrderedMap::new());
+                }
             }
         }
-        ensure_dir(RepoPath::root(), &mut seen, &mut records);
+        if !seen.contains(&RepoPath::root()) {
+            records.push(PathRecord::new(RepoPath::root(), NodeKind::Directory));
+            counts.push(OrderedMap::new());
+        }
 
-        roll_up(&mut records);
+        roll_up(&mut records, &mut counts);
+
+        // Attributed lines and lifetime churn come out of one per-commit tally in the real log
+        // pass, so `lifetime` is exactly the sum of the author counts. `treepo-gen::material`
+        // weights by it when merging a container's contributors, and a fixture where the two
+        // disagreed would be measuring a weight no repository produces.
+        for (record, counts) in records.iter_mut().zip(counts) {
+            record.temporal.churn.lifetime = counts.values().sum();
+            record.ownership =
+                treepo_model::primitives::ownership::OwnershipPrimitives::from_line_counts(
+                    &counts,
+                    OrderedMap::new(),
+                );
+        }
 
         let mut manifest = Manifest::new("test".to_string(), Seed::root(b"compose-test"));
         manifest.set_paths(records);
         manifest
     }
 
-    /// Fills every directory's structural and size primitives from its children, deepest
-    /// first, the way a real walk does.
-    fn roll_up(records: &mut [PathRecord]) {
+    /// Fills every directory's structural, size and ownership primitives from its children,
+    /// deepest first, the way a real walk does.
+    fn roll_up(
+        records: &mut [PathRecord],
+        counts: &mut [treepo_det::OrderedMap<treepo_model::identity::AuthorKey, u64>],
+    ) {
         let mut order: Vec<usize> = (0..records.len()).collect();
         order.sort_by_key(|&index| core::cmp::Reverse(records[index].path.depth()));
 
@@ -557,6 +606,18 @@ pub(crate) mod tests {
             let path = records[index].path.clone();
             if !records[index].kind.is_container() {
                 continue;
+            }
+
+            // Author lines roll up exactly as `treepo-vcs::log_pass` credits them — "every
+            // ancestor is touched too" — so a directory's contributors are its whole subtree's.
+            let inherited: Vec<(treepo_model::identity::AuthorKey, u64)> = records
+                .iter()
+                .enumerate()
+                .filter(|(_, record)| record.path.parent().as_ref() == Some(&path))
+                .flat_map(|(child, _)| counts[child].iter().map(|(&key, &lines)| (key, lines)))
+                .collect();
+            for (key, lines) in inherited {
+                *counts[index].entry(key).or_insert(0) += lines;
             }
 
             let children: Vec<(u64, u32, u32, u16)> = records

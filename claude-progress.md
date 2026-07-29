@@ -1975,45 +1975,174 @@ Local gate green: fmt, clippy `-D warnings` (workspace, all targets), 512 tests,
 
 ---
 
+## S12 — `F-MAT-2`, the ownership mosaic (2026-07-29)
+
+Every node now knows who is drawn on it. `Mosaic` in `treepo-model::material`, a fourth field
+on `Material`, gathered by the walk from the same records the mixture comes from.
+
+### The three decisions, and why each went the way it did
+
+**1. A cell is a unit of the limb's *length*, base to tip.** Not across the width, and the
+three arguments all point the same way. A limb is long and thin, so a cross-width partition
+turns `AC-MAT-2`'s two-percent contributor into a sliver and loses `AC-MAT-4` first.
+`F-EXT-3`'s blame segments are line ranges — sequential within a file — so when they land they
+refine this arrangement rather than replacing its geometry. And §8.3's Grow migration moves
+material *along* a limb, so a mosaic on the width axis would be scrambled by the animation
+meant to carry it.
+
+**2. The arrangement is the allocation, read in key order.** Holders occupy contiguous runs,
+runs follow `AuthorKey` order — so the arrangement is not stored, it *is* `holders()` read in
+sequence, and there is no second structure that can disagree with the first. A seeded
+per-node shuffle was the alternative: it would make a bad colour pairing local to one limb
+instead of systemic across every limb two contributors share. Deferred rather than rejected,
+because it needs a `Seed` threaded into `material_from` for a benefit nobody can judge until
+mosaics have an appearance — the same argument that defers `blend_floor`.
+
+**3. The cell count comes from the budget**, linear from `mosaic_min_cells` at zero to
+`mosaic_max_cells` at a full budget. A node drawn small gets a coarse mosaic and one drawn
+large a fine one, so a cell covers about the same area wherever it appears — which keeps
+`AC-MAT-4` a property of the palette rather than of how big the limb happened to be. Driving
+it from *bytes* instead would give a 50 MB asset a mosaic four times finer than the source
+file beside it, which is the disparity `F-MAT-3` exists to compress.
+
+Deciding the count here rather than at draw time is what keeps `AC-MAT-2` a generative
+property. If the renderer picked it, the two-percent contributor's presence would vary with
+zoom and the quota would live outside the deterministic layer — and `AC-DET-1` names materials
+among the things that must be byte-identical.
+
+### `Allocation` moved and became `Mosaic`
+
+It is a handoff now, by the same argument `Material` is: `treepo-gen` decides it, `treepo-grow`
+diffs it, `treepo-render` binds it. Keeping a separate `treepo-gen` type and converting would
+be two types for one thing — the argument `MaterialMap::digest` already settled. `requested`
+and `total` became `cells()` (the drawn count, `max(budgeted, claimed)`) and `claimed()`,
+which is what a renderer actually asks. `Mosaic::new` drops zero-cell holders and totals the
+rest, so the count cannot be made to disagree with the map by a caller.
+
+### A false `N4` claim, caught by its own `compile_fail`
+
+I wrote a `compile_fail` doctest asserting the holders could not be sorted by cell count. It
+compiled. `AuthorShare`'s protection is that it implements neither `Ord` nor `PartialOrd`; a
+cell count is a `u32` and obviously does. The doc claimed a type-level guarantee that does not
+exist here.
+
+Removed the claim, not the check, and stated what is actually true: cells are a *geometric*
+quantity — a renderer must count them, compare them to a quota, lay them out — and a count
+that could not be compared would obstruct every legitimate use to inconvenience one
+illegitimate one. The gate that matters is upstream, where the shares are: there is no route
+to a ranking that does not pass through `allocate`, and by then the numbers are a drawing
+instruction. `AC-MAT-3` binds the surface that would display one.
+
+Second false doc claim caught this phase by running the thing rather than reading it.
+
+### Binary content has no mosaic — a finding, measured not assumed
+
+The corpus sweep showed `huge-file` with 2 of 10 nodes drawn to nobody, the only such nodes in
+the whole corpus. Rather than assume a defect in `resolve`, I traced it: `log_pass.rs:367`
+counts a binary change as *a touch with no lines*, exactly as `numstat` reports `-`. So
+`assets/enormous.bin` has contributors holding a **zero share**, and `assets/` contains only
+that blob.
+
+Correct, and worth stating: **ownership is line-attributed, so `Ore` limbs generally render as
+pure material with nobody's colour in them.** Nobody wrote those bytes in the sense a mosaic
+depicts, and manufacturing an attribution from commit counts would put a person's name on a
+thing they did not author. Two tests pin it, and the docs now separate it from the
+looks-identical-from-outside defect (a path missing from the manifest).
+
+It also drove a small fix to `ownership_over`: zero-weight records now contribute their
+contributors at zero rather than being skipped, so a container of nothing but assets reports
+the same contributor set one asset does. One honest answer instead of two shapes of nothing.
+Invisible to the digest — both produce an empty mosaic — and `F-MAT-4` will read that merged
+`recency`, so a half-built merge would have been a gradient with no data behind it.
+
+### The merge weight was exact, not an approximation
+
+Shares are proportions of *each record's own* attributed lines, so merging several records
+cannot add them — the person who touched a two-line file would come out level with the one who
+wrote ten thousand. The weight is `ChurnWindows::lifetime`, and it is not a stand-in: the log
+pass accumulates a path's lifetime churn and its per-author line counts from the *same*
+per-commit tally, so one is exactly the sum of the other. Every division here undoes a division
+extraction already did, and the only loss is the ppm rounding a share carries anyway.
+
+### The fixture again, and again for the same reason
+
+`compose::tests::manifest_of` set `size` and `category_bytes` but no ownership — so every
+mosaic would have been empty and every assertion vacuously true. Third time this phase, second
+time caught before writing the tests rather than after. It now seeds one owner per top-level
+subtree (so `an_owned_group_is_owned_by_its_members_not_by_its_anchor` can fail under the bug
+it exists to catch) plus one visitor at **two percent** of every file — set there rather than
+at a comfortable ten so `AC-MAT-2` is carried by the fixture the walk actually runs on, and so
+the guaranteed quota is load-bearing on a coarse mosaic instead of only in a unit test.
+
+Author lines roll up child-into-parent exactly as `log_pass` credits them ("every ancestor is
+touched too"), and `churn.lifetime` is set to the sum, matching the real invariant.
+
+### Measured on the corpus
+
+Every fixture with history draws real mosaics — `many-authors` puts **360 holder-slots across
+6 nodes**, every contributor present, nobody dropped. `mailmap` and `skel1-messy` show
+naturally unclaimed cells, which is `F-MAT-2`'s accent-over-primary showing through rather
+than a rounding artefact. `empty` and `no-git` draw nobody, correctly.
+
+```
+material      4b1b63883e6831bdc4e23ed6bc1c1781f8b1ff8654906b28a7188ea1a1410433
+overall       2c5a4b88b0259d66b42e28c55cbee07851bb2859b705a349dc36d57c68915248
+```
+
+**All eighteen `skeleton/*` lines byte-identical to S11's.** Every `material/*` line moved, as
+the `treepo-material-v2` tag and the new field require. `AC-DET-2` proper still needs the CI
+run.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), **528 tests**, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages), `cargo deny`, readonly-audit (18 fixtures,
+0 writes, detector 4/4), determinism reproducible over 3 runs.
+
+---
+
 ## Next
 
-**Phase 4, continued — `F-MAT-2`, the ownership mosaic.** S10 built the families and the
-arithmetic, S11 gave every node a material. What no node carries yet is *who wrote it*.
+**Phase 4, continued — `F-MAT-4`, the age/recency gradient** (`design/feature-system.md` §8.3).
+S10 built the families and the arithmetic, S11 gave every node a material, S12 gave every node
+a mosaic. What no node carries yet is *when*.
 
-`Normalize::allocate` already answers **how many cells** each contributor holds, with the
-`AC-MAT-2` quota and the `N4` discipline in place and tested. What is missing is **which cell
-is where** — arrangement rather than allocation — and a `mosaic` field on `Material` to hold
-it. The walk is the natural place to compute it: `resolve` already gathers a node's records,
-and ownership comes off the same records the mixture does.
+§8.3 is explicit about the axis: "older material migrates or remains basal/inward; recent
+material becomes more distal/tip-ward". That is the same base-to-tip axis `Mosaic`'s cells run
+along, and it is the reason the mosaic took that axis rather than the width — the two signals
+are meant to share a substrate, with ownership deciding a cell's *colour* and recency deciding
+where along the limb it *sits*. So the honest shape of `F-MAT-4` is probably not a fourth
+independent field but a bias on the cell ordering, and settling that is the first question of
+the slice.
 
-Three things to settle in that slice, in the order they bite:
+The inputs are already extracted and already merged: `TemporalPrimitives::recency_heat` is a
+0..1 "how much of this path's life happened recently", computed without `exp` for `N3`, and
+`ownership_over` merges per-author `recency` as the latest across a container's members
+precisely so this slice has data rather than an empty map.
 
-1. **What a cell *is*.** Allocation is unitless today. A mosaic on a limb needs a geometry —
-   bands along the limb's length, patches across its width, or segment-indexed runs. This is
-   the decision that shapes the visual and it wants an opinion, not a default.
-2. **`AC-MAT-2` on a real fixture**, which is a Phase 4 end condition. It is currently held by
-   unit tests over synthetic shares; `many-authors` is the corpus fixture that should carry it.
-   Note the harness runs under a *fixed* seed, so ownership there is real extraction output.
-3. **`Composition` versus the mosaic.** Ownership is accent *over* the primary material
-   (`F-MAT-2`), so the mosaic is a fourth field on `Material` rather than a fourth arm of
-   `Composition` — worth stating before someone tries the latter, because a limb that is
-   "made of Heartwood and owned by three people" is two facts and not one.
-
-Then **`F-MAT-4`** (age/recency gradient, `design/feature-system.md` §8.3) and **`F-MAT-5`**
-(enrichment placement, which reads `Composition::Subordinate` — a container of mostly
-`Parchment` becomes a bookshelf, mostly `Ore` a stockpile; that arm was built for this).
-`F-MAT-6`'s stress materials are `P2` and the designated cut.
+Then **`F-MAT-5`** (enrichment placement, which reads `Composition::Subordinate` — a container
+of mostly `Parchment` becomes a bookshelf, mostly `Ore` a stockpile; that arm was built for
+this). `F-MAT-6`'s stress materials are `P2` and the designated cut.
 
 Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
-an ordered contributor collection or a share as a figure"** — enforced at the type level
-already (`AuthorShare` implements neither `Ord` nor `PartialOrd`, with `compile_fail`
-doctests) and still needing a test that says so at the crate level rather than the type's.
-Worth doing alongside `F-MAT-2`, since the mosaic is the first thing that could break it.
+an ordered contributor collection or a share as a figure"** — still needing a test that says so
+at the crate level rather than the type's. S12 sharpened what such a test can honestly claim:
+`AuthorShare` is closed at the type level (neither `Ord` nor `PartialOrd`, with `compile_fail`
+doctests), but `Mosaic`'s cell counts are `u32` and sortable by anyone who collects them, and
+that is accepted rather than overlooked. The crate-level test should therefore assert the
+*shape* of the API — no accessor returns a ranking, no `Display` surfaces a share — rather than
+claim a guarantee the compiler does not hold.
 
-**`blend_floor` is the one material number set by argument rather than by looking.** 80 per
+Two things S12 recorded rather than resolved:
+
+- **The mosaic arrangement is contiguous runs in key order.** A seeded per-node shuffle would
+  make a bad colour pairing local instead of systemic across every limb two contributors share.
+  It needs a `Seed` in `material_from` and it cannot be judged until mosaics render.
+- **`mosaic_min_cells: 8` / `mosaic_max_cells: 64` are set by argument**, like `blend_floor`.
+  Second thing to point the silhouette lab at once materials have an appearance.
+
+**`blend_floor` is the first material number set by argument rather than by looking.** 80 per
 mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until
 materials have an appearance, and it is the first thing the silhouette lab should be pointed
-at once they do.
+at once they do. The mosaic's cell bounds are the second.
 
 Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 

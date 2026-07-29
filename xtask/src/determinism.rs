@@ -118,7 +118,7 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "material",
-        what: "families, budgets and mosaic quotas over sampled mixtures (F-MAT-1/3, AC-DET-1)",
+        what: "families, budgets and mosaics over sampled mixtures (F-MAT-1/2/3, AC-DET-1)",
         run: probe_material,
     },
 ];
@@ -582,6 +582,9 @@ fn probe_material() -> Digest {
     let limb = NodeRole::Limb {
         path: treepo_model::path::RepoPath::root(),
     };
+    // The mixture sweep is about families and budgets; the mosaic gets its own sweep below,
+    // where the contributor counts are what varies.
+    let unowned = OwnershipPrimitives::default();
 
     for (i, first) in ContentCategory::ALL.into_iter().enumerate() {
         for (j, second) in ContentCategory::ALL.into_iter().enumerate() {
@@ -597,7 +600,7 @@ fn probe_material() -> Digest {
                 let bytes = 4096 + (i as u64 * 7 + j as u64) * 131;
                 let mut sampled = treepo_model::MaterialMap::new();
                 for role in [&limb, &container] {
-                    sampled.push(table.material_of(&size, bytes, role));
+                    sampled.push(table.material_of(&size, bytes, &unowned, role));
                 }
                 // Through the canonical encoding rather than a local one — `MaterialMap` owns
                 // it for the reason `Skeleton` owns its own, and a second copy here would be
@@ -607,8 +610,9 @@ fn probe_material() -> Digest {
         }
     }
 
-    // `F-MAT-3`'s quota, over contributor counts that straddle the significance threshold:
-    // one holder, a handful, and more than the threshold physically permits.
+    // `F-MAT-2`'s mosaic and `F-MAT-3`'s quota, over contributor counts that straddle the
+    // significance threshold: one holder, a handful, and more than the threshold physically
+    // permits.
     for count in [1u32, 3, 8, 64, 512] {
         let counts: treepo_det::OrderedMap<treepo_model::identity::AuthorKey, u64> =
             probe_contributors()
@@ -620,17 +624,35 @@ fn probe_material() -> Digest {
         let ownership =
             OwnershipPrimitives::from_line_counts(&counts, treepo_det::OrderedMap::new());
 
+        // Explicit cell counts, then the budget-driven path — `cells_for` rounds a fixed-point
+        // product, so it is arithmetic a platform could disagree about and the sweep above
+        // would not have covered.
         for cells in [8u32, 64, 256] {
-            let allocation = table.normalize.allocate(&ownership, cells);
-            hasher.update(&(allocation.len() as u64).to_le_bytes());
-            hasher.update(&allocation.total().to_le_bytes());
-            hasher.update(&allocation.unclaimed().to_le_bytes());
-            for (key, held) in allocation.holders() {
-                hasher.update(key.as_bytes());
-                hasher.update(&held.to_le_bytes());
-            }
+            hash_mosaic(&mut hasher, &table.normalize.allocate(&ownership, cells));
+        }
+        for bytes in [0u64, 4096, 1 << 24, u64::MAX] {
+            let budget = table.normalize.budget(bytes);
+            hasher.update(&table.normalize.cells_for(budget).to_le_bytes());
+            hash_mosaic(&mut hasher, &table.normalize.mosaic(&ownership, budget));
         }
     }
 
     hasher.finalize()
+}
+
+/// One mosaic, as bytes.
+///
+/// Local to the probe rather than taken from `MaterialMap::digest`, because a mosaic sampled on
+/// its own has no material around it — the encoding that matters for the corpus lines is the
+/// canonical one, and this exists to catch a platform disagreeing about the *allocation* before
+/// it reaches a whole tree.
+fn hash_mosaic(hasher: &mut Sha256, mosaic: &treepo_model::Mosaic) {
+    hasher.update(&mosaic.cells().to_le_bytes());
+    hasher.update(&mosaic.claimed().to_le_bytes());
+    hasher.update(&mosaic.unclaimed().to_le_bytes());
+    hasher.update(&(mosaic.holder_count() as u64).to_le_bytes());
+    for (key, held) in mosaic.holders() {
+        hasher.update(key.as_bytes());
+        hasher.update(&held.to_le_bytes());
+    }
 }

@@ -7,12 +7,16 @@
 //! One requirement, two mechanisms, and they are separated here because they normalize
 //! different things. [`Normalize::budget`] turns a byte count into how much of the picture a
 //! *path* may occupy; [`Normalize::allocate`] turns contribution shares into how much of one
-//! limb's mosaic each *contributor* holds. Both exist to stop a large thing erasing a small
+//! limb's [`Mosaic`] each *contributor* holds. Both exist to stop a large thing erasing a small
 //! one, which is why `F-MAT-3` states them in one sentence.
 //!
-//! Neither decides what anything looks like. Family is [`material`](crate::material) and
-//! arrangement is the mosaic; this module is the arithmetic underneath, and it is separate so
-//! that `AC-MAT-1` and `AC-MAT-2` can be tested against numbers rather than against pictures.
+//! [`Normalize::mosaic`] is the two joined: a node's budget decides how finely its surface
+//! subdivides, and the shares decide who holds which part of it.
+//!
+//! Nothing here decides what anything looks like. Family is [`material`](crate::material) and
+//! the arrangement of the cells is [`Mosaic`]'s own documented reading; this module is the
+//! arithmetic underneath, and it is separate so that `AC-MAT-1` and `AC-MAT-2` can be tested
+//! against numbers rather than against pictures.
 //!
 //! # Why the scale is absolute, again
 //!
@@ -26,19 +30,17 @@
 //!
 //! # `N4`, and what a cell count is
 //!
-//! [`Allocation`] holds a cell count per contributor, which is a contribution share wearing
+//! [`Mosaic`] holds a cell count per contributor, which is a contribution share wearing
 //! different units. That is permitted and intended: `design/feature-system.md` §3.4 says
 //! share "may size a mosaic, allocate material, or seed an accent", and this is the sizing.
-//! What `N4` forbids is *surfacing* it — `AC-MAT-3` binds the UI, not this arithmetic.
-//!
-//! Two properties keep the arithmetic itself clean. Iteration is in [`AuthorKey`] order,
-//! which is hash order and carries no information about contribution. And there is no
-//! accessor for the largest holder, the ordering, or the remainder-by-rank, because supplying
-//! one would make a leaderboard a call away.
+//! What `N4` forbids is *surfacing* it — `AC-MAT-3` binds the UI, not this arithmetic. The two
+//! properties that keep the output itself clean — key-order iteration and the absence of any
+//! largest-holder accessor — travel with the type rather than living here.
 
 use crate::params::per_mille;
 use serde::Deserialize;
 use treepo_det::{Fx, OrderedMap};
+use treepo_model::Mosaic;
 use treepo_model::identity::AuthorKey;
 use treepo_model::primitives::ownership::OwnershipPrimitives;
 
@@ -107,6 +109,29 @@ pub struct Normalize {
     /// legibility at the cost of proportionality, which is a tuning question and therefore
     /// lives here.
     pub quota_cells: u32,
+    /// Cells in the mosaic of a node drawn at no budget at all.
+    ///
+    /// The coarse end of `P6`'s "legibility bounds how much of the mass is shown". A node drawn
+    /// small subdivided finely produces cells nobody can see, so the smallest node gets the
+    /// fewest, largest cells.
+    ///
+    /// At *no* budget rather than at the representation floor, because the count is linear over
+    /// the whole `0..=1` range and the floor is not zero — a floored node lands just above this
+    /// and nothing lands on it. Anchoring the range at the floor instead would tie the mosaic's
+    /// granularity to a `F-MAT-3` row it has no other business reading, to move every real
+    /// node's count by one.
+    ///
+    /// At least one, which [`validate`](Self::validate) enforces: a node whose mosaic had no
+    /// cells could not show its sole contributor, and `P7` does not distinguish between a path
+    /// with no pixels and a path whose pixels say nothing.
+    pub mosaic_min_cells: u32,
+    /// Cells in the mosaic of a node drawn at a full budget.
+    ///
+    /// The fine end. Between the two the count is linear in [`budget`](Self::budget), so a
+    /// node drawn twice as large is subdivided twice as finely and each cell covers about the
+    /// same area — which is what keeps `AC-MAT-4`'s "distinguishable at medium zoom" a
+    /// property of the palette rather than of how big the limb happened to be.
+    pub mosaic_max_cells: u32,
 }
 
 impl Normalize {
@@ -149,6 +174,38 @@ impl Normalize {
         }
     }
 
+    /// One node's whole mosaic — `F-MAT-2`, over a node already budgeted by `F-MAT-3`.
+    ///
+    /// The pairing the material walk calls: [`cells_for`](Self::cells_for) decides how finely
+    /// the surface subdivides and [`allocate`](Self::allocate) decides who holds which part.
+    /// `budget` is this node's own, as [`budget`](Self::budget) returned it.
+    #[must_use]
+    pub fn mosaic(&self, ownership: &OwnershipPrimitives, budget: Fx) -> Mosaic {
+        self.allocate(ownership, self.cells_for(budget))
+    }
+
+    /// How many cells a node drawn at `budget` subdivides into.
+    ///
+    /// Linear between [`mosaic_min_cells`](Self::mosaic_min_cells) at a zero budget and
+    /// [`mosaic_max_cells`](Self::mosaic_max_cells) at a full one. No real node carries a zero
+    /// budget — [`budget`](Self::budget) floors it — so the minimum is the bound rather than a
+    /// value anything is given.
+    ///
+    /// The budget rather than the byte count, because the budget is already the *drawn* size —
+    /// logged, clamped and floored — and it is the drawn size that decides how much room there
+    /// is to subdivide. Driving this from bytes instead would give a 50 MB asset a mosaic four
+    /// times finer than the source file beside it, which is exactly the disparity `F-MAT-3`
+    /// exists to compress.
+    #[must_use]
+    pub fn cells_for(&self, budget: Fx) -> u32 {
+        let span = self.mosaic_max_cells.saturating_sub(self.mosaic_min_cells);
+        let earned = Fx::from_int(i32::try_from(span).unwrap_or(i32::MAX))
+            .mul(budget)
+            .round();
+        self.mosaic_min_cells
+            .saturating_add(u32::try_from(earned.clamp(0, i64::from(span))).unwrap_or(span))
+    }
+
     /// How many of `cells` each contributor holds in one limb's mosaic.
     ///
     /// Two tiers, and the split is what makes `AC-MAT-2` a property rather than a hope:
@@ -168,7 +225,7 @@ impl Normalize {
     /// offered. Something has to give, and every alternative is worse: capping the guarantee
     /// breaks `AC-MAT-2`, and dropping contributors to fit requires choosing *which*, which
     /// is the ordering of people `N4` forbids. So the mosaic subdivides further instead, and
-    /// [`Allocation::total`] reports what it actually needs.
+    /// [`Mosaic::cells`] reports what it actually came to.
     ///
     /// This cannot run away. At most `1_000_000 / significant_ppm` contributors can be
     /// significant — a hundred of them at one percent — so the overshoot is bounded by that
@@ -182,9 +239,8 @@ impl Normalize {
     /// [`MaterialFamily`](treepo_model::MaterialFamily). Handing the remainder to the largest
     /// holder would be both a ranking and a small lie about who wrote what.
     #[must_use]
-    pub fn allocate(&self, ownership: &OwnershipPrimitives, cells: u32) -> Allocation {
+    pub fn allocate(&self, ownership: &OwnershipPrimitives, cells: u32) -> Mosaic {
         let mut held: OrderedMap<AuthorKey, u32> = OrderedMap::new();
-        let mut total: u32 = 0;
 
         // Key order — hash order — so this loop cannot become a ranking however it is read.
         for (&key, share) in ownership.shares() {
@@ -194,21 +250,12 @@ impl Normalize {
             } else {
                 earned
             };
-
-            // A contributor holding nothing is not in the mosaic. Recording a zero would make
-            // the map a contributor list rather than a description of what is drawn, and the
-            // caller would have to filter it before every use.
-            if granted > 0 {
-                held.insert(key, granted);
-                total = total.saturating_add(granted);
-            }
+            held.insert(key, granted);
         }
 
-        Allocation {
-            held,
-            requested: cells,
-            total,
-        }
+        // `Mosaic::new` drops the contributors who earned nothing and totals the rest, so the
+        // count and the map cannot be made to disagree by an arm of this loop.
+        Mosaic::new(held, cells)
     }
 
     /// Checks the section against the rules `F-MAT-3` and `P7` state.
@@ -309,6 +356,28 @@ impl Normalize {
             });
         }
 
+        // P7 again, in the mosaic's units: a node whose surface has no cells cannot show the
+        // one person who wrote it, and a floored budget would be a floor on nothing.
+        if self.mosaic_min_cells == 0 {
+            return Err(NormalizeError {
+                row: "mosaic_min_cells",
+                detail: "the smallest mosaic still has a cell in it, or a node at the \
+                         representation floor has nowhere to draw its contributors",
+            });
+        }
+
+        // Equal is permitted — a fixed-size mosaic is a defensible tuning position. Inverted
+        // is not: `cells_for` would return the minimum for every node, so the fine end would
+        // be configured and unreachable, which is the failure `clamp_beyond == 0` is refused
+        // for arriving by arithmetic instead of by configuration.
+        if self.mosaic_max_cells < self.mosaic_min_cells {
+            return Err(NormalizeError {
+                row: "mosaic_max_cells",
+                detail: "the fine end of the mosaic sits at or above the coarse end, or a \
+                         larger node is subdivided no further than a smaller one",
+            });
+        }
+
         Ok(())
     }
 
@@ -323,76 +392,6 @@ impl Normalize {
             return 0;
         }
         (PER_MILLION / self.significant_ppm).saturating_mul(self.quota_cells)
-    }
-}
-
-/// Who holds how much of one limb's mosaic — the output of [`Normalize::allocate`].
-///
-/// Deliberately not a `Vec<(AuthorKey, u32)>`: a sequence invites an order, and the order
-/// someone would reach for is by size. The map iterates in key order and there is no accessor
-/// that would rank it (`N4`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Allocation {
-    held: OrderedMap<AuthorKey, u32>,
-    requested: u32,
-    total: u32,
-}
-
-impl Allocation {
-    /// Every contributor drawn in this mosaic and how many cells they hold, in key order.
-    ///
-    /// Contributors holding nothing are absent — see [`Normalize::allocate`].
-    pub fn holders(&self) -> impl Iterator<Item = (&AuthorKey, &u32)> {
-        self.held.iter()
-    }
-
-    /// How many cells one contributor holds. Zero if they are not drawn here.
-    #[must_use]
-    pub fn cells_for(&self, author: &AuthorKey) -> u32 {
-        self.held.get(author).copied().unwrap_or(0)
-    }
-
-    /// Whether this contributor appears in the mosaic at all.
-    ///
-    /// The `AC-MAT-2` predicate, and the one a caller should reach for: presence is what `N4`
-    /// permits asking about, magnitude is what it does not.
-    #[must_use]
-    pub fn is_present(&self, author: &AuthorKey) -> bool {
-        self.held.contains_key(author)
-    }
-
-    /// How many contributors are drawn.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.held.len()
-    }
-
-    /// Whether nothing is drawn — an unattributed path, which is an ordinary case (PRD §6).
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.held.is_empty()
-    }
-
-    /// The cell count the caller offered.
-    #[must_use]
-    pub const fn requested(&self) -> u32 {
-        self.requested
-    }
-
-    /// The cell count actually needed, which may exceed [`requested`](Self::requested).
-    ///
-    /// See [`Normalize::allocate`] for why exceeding it is the answer rather than an error.
-    #[must_use]
-    pub const fn total(&self) -> u32 {
-        self.total
-    }
-
-    /// Cells the mosaic does not claim, which the primary material shows through.
-    ///
-    /// Zero when the guaranteed quotas have made the mosaic grow instead.
-    #[must_use]
-    pub const fn unclaimed(&self) -> u32 {
-        self.requested.saturating_sub(self.total)
     }
 }
 
@@ -525,6 +524,15 @@ mod tests {
             );
             assert!(allocation.cells_for(&minor) >= n.quota_cells);
         }
+
+        // And at every mosaic size the shipped table can actually produce, which is the range
+        // that matters — a criterion held only at sizes the product never picks is not held.
+        for budget in [per_mille(n.floor), Fx::HALF, Fx::ONE] {
+            assert!(
+                n.mosaic(&owned, budget).is_present(&minor),
+                "a 2% contributor vanished from a node budgeted at {budget}"
+            );
+        }
     }
 
     /// The rounding-down that makes the quota necessary. Without it this test would pass for
@@ -552,12 +560,13 @@ mod tests {
         let allocation = n.allocate(&owned, 64);
         // At 0.1% each, nobody is significant, so nobody is guaranteed anything and the
         // mosaic does not grow at all.
-        assert!(
-            allocation.total() <= 64,
+        assert_eq!(
+            allocation.cells(),
+            64,
             "a thousand equal authors grew the mosaic to {}",
-            allocation.total()
+            allocation.cells()
         );
-        assert!(allocation.total() <= 64 + n.max_guaranteed_cells());
+        assert!(allocation.claimed() <= 64 + n.max_guaranteed_cells());
     }
 
     /// The bound `allocate` claims, at the worst case it is claimed for: as many significant
@@ -571,13 +580,14 @@ mod tests {
         assert_eq!(owned.author_count() as usize, holders);
 
         let allocation = n.allocate(&owned, 4);
-        assert_eq!(allocation.len(), holders);
+        assert_eq!(allocation.holder_count(), holders);
         assert!(
-            allocation.total() <= 4 + n.max_guaranteed_cells(),
+            allocation.claimed() <= 4 + n.max_guaranteed_cells(),
             "{} cells for {holders} contributors, bound {}",
-            allocation.total(),
+            allocation.claimed(),
             4 + n.max_guaranteed_cells()
         );
+        assert!(allocation.cells() > 4, "the mosaic subdivided further");
         assert_eq!(
             allocation.unclaimed(),
             0,
@@ -593,7 +603,7 @@ mod tests {
         let allocation = n.allocate(&ownership(&[(only, 42)]), 64);
         assert_eq!(allocation.cells_for(&only), 64);
         assert_eq!(allocation.unclaimed(), 0);
-        assert_eq!(allocation.len(), 1);
+        assert_eq!(allocation.holder_count(), 1);
     }
 
     /// PRD §6, "No `.git`" and "Empty repository": an unattributed path is ordinary, and the
@@ -603,7 +613,7 @@ mod tests {
         let n = shipped();
         let allocation = n.allocate(&ownership(&[]), 64);
         assert!(allocation.is_empty());
-        assert_eq!(allocation.total(), 0);
+        assert_eq!(allocation.claimed(), 0);
         assert_eq!(allocation.unclaimed(), 64);
     }
 
@@ -615,12 +625,48 @@ mod tests {
         // Three contributors at a third each: 21 cells apiece of 64, one left over.
         let owned = ownership(&[(author(1), 1), (author(2), 1), (author(3), 1)]);
         let allocation = n.allocate(&owned, 64);
-        assert_eq!(allocation.total(), 63);
+        assert_eq!(allocation.claimed(), 63);
         assert_eq!(allocation.unclaimed(), 1);
         // And it was not quietly handed to anyone — which would have required picking one.
         for (_, &cells) in allocation.holders() {
             assert_eq!(cells, 21);
         }
+    }
+
+    /// `P6`: a node drawn small is subdivided coarsely, and one drawn large finely — so a
+    /// cell covers about the same area wherever it appears.
+    #[test]
+    fn a_bigger_node_is_subdivided_more_finely() {
+        let n = shipped();
+        assert_eq!(n.cells_for(Fx::ZERO), n.mosaic_min_cells);
+        assert_eq!(n.cells_for(Fx::ONE), n.mosaic_max_cells);
+
+        // Monotonic across the whole budget range, and never outside the stated bounds — a
+        // count that dipped would make a bigger limb coarser than a smaller one.
+        let mut previous = 0;
+        for step in 0..=1000i64 {
+            let cells = n.cells_for(Fx::from_ratio(step, 1000));
+            assert!(cells >= previous, "the count fell at {step} per mille");
+            assert!((n.mosaic_min_cells..=n.mosaic_max_cells).contains(&cells));
+            previous = cells;
+        }
+
+        // And a real spread: a fixed-count mosaic would pass every assertion above.
+        assert!(n.cells_for(Fx::ONE) > n.cells_for(per_mille(n.floor)));
+    }
+
+    /// The floored budget is the smallest a real node can carry, so it is the case `P7` is
+    /// actually about — a mosaic there must still be able to show somebody.
+    #[test]
+    fn the_smallest_node_still_has_a_mosaic() {
+        let n = shipped();
+        let only = author(7);
+        let floored = n.budget(0);
+        let mosaic = n.mosaic(&ownership(&[(only, 1)]), floored);
+
+        assert!(mosaic.cells() > 0);
+        assert_eq!(mosaic.cells_for(&only), mosaic.cells());
+        assert_eq!(mosaic.unclaimed(), 0, "one author holds the whole surface");
     }
 
     /// `N4`: the output must not be readable as a ranking, however it is iterated.
@@ -638,7 +684,11 @@ mod tests {
             .collect();
         let owned = ownership(&counts);
         let allocation = n.allocate(&owned, 256);
-        assert_eq!(allocation.len(), 8, "every contributor here is significant");
+        assert_eq!(
+            allocation.holder_count(),
+            8,
+            "every contributor here is significant"
+        );
 
         let iterated: alloc::vec::Vec<AuthorKey> = allocation.holders().map(|(&k, _)| k).collect();
         let mut by_key = iterated.clone();
@@ -719,6 +769,21 @@ mod tests {
                 "quota_cells",
                 Normalize {
                     quota_cells: 0,
+                    ..base
+                },
+            ),
+            (
+                "mosaic_min_cells",
+                Normalize {
+                    mosaic_min_cells: 0,
+                    ..base
+                },
+            ),
+            // Inverted, so the fine end would be configured and unreachable.
+            (
+                "mosaic_max_cells",
+                Normalize {
+                    mosaic_max_cells: base.mosaic_min_cells - 1,
                     ..base
                 },
             ),

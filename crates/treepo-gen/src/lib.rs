@@ -5,8 +5,8 @@
 //!
 //! * **the structural skeleton** — topology, limb geometry, thickness, angles.
 //!   [`params`], [`lsystem`], [`trunk`] (`F-SKEL-1`…`F-SKEL-7`).
-//! * **material** — what each limb is made of and how much of the picture it may occupy.
-//!   [`material`], [`normalize`] (`F-MAT-1`, `F-MAT-3`).
+//! * **material** — what each limb is made of, who is drawn on it, and how much of the
+//!   picture it may occupy. [`material`], [`normalize`] (`F-MAT-1`, `F-MAT-2`, `F-MAT-3`).
 //!
 //! Enrichment placement and everything alive arrive in later layers and later phases.
 //!
@@ -67,7 +67,7 @@ pub mod params;
 pub mod trunk;
 
 pub use lsystem::compose;
-pub use normalize::{Allocation, Normalize, NormalizeError};
+pub use normalize::{Normalize, NormalizeError};
 pub use params::{LimbParams, SkeletonInputs, Table, TableError, TrunkParams};
 pub use trunk::grow;
 
