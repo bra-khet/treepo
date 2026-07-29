@@ -82,7 +82,7 @@ That S3 → S3b sequence is the forced order working as intended, and worth reco
 | **S3** | Basal vs stem rule + validate | **done** 2026-07-28 (`4d01807`) |
 | **S3b** | Trunk column: pipe support + primary internodes | **done** 2026-07-28 |
 | **S4** | HTML lab MVP | **done** 2026-07-28 (`m0-silhouette lab`) |
-| **S5** | AC-SKEL-1 subject pair | pending |
+| **S5** | AC-SKEL-1 subject pair | **done** 2026-07-29 — `skel1-clean` / `skel1-messy` corpus shapes + lab subjects |
 | **S6** | Tuning campaign via lab | **partial** 2026-07-29 — first promote + joint-promote micro-pass (fan 80°, tropism/ground, jitter wild weights). Capacity needs_code and Family C still open. |
 | **S7** | Determinism / budget gate hardening | pending |
 

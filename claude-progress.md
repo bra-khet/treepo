@@ -1226,6 +1226,19 @@ cargo xtask readonly-audit
 `cargo xtask budget` is deliberately *not* in that list — it needs several gigabytes of clones
 and several minutes. Run it when extraction changes, not before every push.
 
+## S5 — AC-SKEL-1 subject pair (2026-07-29)
+
+Two synthetic corpus fixtures of comparable size, wired into the lab strip:
+
+| Id | Paths | Role |
+|----|------:|------|
+| `skel1-clean` | 38 | Conventional `src`/`tests`/`docs`, single language (Rust), balanced modules |
+| `skel1-messy` | 44 | Unconventional names, mixed languages, fat `dump/` + thin leaves, multi-author |
+
+Same order of magnitude so AC-SKEL-1 judges **shape** (orderly vs wild), not scale. Listed in
+`qa/subjects.ron` for `m0-silhouette lab`. Eye judgment of the criterion is still a lab pass;
+this sprint only supplies the pair.
+
 ## Joint-promote micro-pass — session `20260729_042807_joint-promote` (2026-07-29)
 
 Second promote after joint eye on the first table. Four lab prefers plus D1-safe jitter:
@@ -1285,7 +1298,7 @@ Focus for the human second pass:
 3. **Organic mess without breaking D1** — raise `angle_jitter` *weights* (skew_abs /
    diversity / fragmentation), not `base`.
 4. **Tropism row** — only `ground.lift` promoted; `tropism.base` / engage / release still open.
-5. **S5 AC-SKEL-1 pair** — still no clean/messy comparable subjects.
+5. **S5 AC-SKEL-1 pair** — **done** (`skel1-clean` / `skel1-messy`); eye judgment still open in lab.
 
 Then `tests/determinism.rs` plus a skeleton probe in `cargo xtask determinism`, which turns
 `AC-DET-1`/`AC-DET-2` from "the primitives are reproducible" into "the tree is" across three
@@ -1301,9 +1314,8 @@ code that already exists into the gate. `AC-SKEL-3`'s T3 budget wants a `skeleto
 `cargo xtask budget` against the existing pins; composition is bounded by construction
 (capacity × level cap), but bounded is not measured.
 
-`AC-SKEL-1` needs a corpus pair it does not have: two repositories of similar size, one clean
-and conventional, one high-skew and mixed-language. Either fetch the T1 pin or add the pair to
-`tools/corpus`. Until then the criterion has nothing to be judged against.
+`AC-SKEL-1` has a synthetic comparable pair (`skel1-clean` / `skel1-messy`). A real T1 pin
+(e.g. ripgrep) remains optional for a later sanity check against non-synthetic structure.
 
 Carried forward, neither blocking:
 

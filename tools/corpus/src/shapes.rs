@@ -168,6 +168,22 @@ pub fn all_shapes() -> &'static [Shape] {
             platforms: Platforms::All,
             build: build_dirty_worktree,
         },
+        // ── AC-SKEL-1 comparable pair ───────────────────────────────────────────────────
+        // Same order of magnitude (~40 tracked files, similar total LOC). Differ on the
+        // signals AC-SKEL-1 names: convention, language mix, hierarchy skew. One parameter
+        // table must make the clean one read orderly and the messy one wilder.
+        Shape {
+            name: "skel1-clean",
+            covers: "AC-SKEL-1 clean half; conventional, single-language, balanced",
+            platforms: Platforms::All,
+            build: build_skel1_clean,
+        },
+        Shape {
+            name: "skel1-messy",
+            covers: "AC-SKEL-1 messy half; high-skew, mixed-language, unconventional",
+            platforms: Platforms::All,
+            build: build_skel1_messy,
+        },
         Shape {
             name: "symlinks",
             covers: "PRD §6 Symlinks",
@@ -360,6 +376,122 @@ fn build_excluded_content(root: &Path, name: &str) -> Result<(), BuildError> {
     builder.write("legacy.log", b"tracked despite the pattern\n")?;
     builder.git(&["add", "--force", "legacy.log"])?;
     builder.commit("track a file the ignore file also matches")?;
+    Ok(())
+}
+
+/// AC-SKEL-1 clean half: conventional layout, one language, even hierarchy, comparable size
+/// to [`build_skel1_messy`].
+///
+/// ~40 files of Rust under `src/`, `tests/`, and `docs/` — the folder-signals dictionary's
+/// high-convention names — with modules spread evenly so skew stays near zero. Built so a
+/// lab strip can judge orderly vs wild from one table without fetching a T1 pin.
+fn build_skel1_clean(root: &Path, name: &str) -> Result<(), BuildError> {
+    let mut builder = Builder::init(root.to_path_buf(), name)?;
+    builder.write("README.md", b"# skel1-clean\n\nA conventional single-language library.\n")?;
+    builder.write(
+        "Cargo.toml",
+        b"[package]\nname = \"skel1-clean\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+
+    builder.write_source("src/lib.rs", 40)?;
+    builder.write_source("src/main.rs", 25)?;
+    // Three peer modules under src, each with four even siblings — balance, not a fan.
+    for module in ["core", "io", "util"] {
+        builder.write_source(&format!("src/{module}/mod.rs"), 20)?;
+        for part in ["a", "b", "c", "d"] {
+            builder.write_source(&format!("src/{module}/{part}.rs"), 35)?;
+        }
+    }
+    // Tests mirror the layout; convention weight stays high without adding hierarchy skew.
+    for test_name in [
+        "core_a", "core_b", "io_a", "io_b", "util_a", "util_b", "integration", "smoke",
+    ] {
+        builder.write_source(&format!("tests/{test_name}.rs"), 28)?;
+    }
+    for doc in ["guide", "api", "architecture", "changelog"] {
+        builder.write(
+            &format!("docs/{doc}.md"),
+            format!("# {doc}\n\nProject documentation for the clean half of AC-SKEL-1.\n").as_bytes(),
+        )?;
+    }
+
+    builder.commit("conventional library scaffold")?;
+    // A few tidy follow-ups so history exists without ownership scatter (G1 / AC-SKEL-1).
+    builder.write_source("src/lib.rs", 50)?;
+    builder.commit("expand the public surface")?;
+    builder.write_source("tests/integration.rs", 40)?;
+    builder.commit("integration coverage")?;
+    Ok(())
+}
+
+/// AC-SKEL-1 messy half: high-skew hierarchy, several languages, unconventional names.
+///
+/// Matched in *size* to [`build_skel1_clean`] (~40 files, similar total LOC) so AC-SKEL-1
+/// compares shape, not scale. Differs on the three signals the criterion names: skew (one
+/// fat dump plus many thin top-level leaves), mixed language, and folder names the
+/// convention dictionary does not recognize.
+fn build_skel1_messy(root: &Path, name: &str) -> Result<(), BuildError> {
+    let mut builder = Builder::init(root.to_path_buf(), name)?;
+    builder.write("readme.txt", b"no structure just files\n")?;
+
+    // Unconventional top-level names — none of these hit folder-signals.ron heavily.
+    // One heavy dump (fan / bushiness) plus scattered one-offs (skew).
+    let dump = [
+        ("dump/main.rs", 80usize),
+        ("dump/helpers.rs", 55),
+        ("dump/legacy.rs", 120),
+        ("dump/wip.rs", 15),
+        ("dump/more.rs", 40),
+        ("dump/extra.rs", 35),
+        ("dump/tool.py", 70),
+        ("dump/script.py", 45),
+        ("dump/util.py", 30),
+        ("dump/app.js", 90),
+        ("dump/client.js", 50),
+        ("dump/server.ts", 65),
+        ("dump/worker.go", 55),
+        ("dump/cmd.go", 25),
+        ("dump/Service.java", 75),
+        ("dump/Helper.java", 40),
+        ("dump/cli.rb", 35),
+        ("dump/notes.rb", 20),
+        ("dump/glue.php", 45),
+        ("dump/old.c", 60),
+    ];
+    for (path, lines) in dump {
+        builder.write_source(path, lines)?;
+    }
+
+    // Thin unconventional leaves at the root and under misnamed folders.
+    let leaves = [
+        ("stuff/thing1.js", 12usize),
+        ("stuff/thing2.py", 18),
+        ("misc/x.go", 10),
+        ("misc/y.rs", 8),
+        ("tmpcode/a.java", 22),
+        ("tmpcode/b.ts", 16),
+        ("project-files/data.rb", 14),
+        ("old-code/archive.php", 30),
+        ("x1/only.rs", 9),
+        ("wip.py", 25),
+        ("scratch.js", 15),
+        ("notes.go", 11),
+        ("todo.java", 19),
+        ("hack.rb", 13),
+        ("blob.c", 40),
+    ];
+    for (path, lines) in leaves {
+        builder.write_source(path, lines)?;
+    }
+
+    // Multi-author history so fragmentation can move D1/D3 without needing churn windows.
+    builder.commit_as("dump everything", "Alice", "alice@example.invalid")?;
+    builder.write_source("dump/legacy.rs", 140)?;
+    builder.commit_as("more legacy", "Bob", "bob@example.invalid")?;
+    builder.write_source("wip.py", 40)?;
+    builder.commit_as("scratch work", "Cara", "cara@example.invalid")?;
+    builder.write_source("dump/app.js", 100)?;
+    builder.commit_as("front end sprawl", "Dev", "dev@example.invalid")?;
     Ok(())
 }
 

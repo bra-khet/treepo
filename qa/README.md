@@ -122,8 +122,8 @@ One parameter family at a time (`design/l-system-parameterization.md` §6).
 
 ### Default subject strip
 
-Listed in [`subjects.ron`](subjects.ron). For AC-SKEL-1, a clean-vs-messy comparable pair is
-still missing from the corpus; the plan’s S5 covers that.
+Listed in [`subjects.ron`](subjects.ron). Includes the AC-SKEL-1 pair `skel1-clean` /
+`skel1-messy` (synthetic, comparable size; see `tools/corpus` shapes).
 
 ---
 
