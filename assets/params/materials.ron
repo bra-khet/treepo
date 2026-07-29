@@ -1,4 +1,4 @@
-// The material table — `F-MAT-1`, `F-MAT-2`, `F-MAT-3`, `design/feature-system.md` §8.4–§8.5.
+// The material table — `F-MAT-1` … `F-MAT-4`, `design/feature-system.md` §8.3–§8.5.
 //
 // Read by `treepo-gen::material`. This file decides what a limb is made of and how much of
 // the picture it may occupy. Editing it changes every material treepo draws with no rebuild,
@@ -34,6 +34,10 @@
 // * **parts per million** — contribution shares, because that is the unit `AuthorShare`
 //   carries and converting at the boundary would round twice.
 // * **bytes** — absolute, and only for `full_scale_bytes`.
+// * **days** — absolute, and only for `age_full_scale_days`. Whole days, because that is the
+//   resolution `TemporalPrimitives` reports ages in and a finer one would be false precision
+//   about a commit timestamp supplied by someone else's machine.
+// * **cells** — counts, for the mosaic.
 (
     version: 1,
 
@@ -145,5 +149,29 @@
         // silhouette lab at once it does.
         mosaic_min_cells: 8,
         mosaic_max_cells: 64,
+
+        // ---------------------------------------------------------------------------------
+        // F-MAT-4 — the age scale
+        // ---------------------------------------------------------------------------------
+
+        // The age in days that reads as fully old. Absolute, never the repository's own
+        // oldest commit — the same argument `full_scale_bytes` makes, and it bites harder
+        // here: one vendored directory carrying a decade of upstream history would otherwise
+        // make every limb in the tree read as new.
+        //
+        // Ten years, and logarithmic like the byte scale, so the range is spent where it can
+        // be used. Yesterday against last week is a visible step; four years against four
+        // years and a week is not, and a linear scale would give them the same room. The
+        // consequence to expect is that a couple of months already reads as halfway old —
+        // that is the compression working, not a mis-set number, and it is the recent end
+        // §8.3's "tip vitality" is about.
+        //
+        // Refused below 30 days: under a month the scale cannot separate anything a person
+        // would call recent, and everything older collapses to one value.
+        //
+        // Note this interacts with nothing else in the file. Age is anchored to the newest
+        // commit *in the repository*, so this row moves how age is shaded, never what counts
+        // as now.
+        age_full_scale_days: 3650,
     ),
 )

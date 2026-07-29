@@ -2099,28 +2099,139 @@ Local gate green: fmt, clippy `-D warnings` (workspace, all targets), **528 test
 
 ---
 
+## S13 — `F-MAT-4`, the age gradient (2026-07-29)
+
+Every node now knows *when*. `AgeGradient` in `treepo-model::material`, an
+`Option<AgeGradient>` on `Material`, gathered by the walk from the same records as everything
+else.
+
+`params.rs`'s `G1` row settled the placement before the slice started: "age and churn
+influence the skeleton not at all; they live in the material and Thrive layers", with
+`no_temporal_primitive_reaches_the_skeleton` enforcing it. So this is the layer that owns age,
+and seeding dates into the shared fixture could not move a skeleton digest — which the run
+confirmed.
+
+### The gradient is the node's own commit span
+
+`first_commit_age` at the base, `last_commit_age` at the tip. Both stored, both rolled up by
+extraction, nothing invented. The consequence worth stating: **a single-path limb has a real
+gradient**, because a file created three years ago and touched yesterday spans those two
+dates. §8.3's "growth rings + tip vitality" falls out of two numbers Phase 1 already recorded,
+rather than needing a per-node constant plus an interpolation nobody could justify.
+
+And because a first commit cannot be newer than a last one, **`base >= tip` is an invariant of
+the type**. `AgeGradient::new` orders its arguments, so `F-MAT-4`'s direction holds even for a
+caller who passes them the other way round — the requirement is checked by the compiler-adjacent
+thing rather than by convention.
+
+A path with one commit has one moment: `base == tip`, `is_uniform()`, no gradient to draw.
+That is the honest rendering, and the corpus shows it is the common case for small fixtures.
+
+### What `F-MAT-4` deliberately is not
+
+Ordering the mosaic's *cells* by contributor recency was the composition that suggested
+itself — §8.3 says "material cells", `ownership_over` already merges a per-author recency, and
+the mosaic already runs base-to-tip. It is not this feature. `F-MAT-4` says "material
+corresponding to older **paths**", and an arrangement that put the most recently active
+contributor at every tip would be an ordering of people readable straight off the picture.
+Cells stay in key order. Recorded in `materialize`'s docs so the next person meets the
+argument instead of re-deriving it.
+
+### `None` rather than a neutral
+
+No history is *unknown*, not old. A neutral value would render a fresh working directory as
+ancient — or, picking the other end, as brand new, which is the same fabrication mirrored. The
+digest gives the `Option` its own discriminant so "no history" and "history that normalizes to
+zero" cannot collide.
+
+### Logarithmic, and one more table row
+
+`age_full_scale_days: 3650`, log-scaled by the same `Fx::log2_u64` slice 1 built. The recent
+end gets the range, because yesterday-against-last-week is a visible step and four-years-
+against-four-years-and-a-week is not. Expect a couple of months to already read as halfway
+old; that is the compression working. Refused below 30 days, where the scale could not
+separate anything a person would call recent.
+
+Absolute rather than repository-relative, and the argument bites harder here than for bytes:
+one vendored directory carrying a decade of upstream history would otherwise make every limb
+in the tree read as new.
+
+### The corpus check that mattered more than the measurement
+
+`F-MAT-4` is the first feature to put **commit timestamps into a digest**. A corpus that dated
+from the wall clock would produce a different report on every runner and break `AC-DET-2` by
+construction — the identity-seed trap arriving through the calendar.
+
+Checked rather than assumed: `tools/corpus/src/lib.rs:253` writes `"{epoch} +0000"` into both
+`GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`, stepping a fixed 2021-01-01 `EPOCH`. Absolute
+integers with an explicit offset, so neither clock nor timezone can reach a fixture's history.
+The harness docs now say so, because the next person to add a time-dependent feature will want
+to know it was verified and not hoped.
+
+### Measured on the corpus
+
+Every history-bearing fixture is fully dated — no `None` outside `empty` and `no-git`. Real
+gradients where there is real history: `many-authors` grades all 6 nodes with a widest span of
+0.50, `skel1-messy` 11 of 35, `single-author` 8 of 15. The all-uniform fixtures
+(`single-file`, `deep-nesting`, `huge-file`, the four identity fixtures) are single-commit, so
+uniform is the correct answer.
+
+One orthogonality worth noting: `huge-file` is **10/10 dated** including `assets/enormous.bin`,
+which has no mosaic. A binary has commits but no lines, so it has an age and no owner. The two
+absent-ish cases are independent, and neither is the missing-from-manifest defect.
+
+### Two test corrections, both from guards firing
+
+- `a_gathered_span…` tripped its own vacuity guard: in the shaped fixture `src` holds 42 files,
+  so its rolled-up span already covers `docs` and `assets` at *both* ends and the test could
+  not tell gathering from copying. Split into a purpose-built pair (one ancient-dormant, one
+  young-active, so the two ends come from different records, asserted in both orders) plus a
+  containment check over the real walk.
+- `the_older_end_is_always_the_base` asserted `from_ratio(9,10) - from_ratio(1,10) ==
+  from_ratio(8,10)`, which is one ulp off in Q32.32. Switched to quarters, which are exact in
+  binary. A fixed-point test that pins a constant across a subtraction is pinning a rounding
+  artefact.
+
+```
+material      34604d57fc502b675cc771c5633bdfcbf04d282235a4ddacd9bf276fd4f8c881
+overall       3e5cdfcd249b975e38b0cad03a7d746189f0fb55e9d21333888384f13eaccbbc
+```
+
+**All eighteen `skeleton/*` lines byte-identical to S12's** — `G1` holding, observably. Every
+`material/*` line moved, as the `treepo-material-v3` tag and the new field require.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), **541 tests**, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages), `cargo deny`, readonly-audit (18 fixtures,
+0 writes, detector 4/4), determinism reproducible over 3 runs. `AC-DET-2` proper still needs
+the CI run.
+
+---
+
 ## Next
 
-**Phase 4, continued — `F-MAT-4`, the age/recency gradient** (`design/feature-system.md` §8.3).
-S10 built the families and the arithmetic, S11 gave every node a material, S12 gave every node
-a mosaic. What no node carries yet is *when*.
+**Phase 4, continued — `F-MAT-5`, enrichment placement.** S10 built the families and the
+arithmetic, S11 gave every node a material, S12 a mosaic, S13 an age. What no node carries yet
+is what is *placed on* it.
 
-§8.3 is explicit about the axis: "older material migrates or remains basal/inward; recent
-material becomes more distal/tip-ward". That is the same base-to-tip axis `Mosaic`'s cells run
-along, and it is the reason the mosaic took that axis rather than the width — the two signals
-are meant to share a substrate, with ownership deciding a cell's *colour* and recency deciding
-where along the limb it *sits*. So the honest shape of `F-MAT-4` is probably not a fourth
-independent field but a bias on the cell ordering, and settling that is the first question of
-the slice.
+`Composition::Subordinate` was built for this and is still the only arm nothing reads: a
+container holding mostly `Parchment` becomes a bookshelf, mostly `Ore` a stockpile, and the
+whole inventory survives (rather than the top two) precisely so this slice can ask it. PRD
+`F-MAT-5` names four: docs → bookshelves or archive platforms; assets/binaries → stockpiles and
+crates; tests → distinct secondary growth or proving-ground platforms; high-churn clusters →
+work sites.
 
-The inputs are already extracted and already merged: `TemporalPrimitives::recency_heat` is a
-0..1 "how much of this path's life happened recently", computed without `exp` for `N3`, and
-`ownership_over` merges per-author `recency` as the latest across a container's members
-precisely so this slice has data rather than an empty map.
+Two things to settle, in the order they bite:
 
-Then **`F-MAT-5`** (enrichment placement, which reads `Composition::Subordinate` — a container
-of mostly `Parchment` becomes a bookshelf, mostly `Ore` a stockpile; that arm was built for
-this). `F-MAT-6`'s stress materials are `P2` and the designated cut.
+1. **What a placement *is*.** Enrichment sits somewhere on a limb, and the limb's length axis
+   now carries two readings already — the mosaic's cells and the age gradient. A placement is
+   presumably a position along that same axis plus a kind, but whether it also needs a size,
+   and whether several may share a position, is the decision that shapes the visual.
+2. **Where the "tests" and "high-churn" signals come from.** The first two kinds fall out of
+   `Composition::Subordinate` directly. Tests are `DerivedSignals`/`FolderSignal::test_like_ratio`
+   and churn is `ChurnWindows` — both extracted, neither read by this crate yet, so the slice
+   widens what `resolve` gathers for the third time.
+
+`F-MAT-6`'s stress materials are `P2` and the designated cut.
 
 Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
 an ordered contributor collection or a share as a figure"** — still needing a test that says so
@@ -2131,13 +2242,16 @@ that is accepted rather than overlooked. The crate-level test should therefore a
 *shape* of the API — no accessor returns a ranking, no `Display` surfaces a share — rather than
 claim a guarantee the compiler does not hold.
 
-Two things S12 recorded rather than resolved:
+Three things recorded rather than resolved, all waiting on materials having an appearance:
 
-- **The mosaic arrangement is contiguous runs in key order.** A seeded per-node shuffle would
-  make a bad colour pairing local instead of systemic across every limb two contributors share.
-  It needs a `Seed` in `material_from` and it cannot be judged until mosaics render.
-- **`mosaic_min_cells: 8` / `mosaic_max_cells: 64` are set by argument**, like `blend_floor`.
-  Second thing to point the silhouette lab at once materials have an appearance.
+- **The mosaic arrangement is contiguous runs in key order** (S12). A seeded per-node shuffle
+  would make a bad colour pairing local instead of systemic across every limb two contributors
+  share. It needs a `Seed` in `material_from` and it cannot be judged until mosaics render.
+- **`mosaic_min_cells: 8` / `mosaic_max_cells: 64` are set by argument** (S12), like
+  `blend_floor`.
+- **`age_full_scale_days: 3650` is set by argument** (S13). Ten years, log-scaled, which puts a
+  couple of months at halfway old. Defensible and untested against a picture — the third thing
+  for the silhouette lab, after `blend_floor` and the cell bounds.
 
 **`blend_floor` is the first material number set by argument rather than by looking.** 80 per
 mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until

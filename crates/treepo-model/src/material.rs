@@ -11,13 +11,14 @@
 //! The crate header said material types would "arrive with the phases that produce them",
 //! and Phase 4 produces them in slices. What is here is [`MaterialFamily`], the primary
 //! material of `F-MAT-1`; [`Composition`], what the rest of a node is made of or holds;
-//! [`Material::budget`], the normalized representation of `F-MAT-3`; and [`Mosaic`], the
-//! ownership partition of `F-MAT-2`.
+//! [`Material::budget`], the normalized representation of `F-MAT-3`; [`Mosaic`], the
+//! ownership partition of `F-MAT-2`; and [`AgeGradient`], where along a node its material
+//! sits (`F-MAT-4`).
 //!
-//! What is deliberately *not* here yet is the age/recency gradient (`F-MAT-4`) and the stress
-//! signals (`F-MAT-6`). Each is a field on [`Material`] when the slice that computes it lands.
-//! Declaring them now would be the guess the crate header warned about — a field nothing
-//! writes is a field a renderer will read anyway.
+//! What is deliberately *not* here yet is the stress signals of `F-MAT-6`. They are a field on
+//! [`Material`] when the slice that computes them lands. Declaring one now would be the guess
+//! the crate header warned about — a field nothing writes is a field a renderer will read
+//! anyway.
 //!
 //! # Made of, against owned by
 //!
@@ -427,7 +428,106 @@ impl Mosaic {
     }
 }
 
-/// What one skeleton node is made of, and who is drawn on it.
+/// How old a node's material is at its base and at its tip — `F-MAT-4`.
+///
+/// > Age/recency gradient: older material sits basal/inward, recent material distal/tip-ward.
+///
+/// `design/feature-system.md` §8.3 states the rule and names what it buys: "a natural growth
+/// rings + tip vitality reading without requiring explicit ring geometry".
+///
+/// # The two numbers are the node's own commit span
+///
+/// [`base`](Self::base) is the normalized age of the *first* commit to anything the node stands
+/// for; [`tip`](Self::tip) is the age of the *last*. Nothing is invented — both come from
+/// [`TemporalPrimitives`](crate::primitives::temporal::TemporalPrimitives), both roll up the
+/// tree during extraction, and a file created three years ago and touched yesterday therefore
+/// reads old at its base and vital at its tip without anyone deciding it should.
+///
+/// A path with one commit has one moment, so `base == tip` and the limb is uniform. That is
+/// the honest rendering rather than a degenerate one: there is no span, so there is no
+/// gradient.
+///
+/// # `base >= tip`, always
+///
+/// A first commit cannot be newer than a last one, so the requirement's direction is an
+/// invariant of the type rather than a convention callers follow. [`new`](Self::new) orders its
+/// arguments, so it holds even for a caller who passes them the other way round.
+///
+/// # Zero is new, one is old
+///
+/// Both values are normalized ages in `0..=1`, against the absolute scale in
+/// `assets/params/materials.ron` — never against the repository's own oldest path, for the
+/// reason [`normalize`](../../treepo_gen/normalize/index.html) gives about
+/// `full_scale_bytes`: a repository-relative scale means one ancient vendored file
+/// renormalizes every limb in the tree.
+///
+/// The direction is worth stating because it inverts against everything else here — a large
+/// [`budget`](Material::budget) is more, a large age is *older*, and `F-MAT-4`'s sentence is
+/// about age rather than about vitality. A renderer wanting the vitality reading of §8.3's
+/// Thrive manifestation should take `ONE - age`, or read
+/// [`recency_heat`](crate::primitives::temporal::TemporalPrimitives::recency_heat) directly,
+/// which is what that manifestation is actually about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgeGradient {
+    base: Fx,
+    tip: Fx,
+}
+
+impl AgeGradient {
+    /// A gradient from two normalized ages, ordered so the older one is the base.
+    #[must_use]
+    pub fn new(base: Fx, tip: Fx) -> Self {
+        Self {
+            base: base.max(tip),
+            tip: base.min(tip),
+        }
+    }
+
+    /// A node whose material is one age throughout — a path with a single commit.
+    #[must_use]
+    pub const fn uniform(age: Fx) -> Self {
+        Self {
+            base: age,
+            tip: age,
+        }
+    }
+
+    /// The normalized age at the base, nearer the trunk. The older end.
+    #[must_use]
+    pub const fn base(&self) -> Fx {
+        self.base
+    }
+
+    /// The normalized age at the tip. The newer end.
+    #[must_use]
+    pub const fn tip(&self) -> Fx {
+        self.tip
+    }
+
+    /// The normalized age a fraction `along` of the way from base to tip.
+    ///
+    /// Linear, because the normalization it is interpolating is already logarithmic and
+    /// compressing twice would flatten the recent end into nothing — which is the end the
+    /// picture is about.
+    #[must_use]
+    pub const fn at(&self, along: Fx) -> Fx {
+        self.base.lerp(self.tip, along)
+    }
+
+    /// How much of the age range this node covers — zero for a single-commit path.
+    #[must_use]
+    pub const fn span(&self) -> Fx {
+        self.base.sub(self.tip)
+    }
+
+    /// Whether the node's material is one age throughout, so there is no gradient to draw.
+    #[must_use]
+    pub fn is_uniform(&self) -> bool {
+        self.base == self.tip
+    }
+}
+
+/// What one skeleton node is made of, who is drawn on it, and how old it is.
 ///
 /// Keyed to a [`NodeId`](crate::segment::NodeId) by [`MaterialMap`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,6 +552,13 @@ pub struct Material {
     /// Empty for an unattributed path, which is an ordinary case rather than a gap: a
     /// repository with no `.git` renders as a whole tree of primary material (PRD §6).
     pub mosaic: Mosaic,
+    /// How old its material is from base to tip — `F-MAT-4`.
+    ///
+    /// `None` where nothing the node stands for has any history: no `.git`, a repository with
+    /// no commits, or a file git has never seen (PRD §6). That is *unknown*, which is not the
+    /// same as *old* — a neutral value here would render a brand-new working directory as
+    /// ancient, and the user is already being told separately that age is unavailable.
+    pub gradient: Option<AgeGradient>,
 }
 
 /// Every node's material, indexed by [`NodeId`](crate::segment::NodeId).
@@ -568,6 +675,17 @@ impl MaterialMap {
                 hasher.update(&cells.to_le_bytes());
             }
 
+            // Discriminant first: a node with no history is a different tree from one whose
+            // history happens to normalize to zero, and the two must not encode alike.
+            match &material.gradient {
+                None => hasher.update(&[0]),
+                Some(gradient) => {
+                    hasher.update(&[1]);
+                    hasher.update(&gradient.base().to_bits().to_le_bytes());
+                    hasher.update(&gradient.tip().to_bits().to_le_bytes());
+                }
+            }
+
             match &material.composition {
                 Composition::Pure => hasher.update(&[0]),
                 Composition::Blended { secondary, weight } => {
@@ -595,8 +713,9 @@ impl MaterialMap {
 ///
 /// Bumped whenever the encoding changes, so a digest from an older build cannot be mistaken
 /// for a disagreement about materials. Same discipline as `treepo-skeleton-v2`. `v1` predated
-/// the ownership mosaic and could not tell two differently-owned limbs apart.
-const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v2";
+/// the ownership mosaic and `v2` the age gradient, so neither could tell two limbs apart that
+/// differ only in who wrote them or in when.
+const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v3";
 
 #[cfg(test)]
 mod tests {
@@ -708,6 +827,59 @@ mod tests {
             composition,
             budget: Fx::from_ratio(1, 3),
             mosaic: mosaic(&[(author(1), 6), (author(2), 2)], 16),
+            gradient: Some(AgeGradient::new(
+                Fx::from_ratio(9, 10),
+                Fx::from_ratio(1, 10),
+            )),
+        }
+    }
+
+    /// `F-MAT-4`'s direction, held by the type rather than by the caller: a first commit
+    /// cannot be newer than a last one, so the older end is the base whichever way round the
+    /// arguments arrive.
+    #[test]
+    fn the_older_end_is_always_the_base() {
+        // Quarters, which are exact in binary — a tenth is not, and `span` would then be a
+        // rounding artefact away from any constant this could be compared against.
+        let old = Fx::from_ratio(3, 4);
+        let new = Fx::from_ratio(1, 4);
+
+        for gradient in [AgeGradient::new(old, new), AgeGradient::new(new, old)] {
+            assert_eq!(gradient.base(), old, "older material sits basal");
+            assert_eq!(gradient.tip(), new, "recent material sits tip-ward");
+            assert!(gradient.base() >= gradient.tip());
+            assert_eq!(gradient.span(), Fx::HALF);
+            assert!(!gradient.is_uniform());
+        }
+    }
+
+    /// A path with one commit has one moment, so there is no gradient to draw. The honest
+    /// rendering rather than a degenerate one.
+    #[test]
+    fn a_single_commit_path_is_one_age_throughout() {
+        let flat = AgeGradient::uniform(Fx::HALF);
+        assert!(flat.is_uniform());
+        assert_eq!(flat.span(), Fx::ZERO);
+        assert_eq!(flat.base(), flat.tip());
+        assert_eq!(flat.at(Fx::ZERO), Fx::HALF);
+        assert_eq!(flat.at(Fx::ONE), Fx::HALF);
+        assert_eq!(AgeGradient::new(Fx::HALF, Fx::HALF), flat);
+    }
+
+    /// The renderer's question: at a fraction of the way up, how old is the material?
+    #[test]
+    fn reading_along_the_limb_runs_from_old_to_new() {
+        let gradient = AgeGradient::new(Fx::ONE, Fx::ZERO);
+        assert_eq!(gradient.at(Fx::ZERO), Fx::ONE, "the base is the oldest");
+        assert_eq!(gradient.at(Fx::ONE), Fx::ZERO, "the tip is the newest");
+        assert_eq!(gradient.at(Fx::HALF), Fx::HALF);
+
+        // Monotonically newer toward the tip, which is the whole of §8.3's primary rule.
+        let mut previous = Fx::ONE.add(Fx::from_ratio(1, 1000));
+        for step in 0..=100i64 {
+            let age = gradient.at(Fx::from_ratio(step, 100));
+            assert!(age <= previous, "the material got older toward the tip");
+            previous = age;
         }
     }
 
@@ -862,6 +1034,35 @@ mod tests {
         let mut vacated = sample();
         vacated.materials[0].mosaic = mosaic(&[], 16);
         assert_ne!(vacated.digest(), baseline, "nobody at all");
+    }
+
+    /// `F-MAT-4` in `AC-DET-1`. The `None` case is the one worth pinning: a node with no
+    /// history must not encode like one whose history happens to normalize to zero, or a
+    /// repository with no `.git` would hash like an ancient one.
+    #[test]
+    fn every_part_of_a_gradient_reaches_the_digest() {
+        let baseline = sample().digest();
+
+        let mut aged = sample();
+        aged.materials[0].gradient = Some(AgeGradient::new(Fx::ONE, Fx::from_ratio(1, 10)));
+        assert_ne!(aged.digest(), baseline, "a different base");
+
+        let mut revived = sample();
+        revived.materials[0].gradient = Some(AgeGradient::new(Fx::from_ratio(9, 10), Fx::ZERO));
+        assert_ne!(revived.digest(), baseline, "a different tip");
+
+        let mut ageless = sample();
+        ageless.materials[0].gradient = None;
+        assert_ne!(ageless.digest(), baseline, "no history at all");
+
+        // And the case the discriminant exists for.
+        let mut brand_new = sample();
+        brand_new.materials[0].gradient = Some(AgeGradient::uniform(Fx::ZERO));
+        assert_ne!(
+            brand_new.digest(),
+            ageless.digest(),
+            "unknown age and zero age are different facts"
+        );
     }
 
     /// The count-first rule, on the case it exists for. Both mosaics claim eight cells of

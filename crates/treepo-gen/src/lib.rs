@@ -5,8 +5,9 @@
 //!
 //! * **the structural skeleton** — topology, limb geometry, thickness, angles.
 //!   [`params`], [`lsystem`], [`trunk`] (`F-SKEL-1`…`F-SKEL-7`).
-//! * **material** — what each limb is made of, who is drawn on it, and how much of the
-//!   picture it may occupy. [`material`], [`normalize`] (`F-MAT-1`, `F-MAT-2`, `F-MAT-3`).
+//! * **material** — what each limb is made of, who is drawn on it, how old it is, and how
+//!   much of the picture it may occupy. [`material`], [`normalize`]
+//!   (`F-MAT-1` … `F-MAT-4`).
 //!
 //! Enrichment placement and everything alive arrive in later layers and later phases.
 //!
@@ -74,4 +75,4 @@ pub use trunk::grow;
 // Renamed on the way out, not in its own module. Two parameter tables now exist and
 // `crate::Table` has meant the skeleton's since Phase 3; a second bare `Table` at the root
 // would make every import site ambiguous to a reader even where it compiles.
-pub use material::{MaterialError, Table as MaterialTable, materialize};
+pub use material::{AgeSpan, MaterialError, Table as MaterialTable, materialize};

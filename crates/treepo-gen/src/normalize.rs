@@ -1,32 +1,48 @@
-//! `F-MAT-3` — logarithmic, soft-clamped, floored, and quota'd.
+//! The material layer's magnitudes — `F-MAT-3` above all, and the arithmetic the other
+//! material features measure against.
 //!
 //! > Size normalization is logarithmic with a soft clamp, a **minimum representation floor**
 //! > guaranteeing every surviving path a visible pixel budget, and a minimum visible quota
 //! > per significant contributor (`P7`).
 //!
-//! One requirement, two mechanisms, and they are separated here because they normalize
-//! different things. [`Normalize::budget`] turns a byte count into how much of the picture a
-//! *path* may occupy; [`Normalize::allocate`] turns contribution shares into how much of one
-//! limb's [`Mosaic`] each *contributor* holds. Both exist to stop a large thing erasing a small
-//! one, which is why `F-MAT-3` states them in one sentence.
+//! `F-MAT-3` is one requirement with two mechanisms in it, and they normalize different
+//! things. [`Normalize::budget`] turns a byte count into how much of the picture a *path* may
+//! occupy; [`Normalize::allocate`] turns contribution shares into how much of one limb's
+//! [`Mosaic`] each *contributor* holds. Both exist to stop a large thing erasing a small one,
+//! which is why `F-MAT-3` states them in one sentence. [`Normalize::mosaic`] is the two
+//! joined: a node's budget decides how finely its surface subdivides, and the shares decide
+//! who holds which part.
 //!
-//! [`Normalize::mosaic`] is the two joined: a node's budget decides how finely its surface
-//! subdivides, and the shares decide who holds which part of it.
+//! Two other features' magnitudes live here rather than in their own modules, because they are
+//! the same kind of arithmetic and separating them would put three log-scales in three places
+//! with three chances to disagree about what "compress the extremes" means:
 //!
-//! Nothing here decides what anything looks like. Family is [`material`](crate::material) and
-//! the arrangement of the cells is [`Mosaic`]'s own documented reading; this module is the
-//! arithmetic underneath, and it is separate so that `AC-MAT-1` and `AC-MAT-2` can be tested
-//! against numbers rather than against pictures.
+//! * `F-MAT-2`'s mosaic granularity — [`mosaic_min_cells`](Normalize::mosaic_min_cells) and
+//!   [`mosaic_max_cells`](Normalize::mosaic_max_cells).
+//! * `F-MAT-4`'s ages — [`Normalize::age`] and [`Normalize::gradient`].
 //!
-//! # Why the scale is absolute, again
+//! Nothing here decides what anything looks like. Family is [`material`](crate::material), the
+//! arrangement of the cells is [`Mosaic`]'s own documented reading, and what an age *means*
+//! visually is [`AgeGradient`]'s; this module is the arithmetic underneath, and it is separate
+//! so that `AC-MAT-1` and `AC-MAT-2` can be tested against numbers rather than against
+//! pictures.
 //!
-//! [`Normalize::full_scale_bytes`] is a constant in the table rather than the largest path in
-//! the repository, for exactly the argument [`params`](crate::params) makes about
-//! [`Scales`](crate::params::Scales): a repository-relative maximum means adding one large
-//! file renormalizes every other path, so `AC-GROW-4`'s confined Grow becomes a whole-tree
-//! reflow and `AC-DET-1`'s stability becomes a coincidence of content. The cost is the same
-//! too — the scale is a tuning liability, which is why it is in the file where it can be
-//! seen.
+//! # Why the scales are absolute, again
+//!
+//! [`Normalize::full_scale_bytes`] and [`Normalize::age_full_scale_days`] are constants in the
+//! table rather than the largest path and the oldest commit in the repository, for exactly the
+//! argument [`params`](crate::params) makes about [`Scales`](crate::params::Scales): a
+//! repository-relative maximum means adding one large file — or one ancient vendored
+//! directory — renormalizes every other path, so `AC-GROW-4`'s confined Grow becomes a
+//! whole-tree reflow and `AC-DET-1`'s stability becomes a coincidence of content. The cost is
+//! the same too: a scale is a tuning liability, which is why both are in the file where they
+//! can be seen.
+//!
+//! An *age* is already anchored without one, and to something better than a clock —
+//! [`Manifest::reference_time`](treepo_model::Manifest::reference_time), the newest commit in
+//! the repository. That is what stops the tree drifting daily on a machine doing nothing
+//! ([`temporal`](treepo_model::primitives::temporal) has the argument). The scale here is a
+//! second, separate question: how many days of age fill the range.
 //!
 //! # `N4`, and what a cell count is
 //!
@@ -40,9 +56,9 @@
 use crate::params::per_mille;
 use serde::Deserialize;
 use treepo_det::{Fx, OrderedMap};
-use treepo_model::Mosaic;
 use treepo_model::identity::AuthorKey;
 use treepo_model::primitives::ownership::OwnershipPrimitives;
+use treepo_model::{AgeGradient, Mosaic};
 
 /// Parts per million — the unit [`AuthorShare`](treepo_model::primitives::AuthorShare) is
 /// carried in, and therefore the unit a significance threshold has to be written in.
@@ -132,6 +148,17 @@ pub struct Normalize {
     /// same area — which is what keeps `AC-MAT-4`'s "distinguishable at medium zoom" a
     /// property of the palette rather than of how big the limb happened to be.
     pub mosaic_max_cells: u32,
+    /// The age in days that reads as fully old — `F-MAT-4`.
+    ///
+    /// Absolute, never the repository's own oldest commit; see the module header. Its
+    /// logarithm is the divisor, so what matters is its order of magnitude rather than its
+    /// exact value, exactly as with [`full_scale_bytes`](Self::full_scale_bytes).
+    ///
+    /// Logarithmic for the reason size is: the difference between yesterday and last week says
+    /// more than the difference between four years and four years and a week, and a linear
+    /// scale spends most of its range on the distinction nobody can use. The recent end is the
+    /// end §8.3's picture is about.
+    pub age_full_scale_days: u64,
 }
 
 impl Normalize {
@@ -172,6 +199,46 @@ impl Normalize {
         } else {
             raw
         }
+    }
+
+    /// How old a path of `days` reads, in `0..=1` — `F-MAT-4`.
+    ///
+    /// Zero is as new as the repository gets, one is at or beyond
+    /// [`age_full_scale_days`](Self::age_full_scale_days). Logarithmic, saturating at one
+    /// rather than soft-clamped: past the full scale there is nothing left to distinguish that
+    /// a viewer would act on, where a path twice as large as another is still visibly larger.
+    /// `P6` bounds detail; it does not require every scale to bound it the same way.
+    ///
+    /// `days` is an age against
+    /// [`Manifest::reference_time`](treepo_model::Manifest::reference_time), not a clock, and a
+    /// negative one is clamped to new — clock skew can place a commit in the repository's own
+    /// future, and "committed tomorrow" reads as brand new rather than as maximally old.
+    #[must_use]
+    pub fn age(&self, days: i64) -> Fx {
+        // `+ 1` so that a path touched today has a defined logarithm and lands on exactly
+        // zero, rather than the scale starting at one day old.
+        let Some(scale) = Fx::log2_u64(self.age_full_scale_days.saturating_add(1)) else {
+            return Fx::ZERO;
+        };
+        if scale.is_zero() {
+            return Fx::ZERO;
+        }
+        let days = u64::try_from(days).unwrap_or(0);
+        let Some(magnitude) = Fx::log2_u64(days.saturating_add(1)) else {
+            return Fx::ZERO;
+        };
+        magnitude.div(scale).min(Fx::ONE)
+    }
+
+    /// One node's age gradient — `F-MAT-4` over a commit span.
+    ///
+    /// `oldest_days` is the age of the first commit to anything the node stands for and
+    /// `newest_days` the age of the last, so the base comes out older than the tip. Both are
+    /// normalized by [`age`](Self::age), which is monotonic, so the ordering survives it —
+    /// and [`AgeGradient::new`] enforces the direction regardless.
+    #[must_use]
+    pub fn gradient(&self, oldest_days: i64, newest_days: i64) -> AgeGradient {
+        AgeGradient::new(self.age(oldest_days), self.age(newest_days))
     }
 
     /// One node's whole mosaic — `F-MAT-2`, over a node already budgeted by `F-MAT-3`.
@@ -375,6 +442,17 @@ impl Normalize {
                 row: "mosaic_max_cells",
                 detail: "the fine end of the mosaic sits at or above the coarse end, or a \
                          larger node is subdivided no further than a smaller one",
+            });
+        }
+
+        // Below a month the scale cannot separate anything a person would call recent, and
+        // every path older than it collapses to one value — the ordering lost rather than the
+        // picture tidied, which is the failure `clamp_beyond == 0` is refused for.
+        if self.age_full_scale_days < 30 {
+            return Err(NormalizeError {
+                row: "age_full_scale_days",
+                detail: "the age scale spans at least a month, or every path but the ones \
+                         touched this week reads as equally ancient",
             });
         }
 
@@ -633,6 +711,73 @@ mod tests {
         }
     }
 
+    /// `F-MAT-4`'s scale: zero is today, one is the full scale, and it never decreases in
+    /// between. A dip would draw an older path as newer than a younger one.
+    #[test]
+    fn age_runs_from_today_to_the_full_scale_without_dipping() {
+        let n = shipped();
+        assert_eq!(n.age(0), Fx::ZERO, "touched today");
+        assert_eq!(
+            n.age(i64::try_from(n.age_full_scale_days).unwrap()),
+            Fx::ONE,
+            "the full scale is fully old"
+        );
+        assert_eq!(
+            n.age(i64::MAX),
+            Fx::ONE,
+            "and it saturates rather than passing one"
+        );
+
+        let mut previous = Fx::ZERO;
+        for days in 0..4000i64 {
+            let age = n.age(days);
+            assert!(age >= previous, "age fell at day {days}");
+            assert!(age <= Fx::ONE);
+            previous = age;
+        }
+    }
+
+    /// Logarithmic, and the reason it is: the recent end gets the range, because that is the
+    /// end §8.3's picture is about.
+    #[test]
+    fn the_recent_end_gets_the_range() {
+        let n = shipped();
+        // A week against a month is a bigger step than four years against four years and a
+        // month, even though the second pair are further apart in days.
+        let early = n.age(30).sub(n.age(7));
+        let late = n.age(1490).sub(n.age(1460));
+        assert!(
+            early > late,
+            "a linear scale would have made these equal: early {early}, late {late}"
+        );
+    }
+
+    /// Clock skew can place a commit in the repository's own future. That path is new, not
+    /// maximally old — the same clamp `TemporalPrimitives::age_at` applies upstream.
+    #[test]
+    fn a_commit_from_the_future_reads_as_new() {
+        assert_eq!(shipped().age(-90), Fx::ZERO);
+    }
+
+    /// `F-MAT-4`'s direction, through the arithmetic that produces it.
+    #[test]
+    fn a_long_lived_path_reads_old_at_the_base_and_new_at_the_tip() {
+        let n = shipped();
+        let long_lived = n.gradient(1200, 1);
+        assert!(long_lived.base() > long_lived.tip());
+        assert!(!long_lived.is_uniform());
+
+        // A path with one commit has one moment, so there is no gradient.
+        let once = n.gradient(400, 400);
+        assert!(once.is_uniform());
+        assert_eq!(once.span(), Fx::ZERO);
+
+        // And a freshly-created, freshly-touched path is new at both ends rather than absent.
+        let brand_new = n.gradient(0, 0);
+        assert_eq!(brand_new.base(), Fx::ZERO);
+        assert!(brand_new.is_uniform());
+    }
+
     /// `P6`: a node drawn small is subdivided coarsely, and one drawn large finely — so a
     /// cell covers about the same area wherever it appears.
     #[test]
@@ -784,6 +929,21 @@ mod tests {
                 "mosaic_max_cells",
                 Normalize {
                     mosaic_max_cells: base.mosaic_min_cells - 1,
+                    ..base
+                },
+            ),
+            // Below a month, everything but this week's work reads as equally ancient.
+            (
+                "age_full_scale_days",
+                Normalize {
+                    age_full_scale_days: 29,
+                    ..base
+                },
+            ),
+            (
+                "age_full_scale_days",
+                Normalize {
+                    age_full_scale_days: 0,
                     ..base
                 },
             ),

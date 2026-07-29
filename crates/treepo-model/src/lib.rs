@@ -73,7 +73,9 @@ pub use manifest::{
     AuthorEntry, AuthorTable, FilterOverrides, LanguageId, LanguageTable, Manifest, NodeKind,
     PathRecord, SCHEMA_VERSION,
 };
-pub use material::{Composition, FamilyMix, Material, MaterialFamily, MaterialMap, Mosaic};
+pub use material::{
+    AgeGradient, Composition, FamilyMix, Material, MaterialFamily, MaterialMap, Mosaic,
+};
 pub use path::{PathError, RepoPath};
 pub use primitives::{
     DerivedSignals, FolderSignal, OwnershipPrimitives, SizePrimitives, StructuralPrimitives,

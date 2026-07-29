@@ -10,8 +10,9 @@
 //! harness in Phase 0, when there was no corpus and no skeleton to serialize. Phase 4 added
 //! three more — `pseudonym` and `author-color`, because `AC-ID-2` is the same claim as
 //! `AC-DET-2` about a different output and deserves the same evidence rather than an argument
-//! from `treepo-id` being integer-only; and `material`, which sweeps `F-MAT-3`'s arithmetic
-//! over magnitudes and exact ties that no real repository reliably contains.
+//! from `treepo-id` being integer-only; and `material`, which sweeps the material layer's
+//! arithmetic over magnitudes, exact ties and calendar edges that no real repository reliably
+//! contains.
 //!
 //! **The corpus stage** is D2's sentence, arrived at in Phase 3. Every corpus fixture is
 //! extracted and grown, and the resulting [`Skeleton`](treepo_model::Skeleton) and
@@ -61,6 +62,18 @@
 //! Fixtures that only some platforms can build are excluded for the same reason: a report
 //! listing `symlinks` on two runners and not the third would differ for a reason that is not a
 //! finding. `tools/corpus` records which those are, and this reads that rather than guessing.
+//!
+//! # Commit timestamps reach the digest, and the corpus was already built for that
+//!
+//! `F-MAT-4` puts an age on every node, so from Phase 4 the material digests depend on *when*
+//! each fixture's commits are dated. A corpus that dated from the wall clock would then produce
+//! a different report on every runner and break `AC-DET-2` by construction — the same trap the
+//! identity seed above describes, arriving through the calendar instead.
+//!
+//! It does not, and this was checked rather than assumed: `tools/corpus` steps a fixed
+//! `EPOCH` of 2021-01-01T00:00:00Z by `COMMIT_INTERVAL` and writes `"{epoch} +0000"` into both
+//! `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE`. Absolute integers with an explicit offset, so
+//! neither the runner's clock nor its timezone can reach a fixture's history.
 //!
 //! Thread count is *not* pinned. `AC-DET-3` forbids hardware-dependent values in the
 //! generative pipeline, and the history pass is threaded — so leaving it at the product's
@@ -118,7 +131,7 @@ const PROBES: &[Probe] = &[
     },
     Probe {
         name: "material",
-        what: "families, budgets and mosaics over sampled mixtures (F-MAT-1/2/3, AC-DET-1)",
+        what: "families, budgets, mosaics and ages over sampled inputs (F-MAT-1…4, AC-DET-1)",
         run: probe_material,
     },
 ];
@@ -600,7 +613,7 @@ fn probe_material() -> Digest {
                 let bytes = 4096 + (i as u64 * 7 + j as u64) * 131;
                 let mut sampled = treepo_model::MaterialMap::new();
                 for role in [&limb, &container] {
-                    sampled.push(table.material_of(&size, bytes, &unowned, role));
+                    sampled.push(table.material_of(&size, bytes, &unowned, None, role));
                 }
                 // Through the canonical encoding rather than a local one — `MaterialMap` owns
                 // it for the reason `Skeleton` owns its own, and a second copy here would be
@@ -634,6 +647,46 @@ fn probe_material() -> Digest {
             let budget = table.normalize.budget(bytes);
             hasher.update(&table.normalize.cells_for(budget).to_le_bytes());
             hash_mosaic(&mut hasher, &table.normalize.mosaic(&ownership, budget));
+        }
+    }
+
+    // `F-MAT-4`'s age scale — a second `Fx::log2_u64` against a second divisor, so a platform
+    // could disagree here without disagreeing about budgets. Days rather than powers of two,
+    // because a calendar is where the interesting values are: today, a week, the windows
+    // `F-EXT-2` measures churn over, either side of the full scale, and a clock-skewed commit
+    // from the repository's own future.
+    for days in [
+        -365i64,
+        -1,
+        0,
+        1,
+        7,
+        29,
+        30,
+        31,
+        89,
+        90,
+        91,
+        364,
+        365,
+        366,
+        3649,
+        3650,
+        3651,
+        36_500,
+        i64::MAX,
+    ] {
+        hasher.update(&table.normalize.age(days).to_bits().to_le_bytes());
+    }
+    // And the gradient over spans that straddle every one of those, including the degenerate
+    // single-commit case and an inverted pair that `AgeGradient::new` has to order.
+    for oldest in [0i64, 30, 365, 3650, 36_500] {
+        for newest in [0i64, 7, 90, 3650] {
+            let gradient = table.normalize.gradient(oldest, newest);
+            hasher.update(&gradient.base().to_bits().to_le_bytes());
+            hasher.update(&gradient.tip().to_bits().to_le_bytes());
+            hasher.update(&gradient.span().to_bits().to_le_bytes());
+            hasher.update(&gradient.at(Fx::HALF).to_bits().to_le_bytes());
         }
     }
 

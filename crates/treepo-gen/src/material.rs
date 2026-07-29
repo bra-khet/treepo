@@ -67,6 +67,26 @@ use treepo_model::{Manifest, PathRecord, RepoPath, Skeleton};
 /// table exists when the user has not supplied one.
 const BUILT_IN_RON: &str = include_str!("../../../assets/params/materials.ron");
 
+/// The commit span of everything one node stands for, in whole days — `F-MAT-4`'s input.
+///
+/// Ages rather than timestamps, because the conversion needs
+/// [`Manifest::reference_time`](treepo_model::Manifest::reference_time) and that belongs to the
+/// walk rather than to the table: a table that took timestamps would need a clock anchor
+/// passed alongside every call, and the one thing this crate must never acquire is an opinion
+/// about what time it is.
+///
+/// `oldest_days` is the age of the *first* commit to anything the node stands for and
+/// `newest_days` the age of the *last*, so `oldest_days >= newest_days` under ordinary
+/// history. It is not enforced here — [`AgeGradient::new`](treepo_model::AgeGradient::new)
+/// orders them downstream, which is one place rather than two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgeSpan {
+    /// Age of the earliest commit, in whole days.
+    pub oldest_days: i64,
+    /// Age of the latest commit, in whole days.
+    pub newest_days: i64,
+}
+
 /// The table format this crate understands.
 ///
 /// Independent of [`params::TABLE_VERSION`](crate::params::TABLE_VERSION) and of
@@ -171,9 +191,10 @@ impl Table {
         size: &SizePrimitives,
         bytes: u64,
         ownership: &OwnershipPrimitives,
+        age: Option<AgeSpan>,
         role: &NodeRole,
     ) -> Material {
-        self.material_from(self.mix_of(size), bytes, ownership, role)
+        self.material_from(self.mix_of(size), bytes, ownership, age, role)
     }
 
     /// The material for one node whose mixture has already been gathered.
@@ -187,6 +208,7 @@ impl Table {
         mix: FamilyMix,
         bytes: u64,
         ownership: &OwnershipPrimitives,
+        age: Option<AgeSpan>,
         role: &NodeRole,
     ) -> Material {
         let family = dominant(&mix);
@@ -213,6 +235,7 @@ impl Table {
             composition,
             budget,
             mosaic: self.normalize.mosaic(ownership, budget),
+            gradient: age.map(|span| self.normalize.gradient(span.oldest_days, span.newest_days)),
         }
     }
 
@@ -258,7 +281,7 @@ impl Table {
 /// Each [`NodeRole`] names its content differently, and getting this wrong is invisible —
 /// every variant produces *a* material, just the wrong one.
 ///
-/// | Role | Mixture and contributors from | Bytes from |
+/// | Role | Mixture, contributors and dates from | Bytes from |
 /// |---|---|---|
 /// | [`Limb`](NodeRole::Limb) | its own record | its own record |
 /// | [`Group`](NodeRole::Group) | its members' records | its members' records |
@@ -278,11 +301,22 @@ impl Table {
 ///
 /// # Why summing member records is not a deep walk
 ///
-/// `treepo-vcs`'s extraction rolls both `category_bytes` and per-author line counts from
-/// children into parents — the log pass credits "every ancestor" of every touched path — so a
-/// directory's mixture and its contributor set are already its whole subtree's. Summing the
-/// member records is therefore the complete answer, not an approximation of one, which is what
-/// keeps this `O(nodes × members × log paths)` instead of a traversal per container.
+/// `treepo-vcs`'s extraction rolls `category_bytes`, per-author line counts *and* commit
+/// timestamps from children into parents — the log pass credits "every ancestor" of every
+/// touched path — so a directory's mixture, its contributor set and its history span are
+/// already its whole subtree's. Summing the member records is therefore the complete answer,
+/// not an approximation of one, which is what keeps this `O(nodes × members × log paths)`
+/// instead of a traversal per container.
+///
+/// # What `F-MAT-4` is not
+///
+/// The age gradient orders a node's *material* along its length, not its contributors.
+/// `design/feature-system.md` §8.3 talks about "material cells" and this crate does merge a
+/// per-author recency, so ordering the [`Mosaic`](treepo_model::Mosaic)'s cells by who
+/// committed last is the composition that suggests itself — and it is not this. `F-MAT-4` says
+/// "material corresponding to older **paths**", and an arrangement that put the most recently
+/// active contributor at every tip would be an ordering of people readable straight off the
+/// picture. Cells stay in key order (`N4`).
 ///
 /// # Binary content has no mosaic, and that is the honest answer
 ///
@@ -313,12 +347,18 @@ pub fn materialize(manifest: &Manifest, skeleton: &Skeleton, table: &Table) -> M
     let mut map = MaterialMap::new();
     for node in skeleton.nodes() {
         let content = resolve(manifest, &node.role);
-        map.push(table.material_from(content.mix, content.bytes, &content.ownership, &node.role));
+        map.push(table.material_from(
+            content.mix,
+            content.bytes,
+            &content.ownership,
+            content.age,
+            &node.role,
+        ));
     }
     map
 }
 
-/// What one node is made of, how big it is, and who wrote it.
+/// What one node is made of, how big it is, who wrote it, and when.
 ///
 /// The ownership is borrowed for a node standing for one path and owned for one standing for
 /// several — a limb is the overwhelmingly common case, and cloning a contributor map for each
@@ -328,16 +368,18 @@ struct Content<'a> {
     mix: FamilyMix,
     bytes: u64,
     ownership: Cow<'a, OwnershipPrimitives>,
+    age: Option<AgeSpan>,
 }
 
 /// Gathers one node's content — see [`materialize`] for the table this implements.
 fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
+    let reference = manifest.reference_time;
     match role {
-        NodeRole::Limb { path } => single(manifest, path),
+        NodeRole::Limb { path } => single(manifest, path, reference),
         // The repository root, so every node of the cluster reads as the repository it stands
         // for. `RootMass::anchor` is the root by construction, but going through the same
         // lookup keeps one code path rather than a special case that could drift.
-        NodeRole::RootMass { anchor, .. } => single(manifest, anchor),
+        NodeRole::RootMass { anchor, .. } => single(manifest, anchor, reference),
         NodeRole::Group { members, .. } => {
             let records = members.iter().filter_map(|path| manifest.path(path));
             let bytes = records.clone().fold(0u64, |total, record| {
@@ -346,6 +388,7 @@ fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
             Content {
                 mix: mix_over(records.clone().map(|record| &record.size)),
                 bytes,
+                age: age_over(records.clone(), reference),
                 ownership: Cow::Owned(ownership_over(records)),
             }
         }
@@ -357,6 +400,7 @@ fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
             Content {
                 mix: mix_over(records.clone().map(|record| &record.size)),
                 bytes: aggregate.bytes,
+                age: age_over(records.clone(), reference),
                 ownership: Cow::Owned(ownership_over(records)),
             }
         }
@@ -364,19 +408,58 @@ fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
 }
 
 /// One path's content, or nothing at all where the manifest has no record.
-fn single<'a>(manifest: &'a Manifest, path: &RepoPath) -> Content<'a> {
+fn single<'a>(manifest: &'a Manifest, path: &RepoPath, reference: i64) -> Content<'a> {
     manifest.path(path).map_or_else(
         || Content {
             mix: FamilyMix::default(),
             bytes: 0,
             ownership: Cow::Owned(OwnershipPrimitives::default()),
+            age: None,
         },
         |record| Content {
             mix: mix_over(core::iter::once(&record.size)),
             bytes: record.size.bytes,
             ownership: Cow::Borrowed(&record.ownership),
+            age: age_over(core::iter::once(record), reference),
         },
     )
+}
+
+/// The commit span across a set of records — `F-MAT-4`'s gathering.
+///
+/// The earliest first commit and the latest last commit, so a node stands for the whole
+/// history of everything under it. As *ages* those are the **largest** `first_commit_age` and
+/// the **smallest** `last_commit_age`, which is why the two folds run in opposite directions.
+///
+/// A single record already has a span of its own, and that is what makes `F-MAT-4` more than a
+/// per-node constant: a file created three years ago and touched yesterday reads old at its
+/// base and vital at its tip, from two numbers extraction already stored.
+///
+/// `None` where nothing here has history — PRD §6's ordinary case rather than a gap.
+/// Deliberately not zero: a working directory with no `.git` is of *unknown* age, and
+/// rendering it as brand new would be as much a fabrication as rendering it as ancient.
+fn age_over<'a>(records: impl Iterator<Item = &'a PathRecord>, reference: i64) -> Option<AgeSpan> {
+    let mut oldest: Option<i64> = None;
+    let mut newest: Option<i64> = None;
+
+    for record in records {
+        if let Some(days) = record.temporal.first_commit_age_days(reference) {
+            oldest = Some(oldest.map_or(days, |current: i64| current.max(days)));
+        }
+        if let Some(days) = record.temporal.last_commit_age_days(reference) {
+            newest = Some(newest.map_or(days, |current: i64| current.min(days)));
+        }
+    }
+
+    match (oldest, newest) {
+        (Some(oldest_days), Some(newest_days)) => Some(AgeSpan {
+            oldest_days,
+            newest_days,
+        }),
+        // Extraction sets both timestamps together or neither, so a half-dated record is not a
+        // case to interpret. Guessing one end of a span from the other would invent history.
+        _ => None,
+    }
 }
 
 /// Every family's share across a set of size primitives.
@@ -587,7 +670,7 @@ mod tests {
         ];
         for (category, family) in cases {
             let material =
-                table.material_of(&sized(&[(category, 1000)]), 1000, &unowned(), &limb());
+                table.material_of(&sized(&[(category, 1000)]), 1000, &unowned(), None, &limb());
             assert_eq!(material.family, family, "{category:?}");
             assert_eq!(
                 material.composition,
@@ -608,7 +691,7 @@ mod tests {
             (ContentCategory::Binary, 300),
             (ContentCategory::Code, 400),
         ]);
-        let material = table.material_of(&size, 1000, &unowned(), &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
         // 60% together beats 40% of code; separately, 30% each would have lost.
         assert_eq!(material.family, MaterialFamily::Ore);
         assert_eq!(
@@ -623,7 +706,7 @@ mod tests {
     fn a_mixed_limb_is_veined_rather_than_reassigned() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 550), (ContentCategory::Asset, 450)]);
-        let material = table.material_of(&size, 1000, &unowned(), &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
 
         assert_eq!(material.family, MaterialFamily::Heartwood);
         let Composition::Blended { secondary, weight } = material.composition else {
@@ -650,7 +733,7 @@ mod tests {
         ]);
         assert_eq!(
             table
-                .material_of(&size, 2000, &unowned(), &limb())
+                .material_of(&size, 2000, &unowned(), None, &limb())
                 .composition,
             Composition::Pure
         );
@@ -662,7 +745,7 @@ mod tests {
     fn an_exact_tie_resolves_and_carries_the_loser_at_full_weight() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 500), (ContentCategory::Docs, 500)]);
-        let material = table.material_of(&size, 1000, &unowned(), &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
         assert_eq!(
             material.family,
             MaterialFamily::Heartwood,
@@ -688,7 +771,7 @@ mod tests {
             (ContentCategory::Config, 100),
         ]);
 
-        let held = table.material_of(&size, 4096, &unowned(), &container());
+        let held = table.material_of(&size, 4096, &unowned(), None, &container());
         assert_eq!(held.family, MaterialFamily::Parchment);
         let contents = held
             .composition
@@ -703,7 +786,7 @@ mod tests {
         assert_eq!(held.composition.secondary(), None);
 
         // The same content drawn as a limb is a different reading of the same fact.
-        let made_of = table.material_of(&size, 4096, &unowned(), &limb());
+        let made_of = table.material_of(&size, 4096, &unowned(), None, &limb());
         assert_eq!(made_of.family, held.family);
         assert_eq!(made_of.composition.secondary(), Some(MaterialFamily::Ore));
     }
@@ -713,7 +796,7 @@ mod tests {
     #[test]
     fn a_node_with_no_content_is_stone_at_the_floor() {
         let table = Table::built_in();
-        let material = table.material_of(&SizePrimitives::default(), 0, &unowned(), &limb());
+        let material = table.material_of(&SizePrimitives::default(), 0, &unowned(), None, &limb());
         assert_eq!(material.family, MaterialFamily::Stone);
         assert_eq!(material.composition, Composition::Pure);
         assert_eq!(material.budget, per_mille(table.normalize.floor));
@@ -731,8 +814,8 @@ mod tests {
         let size = sized(&[(ContentCategory::Code, 1000)]);
         let pair = owned(&[(author(1), 60), (author(2), 40)]);
 
-        let bare = table.material_of(&size, 1000, &unowned(), &limb());
-        let shared = table.material_of(&size, 1000, &pair, &limb());
+        let bare = table.material_of(&size, 1000, &unowned(), None, &limb());
+        let shared = table.material_of(&size, 1000, &pair, None, &limb());
 
         // Same wood, same size — the mosaic is what differs.
         assert_eq!(bare.family, shared.family);
@@ -752,8 +835,8 @@ mod tests {
         let size = sized(&[(ContentCategory::Code, 1000)]);
         let sole = owned(&[(author(1), 100)]);
 
-        let small = table.material_of(&size, 1, &sole, &limb());
-        let large = table.material_of(&size, 60_000_000, &sole, &limb());
+        let small = table.material_of(&size, 1, &sole, None, &limb());
+        let large = table.material_of(&size, 60_000_000, &sole, None, &limb());
 
         assert!(small.mosaic.cells() >= table.normalize.mosaic_min_cells);
         assert!(large.mosaic.cells() > small.mosaic.cells());
@@ -769,8 +852,8 @@ mod tests {
     fn a_container_is_budgeted_for_what_it_stands_for() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 100)]);
-        let small = table.material_of(&size, 100, &unowned(), &container());
-        let large = table.material_of(&size, 100_000_000, &unowned(), &container());
+        let small = table.material_of(&size, 100, &unowned(), None, &container());
+        let large = table.material_of(&size, 100_000_000, &unowned(), None, &container());
         assert!(large.budget > small.budget);
     }
 
@@ -1032,6 +1115,7 @@ mod tests {
             &sized(&[(ContentCategory::Binary, 8_000_000)]),
             8_000_000,
             &blob,
+            None,
             &limb(),
         );
         assert_eq!(material.family, MaterialFamily::Ore);
@@ -1100,6 +1184,140 @@ mod tests {
         );
     }
 
+    /// `F-MAT-4` over the walk. Every node with history gets a gradient, and it runs the way
+    /// §8.3 states it — older at the base, newer at the tip.
+    #[test]
+    fn every_node_with_history_is_older_at_its_base() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let mut graded = 0;
+        for (id, material) in materials.iter() {
+            let gradient = material
+                .gradient
+                .unwrap_or_else(|| panic!("node {id:?} lost its history"));
+            assert!(
+                gradient.base() >= gradient.tip(),
+                "node {id:?} is newer at its base than at its tip"
+            );
+            if !gradient.is_uniform() {
+                graded += 1;
+            }
+        }
+        assert!(
+            graded > 0,
+            "every node came out uniform, so the direction assertion above proves nothing — \
+             the fixture needs paths that span an interval"
+        );
+    }
+
+    /// The case that makes `F-MAT-4` more than a per-node constant: one path, two dates. A
+    /// file created long ago and touched yesterday is old at its base and vital at its tip.
+    #[test]
+    fn a_long_lived_limb_is_old_at_the_base_and_new_at_the_tip() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let reference = manifest.reference_time;
+
+        let record = manifest.path(&path("src/main.rs")).unwrap();
+        let span = age_over(core::iter::once(record), reference).expect("the fixture dates it");
+        assert!(
+            span.oldest_days > span.newest_days,
+            "the fixture must give this file a real interval to span"
+        );
+
+        let material = table.material_of(
+            &record.size,
+            record.size.bytes,
+            &record.ownership,
+            Some(span),
+            &limb(),
+        );
+        let gradient = material.gradient.unwrap();
+        assert!(gradient.base() > gradient.tip());
+        assert_eq!(gradient.base(), table.normalize.age(span.oldest_days));
+        assert_eq!(gradient.tip(), table.normalize.age(span.newest_days));
+    }
+
+    /// A container spans the whole history of what it stands for: the earliest creation and
+    /// the latest touch across its members, and the two ends are gathered independently.
+    ///
+    /// Purpose-built dates rather than the shaped fixture's, because the claim is that the two
+    /// ends can come from *different* records — and in a real repository one large directory
+    /// usually supplies both, which would let a gathering that simply copied the widest member
+    /// pass.
+    #[test]
+    fn the_two_ends_of_a_span_are_gathered_from_different_records() {
+        const DAY: i64 = 86_400;
+        let reference = crate::lsystem::compose::tests::REFERENCE;
+
+        let dated = |text: &str, first: i64, last: i64| {
+            let mut record = PathRecord::new(path(text), treepo_model::NodeKind::Directory);
+            record.temporal.first_commit_time = Some(reference - first * DAY);
+            record.temporal.last_commit_time = Some(reference - last * DAY);
+            record
+        };
+        // One ancient and dormant, one young and active. Neither contains the other's span.
+        let ancient = dated("vendor", 1000, 900);
+        let active = dated("src", 100, 1);
+
+        let gathered = age_over([&ancient, &active].into_iter(), reference).unwrap();
+        assert_eq!(gathered.oldest_days, 1000, "created when `vendor` was");
+        assert_eq!(gathered.newest_days, 1, "and touched when `src` was");
+
+        // Order must not matter — a fold that kept the first or the last seen would pass one
+        // arrangement and fail the other.
+        assert_eq!(
+            age_over([&active, &ancient].into_iter(), reference).unwrap(),
+            gathered
+        );
+    }
+
+    /// And over the real walk: a container's span contains every member's, which is what the
+    /// gathering above buys once it is wired to actual records.
+    #[test]
+    fn a_container_spans_at_least_all_of_its_members() {
+        let manifest = shaped_repository();
+        let reference = manifest.reference_time;
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+
+        let mut containers = 0;
+        for node in skeleton.nodes() {
+            let (NodeRole::Aggregate(treepo_model::AggregateNode { members, .. })
+            | NodeRole::Group { members, .. }) = &node.role
+            else {
+                continue;
+            };
+            let Some(gathered) = resolve(&manifest, &node.role).age else {
+                continue;
+            };
+            containers += 1;
+
+            for member in members.iter().filter_map(|p| manifest.path(p)) {
+                let own = age_over(core::iter::once(member), reference).unwrap();
+                assert!(gathered.oldest_days >= own.oldest_days);
+                assert!(gathered.newest_days <= own.newest_days);
+            }
+        }
+        assert!(containers > 0, "the fixture should gather something");
+    }
+
+    /// PRD §6, "No `.git`": a path with no history is of *unknown* age. Rendering it as brand
+    /// new would be as much a fabrication as rendering it as ancient, so there is no gradient
+    /// at all.
+    #[test]
+    fn a_path_with_no_history_has_no_gradient_rather_than_a_new_one() {
+        let table = Table::built_in();
+        let undated = PathRecord::new(path("src/untracked.rs"), treepo_model::NodeKind::File);
+        assert!(!undated.temporal.has_history());
+
+        assert_eq!(age_over(core::iter::once(&undated), 1_800_000_000), None);
+        let material = table.material_of(&undated.size, 0, &unowned(), None, &limb());
+        assert_eq!(material.gradient, None);
+    }
+
     /// A container's budget comes from its own byte total — already "everything beneath the
     /// members, inclusive" — while its inventory comes from the member records.
     #[test]
@@ -1139,7 +1357,8 @@ mod tests {
         let materials = materialize(&manifest, &skeleton, &table);
 
         let root = manifest.path(&treepo_model::RepoPath::root()).unwrap();
-        let expected = table.material_of(&root.size, root.size.bytes, &root.ownership, &limb());
+        let expected =
+            table.material_of(&root.size, root.size.bytes, &root.ownership, None, &limb());
 
         let mut roots = 0;
         for (id, node) in skeleton.nodes().iter().enumerate() {
@@ -1217,6 +1436,8 @@ mod tests {
             assert!(material.mosaic.is_empty());
             assert!(material.mosaic.cells() >= table.normalize.mosaic_min_cells);
             assert_eq!(material.mosaic.unclaimed(), material.mosaic.cells());
+            // And no age either: an empty repository is of unknown age, not a new one.
+            assert_eq!(material.gradient, None);
         }
     }
 

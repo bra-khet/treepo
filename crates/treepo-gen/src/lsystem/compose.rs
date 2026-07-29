@@ -528,19 +528,51 @@ pub(crate) mod tests {
         vec![(owner, lines - minority), (visitor, minority)]
     }
 
+    /// The reference time every fixture age is measured against.
+    ///
+    /// A fixed constant, not a clock. `Manifest::reference_time` is the newest commit in the
+    /// repository precisely so that a tree does not drift daily on a machine doing nothing
+    /// (`AC-MAN-1`), and a fixture that read the clock would make its own assertions expire.
+    pub(crate) const REFERENCE: i64 = 1_800_000_000;
+
+    /// First and last commit times for one fixture path, as absolute epoch seconds.
+    ///
+    /// A miniature of `treepo-vcs::log_pass`'s dating, shaped so that `F-MAT-4` has something
+    /// to be true of. Both ends vary with the path, and every file spans a real interval, so a
+    /// fixture node has an actual gradient rather than a uniform one — without which
+    /// `a_long_lived_limb_is_old_at_the_base_and_new_at_the_tip` would pass for the wrong
+    /// reason.
+    ///
+    /// Derived from the path bytes rather than from an index, so a manifest built from the
+    /// same files in a different order dates them identically — the same property real
+    /// extraction has, and one an index-based fixture would quietly lack.
+    fn history_of(path: &str) -> (i64, i64) {
+        const DAY: i64 = 86_400;
+        let spread = path.bytes().map(i64::from).sum::<i64>();
+        // 60..=1259 days back for the first commit, 0..=39 for the last, so the first is
+        // always the older of the two however the arithmetic lands.
+        let first = REFERENCE - (spread % 1200 + 60) * DAY;
+        let last = REFERENCE - (spread % 40) * DAY;
+        (first, last)
+    }
+
     /// Builds a manifest from a list of `(path, bytes)` files, synthesizing every ancestor
     /// directory and rolling the structural counts up as `treepo-vcs::walk` would.
     ///
-    /// Worth the sixty lines: composition reads `child_count`, `descendant_*`,
+    /// Worth the eighty lines: composition reads `child_count`, `descendant_*`,
     /// `max_subtree_depth`, `relative_bytes` and the branching histogram, and a fixture that
     /// left them at their defaults would exercise the code with every driver reading zero.
     ///
-    /// `category_bytes` and per-author line counts are filled and rolled up for the same
-    /// reason, one phase later. `treepo-gen::material` reads a directory's category mixture and
-    /// its contributor set, and relies on extraction having summed both from the subtree; a
-    /// fixture that left them empty would make every directory
-    /// [`Stone`](treepo_model::MaterialFamily::Stone) with an empty mosaic, and every material
-    /// assertion vacuously true.
+    /// `category_bytes`, per-author line counts and commit dates are filled and rolled up for
+    /// the same reason, one phase later. `treepo-gen::material` reads a directory's category
+    /// mixture, its contributor set and its history span, and relies on extraction having
+    /// gathered all three from the subtree; a fixture that left them empty would make every
+    /// directory [`Stone`](treepo_model::MaterialFamily::Stone) with an empty mosaic and no
+    /// gradient, and every material assertion vacuously true.
+    ///
+    /// Note this cannot disturb the skeleton: `params`'s `G1` row keeps every temporal
+    /// primitive out of the geometry, and `no_temporal_primitive_reaches_the_skeleton` is the
+    /// test that says so.
     pub(crate) fn manifest_of(files: &[(&str, u64)]) -> Manifest {
         use treepo_det::OrderedMap;
         use treepo_model::identity::AuthorKey;
@@ -554,6 +586,9 @@ pub(crate) mod tests {
             let mut record = PathRecord::new(path.clone(), NodeKind::File);
             record.size.bytes = *bytes;
             record.size.category_bytes = core::iter::once((category_of(text), *bytes)).collect();
+            let (first, last) = history_of(text);
+            record.temporal.first_commit_time = Some(first);
+            record.temporal.last_commit_time = Some(last);
             seen.push(path.clone());
             records.push(record);
             counts.push(authors_of(text, *bytes).into_iter().collect());
@@ -589,6 +624,7 @@ pub(crate) mod tests {
         }
 
         let mut manifest = Manifest::new("test".to_string(), Seed::root(b"compose-test"));
+        manifest.reference_time = REFERENCE;
         manifest.set_paths(records);
         manifest
     }
@@ -618,6 +654,31 @@ pub(crate) mod tests {
                 .collect();
             for (key, lines) in inherited {
                 *counts[index].entry(key).or_insert(0) += lines;
+            }
+
+            // Dates roll up the same way, and in both directions: a directory was created when
+            // its earliest child was and touched when its latest child was. That is what gives
+            // `F-MAT-4` a real span for a container rather than one borrowed from a member.
+            let dates: Vec<(Option<i64>, Option<i64>)> = records
+                .iter()
+                .filter(|record| record.path.parent().as_ref() == Some(&path))
+                .map(|record| {
+                    (
+                        record.temporal.first_commit_time,
+                        record.temporal.last_commit_time,
+                    )
+                })
+                .collect();
+            for (first, last) in dates {
+                let temporal = &mut records[index].temporal;
+                if let Some(first) = first {
+                    temporal.first_commit_time =
+                        Some(temporal.first_commit_time.map_or(first, |c| c.min(first)));
+                }
+                if let Some(last) = last {
+                    temporal.last_commit_time =
+                        Some(temporal.last_commit_time.map_or(last, |c| c.max(last)));
+                }
             }
 
             let children: Vec<(u64, u32, u32, u16)> = records
