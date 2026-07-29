@@ -136,11 +136,15 @@
     // a clean directory must stay in the bottom fifth of the jitter range
     // (`a_clean_directory_is_near_deterministic`). Organic mess belongs on the *weights*
     // (skew_abs / diversity / fragmentation), not on the floor every limb starts from.
-    // Held at 2000 for this promotion pass — next lab pass should raise wild weights, not base.
+    //
+    // CHANGED: wild weights raised (joint-promote follow-up 2026-07-29).
+    // WHY: first-pass lab wanted more organic mess; D1 forbids raising `base`, so the
+    // response to skew / language mix / ownership spread steepens instead. Clean paths
+    // still sit near the floor via convention + balance.
     angle_jitter: (base: 2000, min: 0, max: 24000, per: (
-        skew_abs: 10000,
-        diversity: 5000,
-        fragmentation: 3000,
+        skew_abs: 16000,
+        diversity: 9000,
+        fragmentation: 6000,
         convention: -1200,
         balance: -800,
     )),
@@ -198,7 +202,10 @@
     // The drivers are the wildness signals `D1 + D3` already uses, with the sign that says a
     // disciplined repository grows straighter: conventional structure reaches up, and skew
     // and bushiness sprawl. Nothing temporal — `G1`.
-    tropism: (base: 11000, min: 0, max: 34000, per: (
+    //
+    // CHANGED: base 11000 → 23000 (joint-promote renders/0013).
+    // WHY: rebalances upward after droop.per.mass 30000 so heavy limbs still recover.
+    tropism: (base: 23000, min: 0, max: 34000, per: (
         convention: 9000,
         bushiness: -7000,
         skew_abs: -6000,
@@ -218,13 +225,17 @@
     // `release` is not strictly below `engage`, because that is the band with its hysteresis
     // removed.
     //
+    // CHANGED: engage 96000 → 92000 (renders/0011); release 72000 → 42000 (renders/0008).
+    // WHY: engage sooner on sideways outliers; hold the band longer for bounce-back on long
+    // heavy branches after the stronger droop + tropism package.
+    //
     // None of this touches the root cluster: roots are placed by `trunk.rs` directly and
     // never run through the turtle, so they stay below ground where they belong.
-    // CHANGED: lift 15000 → 25000 (lab renders/0086).
-    // WHY: slight increase keeps recovery ahead of the stronger droop.per.mass above.
+    // CHANGED: lift 15000 → 25000 (lab renders/0086); engage/release from joint-promote.
+    // WHY: lift keeps recovery ahead of stronger droop; engage/release package above.
     ground: (
-        engage:  96000,
-        release: 72000,
+        engage:  92000,
+        release: 42000,
         lift:    25000,
     ),
 
@@ -397,10 +408,11 @@
         // removed the coupling and this row now does one job, which is why `max` can stay
         // wide — `AC-SKEL-1`'s wilder repository spreads further without losing its base.
         //
-        // CHANGED: base 62000 → 90000 (lab renders/0048).
-        // WHY: pure lateral character after the pipe trunk — wider fan reduces root-level
-        // clustering and gives long branches more variation without shortening the column.
-        fan: (base: 90000, min: 24000, max: 150000, per: (
+        // CHANGED: base 62000 → 90000 (lab renders/0048), then 90000 → 80000
+        // (joint-promote renders/0002).
+        // WHY: pipe trunk freed fan as pure lateral character; 90° was too splayed, 80°
+        // stays open without looking diagrammatic.
+        fan: (base: 80000, min: 24000, max: 150000, per: (
             bushiness: 40000,
             skew_abs: 26000,
             convention: -8000,

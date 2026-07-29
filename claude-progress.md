@@ -1226,6 +1226,22 @@ cargo xtask readonly-audit
 `cargo xtask budget` is deliberately *not* in that list — it needs several gigabytes of clones
 and several minutes. Run it when extraction changes, not before every push.
 
+## Joint-promote micro-pass — session `20260729_042807_joint-promote` (2026-07-29)
+
+Second promote after joint eye on the first table. Four lab prefers plus D1-safe jitter:
+
+| Parameter | From → to | Evidence |
+|-----------|-----------|----------|
+| `trunk.fan.base` | 90000 → **80000** | renders/0002 — 90° too lateral |
+| `tropism.base` | 11000 → **23000** | renders/0013 — match stronger droop |
+| `ground.engage` | 96000 → **92000** | renders/0011 — catch sideways outliers |
+| `ground.release` | 72000 → **42000** | renders/0008 — bounce-back on heavy limbs |
+| `angle_jitter.per` wild weights | skew_abs 10k→**16k**, diversity 5k→**9k**, fragmentation 3k→**6k** | base held at 2000 (D1) |
+
+Not promoted: `branch_capacity.base` → 3 (`needs_code` — helps `self`, truncates `single-author`).
+
+Gate: `cargo test -p treepo-gen` 72 ok including `a_clean_directory_is_near_deterministic`.
+
 ## First high-confidence promote — lab session `20260728_234906_lab` (2026-07-29)
 
 S4 lab campaign: 111 strips, 25 findings. This sprint promotes the **high-confidence**

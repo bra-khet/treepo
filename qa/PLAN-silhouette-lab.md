@@ -83,7 +83,7 @@ That S3 → S3b sequence is the forced order working as intended, and worth reco
 | **S3b** | Trunk column: pipe support + primary internodes | **done** 2026-07-28 |
 | **S4** | HTML lab MVP | **done** 2026-07-28 (`m0-silhouette lab`) |
 | **S5** | AC-SKEL-1 subject pair | pending |
-| **S6** | Tuning campaign via lab | **partial** 2026-07-29 — first high-confidence promote into `lsystem.ron` from session `20260728_234906_lab` (see progress). Joint re-judge still open. |
+| **S6** | Tuning campaign via lab | **partial** 2026-07-29 — first promote + joint-promote micro-pass (fan 80°, tropism/ground, jitter wild weights). Capacity needs_code and Family C still open. |
 | **S7** | Determinism / budget gate hardening | pending |
 
 ---
