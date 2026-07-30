@@ -63,7 +63,6 @@ pub struct StoredManifest {
 struct StoredAuthor {
     key: [u8; 16],
     recency: i64,
-    commit_count: u32,
     is_self: bool,
 }
 
@@ -197,15 +196,10 @@ fn authors_of(table: &AuthorTable) -> Vec<StoredAuthor> {
     table
         .iter()
         .map(|(key, entry)| {
-            let AuthorEntry {
-                recency,
-                commit_count,
-                is_self,
-            } = entry;
+            let AuthorEntry { recency, is_self } = entry;
             StoredAuthor {
                 key: *key.as_bytes(),
                 recency: *recency,
-                commit_count: *commit_count,
                 is_self: *is_self,
             }
         })
@@ -477,7 +471,6 @@ impl StoredManifest {
                 AuthorKey::from_bytes(author.key),
                 AuthorEntry {
                     recency: author.recency,
-                    commit_count: author.commit_count,
                     is_self: author.is_self,
                 },
             );

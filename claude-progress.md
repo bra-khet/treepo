@@ -3,9 +3,10 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 code-complete —
-`F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, and `AC-MAT-3` landed. What remains is evidence:
-the three-platform CI compare (`AC-DET-2`, `AC-ID-2`) and `AC-MAT-2` against a T2 repository**
+**Last updated:** 2026-07-30 · **Phases 0–3 closed (M0 EXIT); Phase 4 code-complete —
+`F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, and `AC-MAT-3` landed; the manifest is schema 2.
+What remains is evidence: the three-platform CI compare (`AC-DET-2`, `AC-ID-2`) and `AC-MAT-2`
+against a T2 repository**
 
 ---
 
@@ -2545,11 +2546,95 @@ S15's — a test-only change must move no digest, and now that is checked rather
 
 ---
 
+## S17 — `AuthorEntry::commit_count` removed, schema 2 (2026-07-30)
+
+> S16's open item, closed the way it should have been: the field is gone.
+
+`SCHEMA_VERSION` **1 → 2**. Five files: the field and its doc in `treepo-model::manifest`, the
+increment in `treepo-vcs::log_pass`, the `StoredAuthor` mirror in both directions in
+`treepo-store::manifest_io::stored`, the round-trip fixture, and the `n4.rs` assertion that pinned
+it deliberately so that removing it would also have to be deliberate.
+
+### The design document had already decided this
+
+The question S16 left open was whether a requirement wanted the field. Checking properly answered
+it: **`design/feature-system.md` §3.4's ownership set is `author_count`, `author_distribution`,
+`dominant_author`, `bus_factor_proxy`, `blame_segments`, `contribution_recency_per_author` — and no
+per-author count.** `PRD.md` §182–183 lists the same set. The `commit_count` both documents *do*
+name sits under §3.3 **Temporal** primitives, which are per path, and that one is
+`TemporalPrimitives::commit_count` and stays.
+
+So the field was never asked for by the PRD, by the design, or by any consumer. It existed because
+`log_pass` had the number in hand while walking the graph — which is the ordinary way a leaderboard
+route gets built, nobody deciding to build one.
+
+The removal is recorded where it will be read: a `# Why there is no per-contributor commit count
+here` section on [`AuthorEntry`] naming what it was, what read it (nothing), and **what adding one
+back would require** — a requirement that names it and an answer to what may display it, given
+`AC-INSP-2` forbids showing a count. `recency` kept its place with the reason attached: it is a
+timestamp, not a volume, and §3.4 asks for exactly it.
+
+### The blast radius split exactly where it should
+
+Two digests were in question and they moved in opposite directions, which is the whole evidence
+that the change is confined:
+
+- **The manifest golden digest moved**, `30151920…` → `a1e90ec1…`, and the test that holds it
+  *fired on its own* before I touched it, with its message already reading "schema 2 encoding
+  changed". That test exists for exactly this and it worked; rebaselining it in the same commit as
+  the version bump is what its own documentation instructs.
+- **Not one generated digest moved.** `cargo xtask determinism --check` against a report captured
+  from `7cbf49a` before the first edit passes byte for byte — all 18 `skeleton/*`, 18 `material/*`,
+  18 `enrichment/*`, the nine unit probes, and `overall e01b1496…` unchanged. Materials never read
+  `AuthorTable`, and that is now measured rather than reasoned.
+
+### Sabotage: restoring the field is caught in four places
+
+Re-adding `pub commit_count: u32` fails to compile in **four crates**, and the shape of the failures
+is better than expected:
+
+| Where | Error | Why it fires |
+|---|---|---|
+| `treepo-model` test `n4` | `E0027` | the audit tripwire, as designed |
+| `treepo-store` lib | `E0027` | `stored::authors_of` destructures `AuthorEntry` exhaustively for its own reasons |
+| `treepo-model` lib test | `E0063` | the key-order unit test constructs one |
+| `treepo-vcs` lib | `E0063` | `log_pass` constructs one |
+
+The `treepo-store` one is the find. `authors_of` already destructured exhaustively to stop a field
+quietly not being persisted, so **a field added to `AuthorEntry` fails to compile even if `n4.rs` is
+deleted** — an independent tripwire on the same struct, pointed at a format but landing on a
+constraint. Recorded in `n4.rs`, because it is the more robust half of the guarantee and it was not
+put there on purpose.
+
+### One thing fixed in passing, and it was mine
+
+`n4.rs` numbered its claims two different ways: the header ran *ordering, rendering, tripwire,
+recorded* and the body ran *ordering, recorded, rendering, tripwire*, so following "Claim 2" from
+the header landed on the wrong test. Both ends were being rewritten anyway and leaving them
+inconsistent would have made the new text actively misleading. Comments only; the body now matches
+the header.
+
+`n4.rs` also makes a **stronger** claim than it did. `AuthorEntry` now carries no per-contributor
+magnitude at all — a timestamp and a bit about the viewer — so `AuthorTable::iter` cannot be sorted
+into contribution order by anything the crate offers, and its line in the ordering test holds by
+construction rather than by a choice of iteration order. `Mosaic`'s cell counts are now the *only*
+sortable per-contributor route left, and that one has a legitimate use to protect: a renderer has to
+compare cells against a quota.
+
+Local gate green: fmt, clippy `-D warnings`, **610 tests** across 27 binaries (one assertion fewer,
+no test fewer), dep-guard (6 crates clean), `cargo deny`, readonly-audit (18 fixtures, 0 writes,
+detector 4/4), determinism `--check` matching the pre-change baseline.
+
+**Consequence worth expecting:** an existing local store holds a schema-1 manifest and will
+regenerate on next open rather than parse. That is `F-MAN-6` doing its job, not a bug.
+
+---
+
 ## Next
 
 **Phase 4's code is complete.** S10 built the families and the arithmetic, S11 gave every node a
 material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong with it, S16 the
-`N4` audit. What remains is **evidence, not code**:
+`N4` audit, S17 closed what the audit found. What remains is **evidence, not code**:
 
 1. **The three-platform CI compare** — `AC-DET-2` and `AC-ID-2` are the same run. Every digest is
    locally reproducible over three runs; nothing has yet compared Windows against macOS and Linux
@@ -2560,13 +2645,13 @@ material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong w
    the unit fixture, both of which are T0/T1 shapes. The T2 pins are real repositories, and S15
    showed the instrument is ten lines — extract `target/corpus-pinned/bevy`, materialize, assert
    every contributor above `significant_ppm` holds a cell.
-3. **`AuthorEntry::commit_count`** (S16). A public per-contributor commit total that nothing reads,
-   and the widest leaderboard route in `treepo-model`. Either a requirement wants it — `F-INSP-1`
-   is the only candidate, and `AC-INSP-2` forbids surfacing a count — or it should leave the
-   manifest, which is a `SCHEMA_VERSION` bump and a `stored.rs` edit.
+Both are held on the same push: the CI matrix is what item 1 *is*, and item 2 is ten lines that can
+land before it or after it.
 
-**`AC-MAT-3` is done — see S16 below.** `crates/treepo-model/tests/n4.rs`, 7 tests, asserting the
-shape of the public API rather than claiming a guarantee the compiler does not hold.
+**`AC-MAT-3` is done — see S16 above.** `crates/treepo-model/tests/n4.rs`, 7 tests, asserting the
+shape of the public API rather than claiming a guarantee the compiler does not hold. **S16's one
+open item is closed — see S17.** `AuthorEntry::commit_count` is gone; the manifest is schema 2, and
+no requirement or design document ever named it.
 
 Recorded rather than resolved, all waiting on materials having an appearance:
 

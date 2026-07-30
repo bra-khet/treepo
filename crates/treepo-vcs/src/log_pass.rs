@@ -228,13 +228,16 @@ pub fn log_pass(
         reference_time = reference_time.max(time);
         commit_count = commit_count.saturating_add(1);
 
+        // CHANGED: the pass no longer counts commits per contributor (schema 2).
+        // WHY: `N4`. The per-author total was read by nothing and was the widest route to a
+        // leaderboard in the manifest — see `treepo_model::AuthorEntry`. The repo-wide
+        // `commit_count` accumulated above is a different number and stays; so does
+        // `TemporalPrimitives::commit_count`, which is per path and is what `F-EXT-2` names.
         let entry = authors.entry(author).or_insert(AuthorEntry {
             recency: i64::MIN,
-            commit_count: 0,
             is_self: false,
         });
         entry.recency = entry.recency.max(time);
-        entry.commit_count = entry.commit_count.saturating_add(1);
 
         let parents: Vec<_> = commit.parent_ids().map(|id| id.detach()).collect();
         if parents.len() > 1 {

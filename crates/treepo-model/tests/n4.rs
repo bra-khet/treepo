@@ -13,11 +13,16 @@
 //! # What this file claims, and what it does not
 //!
 //! It asserts the **shape** of the API. It does not claim the compiler prevents a determined
-//! caller from building a leaderboard, because it does not: `Mosaic`'s cell counts and
-//! `AuthorEntry::commit_count` are `u32`, `u32` is [`Ord`], and anyone who collects them can sort
-//! them. That was accepted deliberately rather than overlooked — cells are a geometric quantity a
-//! renderer has to compare against a quota, and a count that could not be compared would obstruct
-//! every legitimate use in order to inconvenience one illegitimate one.
+//! caller from building a leaderboard, because it does not: [`Mosaic`](treepo_model::Mosaic)'s cell
+//! counts are `u32`, `u32` is [`Ord`], and anyone who collects them can sort them. That one was
+//! accepted deliberately rather than overlooked — cells are a geometric quantity a renderer has to
+//! compare against a quota, and a count that could not be compared would obstruct every legitimate
+//! use in order to inconvenience one illegitimate one.
+//!
+//! It is now the *only* such route. Schema 1 had a second, `AuthorEntry::commit_count`, which this
+//! file recorded as accepted-and-watched; schema 2 removed it, because unlike a cell count it had no
+//! legitimate use to obstruct — see [`AuthorEntry`] for the reasoning and for what it would take to
+//! add one back.
 //!
 //! So the honest claim is narrower and still worth holding. Three of the four are *enforced* — a
 //! regression fails this file — and the fourth is *recorded*, which is a weaker thing and is
@@ -32,8 +37,8 @@
 //!    rendering tests, the composite one naming the leaked digits.
 //! 3. **Enforced at compile time. A new per-contributor field must be reviewed here.** The
 //!    exhaustive destructuring in `every_per_contributor_field_is_accounted_for` is the tripwire.
-//!    Verified by sabotage: a `lines_authored: u64` field on [`AuthorEntry`] stopped this file
-//!    compiling with `E0027`.
+//!    Verified by sabotage twice: a `lines_authored: u64` field on [`AuthorEntry`] stopped this file
+//!    compiling with `E0027`, and so did restoring `commit_count` after schema 2 removed it.
 //! 4. **Recorded, not enforced. Every per-contributor magnitude requires naming the contributor
 //!    first.** There is no accessor for "the largest holder", "the top three", or "the remainder by
 //!    rank", so no call produces a ranking a caller did not arrive with. What the test below
@@ -100,14 +105,21 @@ fn mosaic() -> Mosaic {
     Mosaic::new(held, 100)
 }
 
+/// The same four as an [`AuthorTable`].
+///
+/// The volumes are deliberately *not* used: since schema 2 an [`AuthorEntry`] holds no magnitude to
+/// put them in, so this table cannot be sorted into contribution order by any means the crate
+/// offers. `AuthorTable::iter`'s line in
+/// [`no_public_iterator_yields_contributors_in_contribution_order`] therefore holds by construction
+/// rather than by a choice of iteration order — which is why the volumes still matter for the other
+/// three iterators and not for this one.
 fn author_table() -> AuthorTable {
     let mut table = AuthorTable::new();
-    for (i, &(name, lines)) in CONTRIBUTORS.iter().enumerate() {
+    for (i, &(name, _lines)) in CONTRIBUTORS.iter().enumerate() {
         table.insert(
             author(name),
             AuthorEntry {
                 recency: 1_700_000_000 + i as i64 * 86_400,
-                commit_count: u32::try_from(lines / 100).unwrap(),
                 is_self: false,
             },
         );
@@ -191,7 +203,8 @@ fn no_public_iterator_yields_contributors_in_contribution_order() {
     }
 }
 
-/// Claim 2, and the sharpest thing this file has to say. Every per-contributor magnitude the crate
+/// Claim 4 — recorded rather than enforced, and the sharpest thing this file has to say. Every
+/// per-contributor magnitude the crate
 /// exposes takes an [`AuthorKey`] as an argument, so a caller must already know who they are
 /// asking about. There is no `largest_holder`, no `top_n`, no `nth_by_share` — and therefore no
 /// call that turns "these four people" into "these four people in order".
@@ -221,7 +234,7 @@ fn every_per_contributor_magnitude_requires_naming_the_contributor() {
     assert_eq!(table.len(), 4);
 }
 
-/// Claim 2, continued: the two accessors that *do* single someone out, and why neither is a rank.
+/// Claim 4, continued: the two accessors that *do* single someone out, and why neither is a rank.
 ///
 /// `dominant_author` names one contributor because `F-MAT-1` needs a base material family for the
 /// limb. It is not the first step of a ranking, and the tie case is what makes that structural
@@ -256,7 +269,7 @@ fn dominance_is_a_material_choice_and_the_bus_factor_names_nobody() {
     assert_eq!(ownership.bus_factor_proxy(), 1);
 }
 
-/// Claim 3. `Debug` is the only rendering this crate offers of a contribution — no type here
+/// Claim 2. `Debug` is the only rendering this crate offers of a contribution — no type here
 /// implements [`Display`](core::fmt::Display) — and it must not carry a figure, including inside a
 /// dump of a whole record. A tooltip built from `{:?}` is the likeliest way `AC-MAT-3` would be
 /// broken by accident.
@@ -302,29 +315,32 @@ fn no_rendering_of_a_contribution_carries_a_figure() {
     assert!(rendered.contains("partial"), "{rendered}");
 }
 
-/// Claim 4 — the tripwire, and the only compile-time assertion in this file.
+/// Claim 3 — the tripwire, and the only compile-time assertion in this file.
 ///
 /// Both structs are destructured exhaustively, so **adding a field to either stops this test
 /// compiling** and whoever added it has to decide here whether it is a contributor magnitude and
 /// whether `N4` permits it. This is the same discipline `treepo-store::manifest_io` uses to stop a
-/// new primitive quietly not being persisted, pointed at a constraint instead of at a format.
+/// new primitive quietly not being persisted, pointed at a constraint instead of at a format — and
+/// because `manifest_io::stored::authors_of` destructures [`AuthorEntry`] exhaustively for its own
+/// reasons, the two tripwires overlap here. A field added to this struct fails to compile in
+/// `treepo-store` even if this file is deleted, which is the more robust half of the guarantee.
 ///
-/// The two accounted-for routes are named rather than hidden:
+/// [`AuthorEntry`] now carries **no per-contributor magnitude at all** — a timestamp and a bit
+/// about the viewer — which is a stronger position than schema 1's and is the property this
+/// destructuring holds. The one accounted-for route left in the crate is named rather than hidden:
 ///
 /// * **`AuthorShare::to_ppm` / `to_fx`** — the share as a number, which `treepo-store` must
 ///   serialize and `treepo-gen`'s `F-MAT-3` normalization needs the magnitude of. Neither is a
 ///   percentage and neither is reachable from a rendering; `to_ppm`'s own doc comment says "not for
 ///   display".
-/// * **`AuthorEntry::commit_count`** — a per-contributor commit total, which nothing generative
-///   reads (`treepo-gen` never touches [`AuthorTable`]) and which `treepo-store` persists. It is
-///   the widest route to a leaderboard in this crate: collect [`AuthorTable::iter`] and sort by it.
-///   Recorded here as accepted-and-watched rather than closed, because closing it is a manifest
-///   schema change and a decision about what `F-INSP-1` will need, not a test's call.
+///
+/// The route that used to sit beside it, `AuthorEntry::commit_count`, was removed in schema 2 —
+/// nothing read it and no requirement named it, so unlike `to_ppm` it had no legitimate use that
+/// keeping it protected. This test is where a restoration gets caught: it will not compile.
 #[test]
 fn every_per_contributor_field_is_accounted_for() {
     let entry = AuthorEntry {
         recency: 1_700_000_000,
-        commit_count: 41,
         is_self: false,
     };
 
@@ -332,21 +348,14 @@ fn every_per_contributor_field_is_accounted_for() {
     //
     // **Do not add `..` to this pattern.** rustc will suggest it — "if you don't care about this
     // missing field, you can explicitly ignore it" — and taking that suggestion is the one edit
-    // that turns this test from a tripwire into decoration. Verified by sabotage: adding a
-    // `lines_authored: u64` field failed this file with `E0027 pattern does not mention field`,
-    // which is exactly the prompt intended.
-    let AuthorEntry {
-        recency,
-        commit_count,
-        is_self,
-    } = entry;
+    // that turns this test from a tripwire into decoration. Verified by sabotage twice: adding a
+    // `lines_authored: u64` field, and restoring the removed `commit_count`, each failed this file
+    // with `E0027 pattern does not mention field`, which is exactly the prompt intended.
+    let AuthorEntry { recency, is_self } = entry;
 
     // `recency` is a timestamp, not a volume — a contributor who committed recently is not thereby
-    // a larger contributor, and `design/feature-system.md` §3.4 permits recency as an accent.
+    // a larger contributor, and `design/feature-system.md` §3.4 asks for exactly this per author.
     assert_eq!(recency, 1_700_000_000);
-    // The one per-contributor volume figure in the public API. Asserted so that its removal is
-    // also a deliberate act, and so the doc comment above cannot go stale while claiming it.
-    assert_eq!(commit_count, 41);
     // `F-ID-1`'s one permitted naming, and only of the viewer, by their own choice.
     assert!(!is_self);
 

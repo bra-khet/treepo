@@ -34,7 +34,10 @@ use treepo_det::{OrderedMap, OrderedSet, Seed};
 /// A stored manifest whose version differs is regenerated rather than parsed. Bump this for
 /// any change to what is stored or how a stored value is derived — including a change to
 /// [`AuthorKey`]'s domain string, which would silently re-key every contributor.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// * **2** — dropped the per-contributor commit total from [`AuthorEntry`]. See that type.
+/// * **1** — the first schema.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The domain the per-path seed tree hangs from (`P2`).
 const SEED_DOMAIN: &[u8] = b"treepo/manifest/v1";
@@ -155,12 +158,30 @@ impl LanguageTable {
 /// The per-path view is [`OwnershipPrimitives`]; this is the roll-up, and the same `N4`
 /// discipline applies — see [`ownership`](crate::primitives::ownership) for why
 /// [`AuthorShare`](crate::primitives::AuthorShare) cannot be sorted.
+/// # Why there is no per-contributor commit count here
+///
+/// Schema 1 carried one. It was written by `treepo-vcs::log_pass` because the number was in
+/// hand while walking the graph, it was read by nothing — `treepo-gen` never touches
+/// [`AuthorTable`] — and no requirement asked for it. `F-EXT-2` names `commit_count` *per
+/// path*, which is [`TemporalPrimitives::commit_count`], and
+/// `design/feature-system.md` §3.4's ownership set names `contribution_recency_per_author`
+/// and no count. What it *was* is the widest route to a leaderboard in this crate: collect
+/// [`AuthorTable::iter`], sort by it, two lines. `N4` forbids ranking people and `AC-INSP-2`
+/// forbids an inspection surface showing a contribution count, so the field had a use only
+/// if that use were forbidden.
+///
+/// **Adding it back needs a requirement that names it, and an answer to what may read it.**
+/// A count that only exists because it was cheap to collect is a count a renderer will
+/// eventually sort. If a future `F-INSP-1` panel needs to say "how much" about a
+/// contributor, `recency` and [`AuthorShare`](crate::primitives::AuthorShare)'s coarse
+/// bucket are what `N4` leaves available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorEntry {
     /// Most recent commit anywhere in the repository, as absolute epoch seconds.
+    ///
+    /// A timestamp, not a volume: committing recently does not make someone a larger
+    /// contributor, and `design/feature-system.md` §3.4 asks for exactly this per author.
     pub recency: i64,
-    /// Commits authored anywhere in the repository.
-    pub commit_count: u32,
     /// Whether this is the user running treepo (`F-ID-1`).
     ///
     /// The one contributor `N9` permits to be named, and only by their own choice.
@@ -608,7 +629,6 @@ mod tests {
         let mut authors = AuthorTable::new();
         let entry = |is_self| AuthorEntry {
             recency: 0,
-            commit_count: 1,
             is_self,
         };
         let a = AuthorKey::from_email(b"a@example.com");

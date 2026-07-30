@@ -482,7 +482,6 @@ mod tests {
             ada,
             AuthorEntry {
                 recency: 1_699_000_000,
-                commit_count: 41,
                 is_self: true,
             },
         );
@@ -490,7 +489,6 @@ mod tests {
             bob,
             AuthorEntry {
                 recency: 1_698_000_000,
-                commit_count: 7,
                 is_self: false,
             },
         );
@@ -636,7 +634,7 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect();
         assert_eq!(
-            hex, "30151920b619082a8c252a9568c7e365106ec2b1643bd660fd47aebbca89cdbf",
+            hex, "a1e90ec110276ae7f982d2610faff090506d1951cf6579c6e03ab58f8f4d3b96",
             "schema {SCHEMA_VERSION} encoding changed — see this test's documentation"
         );
     }
