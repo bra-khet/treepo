@@ -3,9 +3,9 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 feature-complete —
-`F-MAT-1`…`F-MAT-6` and every `F-ID-*` in scope landed; `AC-MAT-3` and the `AC-DET-2`/`AC-ID-2`
-CI compare are all that remain**
+**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 code-complete —
+`F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, and `AC-MAT-3` landed. What remains is evidence:
+the three-platform CI compare (`AC-DET-2`, `AC-ID-2`) and `AC-MAT-2` against a T2 repository**
 
 ---
 
@@ -2472,20 +2472,101 @@ new rustdoc warning. `AC-DET-2` proper still needs the CI run.
 
 ---
 
+## S16 — `AC-MAT-3`, the crate-level `N4` audit (2026-07-29)
+
+> No `treepo-model` type exposes an ordered contributor collection or a share as a figure.
+
+`crates/treepo-model/tests/n4.rs`, 7 tests. An **integration** test rather than a unit one, and
+that is the whole reason it can make the claim: an integration test reaches only what a caller
+reaches. A unit test can see private fields and would prove a property about the inside of the
+crate, where the question `N4` asks is about what leaves it. Same placement argument
+`treepo-vcs/tests/privacy.rs` already records.
+
+### The audit found two routes before it asserted anything
+
+Writing the test meant enumerating the public surface, and that turned up more than expected:
+
+1. **`AuthorShare::to_ppm` / `to_fx`** — known and documented. `treepo-store` must serialize the
+   value and `F-MAT-3`'s normalization needs the magnitude; `to_ppm`'s own doc says "not for
+   display".
+2. **`AuthorEntry::commit_count` — a public per-contributor commit total, and the widest route to a
+   leaderboard in the crate.** Collect `AuthorTable::iter()`, sort by it, two lines. It is written
+   by `log_pass`, persisted by `treepo-store`, and **read by nothing** — `treepo-gen` never touches
+   `AuthorTable` at all. `F-EXT-2` names `commit_count` *per path*, not per author, so no
+   requirement currently asks for it.
+
+Neither breaches the end condition as worded — a count is not a share, and neither is an ordering —
+and `AC-MAT-3` as the PRD words it binds a *UI surface* this crate does not have. But (2) is a
+field carrying a leaderboard-shaped number for no requirement, which by this repository's own
+standard ("a field nothing writes is a field a renderer will read anyway") is worth a decision
+rather than a shrug. Recorded in the test as accepted-and-watched; closing it is a manifest schema
+change and a decision about what `F-INSP-1` needs, which is not a test's call. **Carried into "Next"
+as an open item.**
+
+### Three claims enforced, one recorded — and the difference is labelled
+
+The file says which is which, because a test that implies a guarantee it does not hold is worse
+than no test:
+
+| | Claim | How |
+|---|---|---|
+| 1 | No public iterator yields contributors in contribution order | enforced — all four iterators, against a key-order/volume-order guard |
+| 2 | No rendering carries a contribution as a figure | enforced — `Debug` is the only rendering; nothing implements `Display` |
+| 3 | A new per-contributor field must be reviewed | enforced **at compile time** — exhaustive destructuring of `AuthorEntry` |
+| 4 | Every magnitude requires naming the contributor first | **recorded only** — Rust cannot assert the absence of a method, so a `largest_holder` added tomorrow would not fail this file |
+
+Claim 4 is the honest limit. It holds of every accessor that exists today — to learn how much
+someone holds you must already know who to ask about, so no call produces a ranking a caller did
+not arrive with — and the gap is closed by review and by `Mosaic`'s own type-level documentation,
+not by a test.
+
+### Verified by sabotage, three times
+
+The discipline the `compile_fail` gates and the signals dictionary were held to:
+
+- **Ranking `Mosaic::holders` by cell count** — failed, naming the accessor. This is the realistic
+  mistake, because cell counts are `u32` and sortable, which S12 accepted deliberately.
+- **Adding the ppm value to `AuthorShare`'s `Debug`** — failed *both* rendering tests. The pair was
+  split apart for exactly this: one holds the bucket contract, the other holds that no *composite*
+  leaks it, and a tooltip built from `{:?}` on a `PathRecord` is how `AC-MAT-3` would break by
+  accident.
+- **Adding a `lines_authored: u64` field to `AuthorEntry`** — failed to compile with `E0027 pattern
+  does not mention field`, which is the prompt intended. rustc helpfully suggests adding `..` to
+  the pattern; a comment in the test says not to, because that single edit turns the tripwire into
+  decoration.
+
+One expectation of mine was wrong and the code was right: I asserted a bus factor of 2 on a fixture
+whose largest contributor holds 8,000 of 10,000 lines. One contributor clears 80% alone, so the
+proxy is 1.
+
+Local gate green: fmt, clippy `-D warnings`, **610 tests** across 27 binaries (the new test binary
+is the 27th), dep-guard, and `cargo xtask determinism` produced a report **byte-identical** to
+S15's — a test-only change must move no digest, and now that is checked rather than assumed.
+
+---
+
 ## Next
 
-**Every `F-MAT-*` requirement is built.** S10 built the families and the arithmetic, S11 gave
-every node a material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong with
-it. What remains for Phase 4 is **one acceptance test and one CI run** — no unbuilt feature.
+**Phase 4's code is complete.** S10 built the families and the arithmetic, S11 gave every node a
+material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong with it, S16 the
+`N4` audit. What remains is **evidence, not code**:
 
-**`AC-MAT-3` — "no `treepo-model` type exposes an ordered contributor collection or a share as a
-figure"** still needs a test that says so at the crate level rather than the type's. S12 sharpened
-what such a test can honestly claim:
-`AuthorShare` is closed at the type level (neither `Ord` nor `PartialOrd`, with `compile_fail`
-doctests), but `Mosaic`'s cell counts are `u32` and sortable by anyone who collects them, and
-that is accepted rather than overlooked. The crate-level test should therefore assert the
-*shape* of the API — no accessor returns a ranking, no `Display` surfaces a share — rather than
-claim a guarantee the compiler does not hold.
+1. **The three-platform CI compare** — `AC-DET-2` and `AC-ID-2` are the same run. Every digest is
+   locally reproducible over three runs; nothing has yet compared Windows against macOS and Linux
+   since the material layer landed. This is the one item that can still fail for an interesting
+   reason.
+2. **`AC-MAT-2` on a T2 repository.** The criterion says "on the T2 fixture"; it is currently held
+   on the synthetic corpus (`many-authors`, 360 holder-slots across 6 nodes, nobody dropped) and on
+   the unit fixture, both of which are T0/T1 shapes. The T2 pins are real repositories, and S15
+   showed the instrument is ten lines — extract `target/corpus-pinned/bevy`, materialize, assert
+   every contributor above `significant_ppm` holds a cell.
+3. **`AuthorEntry::commit_count`** (S16). A public per-contributor commit total that nothing reads,
+   and the widest leaderboard route in `treepo-model`. Either a requirement wants it — `F-INSP-1`
+   is the only candidate, and `AC-INSP-2` forbids surfacing a count — or it should leave the
+   manifest, which is a `SCHEMA_VERSION` bump and a `stored.rs` edit.
+
+**`AC-MAT-3` is done — see S16 below.** `crates/treepo-model/tests/n4.rs`, 7 tests, asserting the
+shape of the public API rather than claiming a guarantee the compiler does not hold.
 
 Recorded rather than resolved, all waiting on materials having an appearance:
 
