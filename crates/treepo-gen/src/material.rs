@@ -58,6 +58,7 @@
 use crate::enrich::{EnrichError, Rules as EnrichRules};
 use crate::normalize::{Normalize, NormalizeError};
 use crate::params::per_mille;
+use crate::stress::{Rules as StressRules, StressError};
 use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
@@ -95,12 +96,38 @@ pub struct AgeSpan {
     pub newest_days: i64,
 }
 
+/// The debt signals of everything one node stands for — `F-MAT-6`'s input.
+///
+/// [`AgeSpan`]'s counterpart for [`stress`](crate::stress), and here for the same reason: it is
+/// what the *walk* gathers, where the table decides what a gathered value means. Three fields
+/// rather than a [`DerivedSignals`](treepo_model::DerivedSignals), because only three of that
+/// type's six are read here (the module header of [`stress`](crate::stress) says which three are
+/// not, and why) and a partly-filled `DerivedSignals` would be a claim that the other half was
+/// measured and found empty.
+///
+/// Every field is `Option` and `None` means *not measured*, carried through from
+/// `DerivedSignals` rather than defaulted to zero — `Stress` has the argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DebtSignals {
+    /// Unfinished-work markers per thousand code lines.
+    pub markers_per_thousand: Option<Fx>,
+    /// Share of bytes sitting in files over the large-file threshold, in `0..=1`.
+    pub large_file_share: Option<Fx>,
+    /// Recent churn against the node's own line count — `1` is untouched, `0` is churning at or
+    /// above every line it holds.
+    pub stability: Option<Fx>,
+}
+
 /// The table format this crate understands.
 ///
 /// Independent of [`params::TABLE_VERSION`](crate::params::TABLE_VERSION) and of
 /// [`treepo_model::SCHEMA_VERSION`]: the skeleton table, the material table and the manifest
 /// version separately, and an edit to one must not invalidate the others.
-pub const TABLE_VERSION: u32 = 1;
+///
+/// `2` since `F-MAT-6`. A version 1 table has neither a `stress` section nor a marker scale, so
+/// it would parse as a table describing an unstressed tree — the same reason the skeleton table
+/// went to 2 when `branch_capacity` arrived.
+pub const TABLE_VERSION: u32 = 2;
 
 /// The material table — `F-MAT-1`, `F-MAT-2` and `F-MAT-3` as data.
 ///
@@ -135,6 +162,11 @@ pub struct Table {
     /// reads [`normalize`](Self::normalize)'s age scale to place it; two files would be two
     /// copies of that scale with two chances to disagree. See [`enrich`](crate::enrich).
     pub enrich: EnrichRules,
+    /// `F-MAT-6` — how strongly a debt signal shows on a surface, and how much of one it takes.
+    ///
+    /// Here for the same reason [`enrich`](Self::enrich) is: stress is a treatment *of* material
+    /// and reads [`normalize`](Self::normalize)'s marker scale. See [`stress`](crate::stress).
+    pub stress: StressRules,
 }
 
 impl Table {
@@ -190,7 +222,8 @@ impl Table {
         self.normalize
             .validate()
             .map_err(MaterialError::Normalize)?;
-        self.enrich.validate().map_err(MaterialError::Enrich)
+        self.enrich.validate().map_err(MaterialError::Enrich)?;
+        self.stress.validate().map_err(MaterialError::Stress)
     }
 
     /// The material for one node.
@@ -210,9 +243,10 @@ impl Table {
         bytes: u64,
         ownership: &OwnershipPrimitives,
         age: Option<AgeSpan>,
+        debt: &DebtSignals,
         role: &NodeRole,
     ) -> Material {
-        self.material_from(self.mix_of(size), bytes, ownership, age, role)
+        self.material_from(self.mix_of(size), bytes, ownership, age, debt, role)
     }
 
     /// The material for one node whose mixture has already been gathered.
@@ -227,6 +261,7 @@ impl Table {
         bytes: u64,
         ownership: &OwnershipPrimitives,
         age: Option<AgeSpan>,
+        debt: &DebtSignals,
         role: &NodeRole,
     ) -> Material {
         let family = dominant(&mix);
@@ -254,6 +289,11 @@ impl Table {
             budget,
             mosaic: self.normalize.mosaic(ownership, budget),
             gradient: age.map(|span| self.normalize.gradient(span.oldest_days, span.newest_days)),
+            // Last, and it reads none of the four above. `F-MAT-6` says stress coexists with the
+            // primary material, so nothing here may consult it — a stress that could reach
+            // `family` or `budget` would be a stress that had replaced part of what it coexists
+            // with.
+            stress: self.stress_of(debt),
         }
     }
 
@@ -299,7 +339,7 @@ impl Table {
 /// Each [`NodeRole`] names its content differently, and getting this wrong is invisible —
 /// every variant produces *a* material, just the wrong one.
 ///
-/// | Role | Mixture, contributors and dates from | Bytes from |
+/// | Role | Mixture, contributors, dates and debt from | Bytes from |
 /// |---|---|---|
 /// | [`Limb`](NodeRole::Limb) | its own record | its own record |
 /// | [`Group`](NodeRole::Group) | its members' records | its members' records |
@@ -319,12 +359,18 @@ impl Table {
 ///
 /// # Why summing member records is not a deep walk
 ///
-/// `treepo-vcs`'s extraction rolls `category_bytes`, per-author line counts *and* commit
-/// timestamps from children into parents — the log pass credits "every ancestor" of every
-/// touched path — so a directory's mixture, its contributor set and its history span are
-/// already its whole subtree's. Summing the member records is therefore the complete answer,
-/// not an approximation of one, which is what keeps this `O(nodes × members × log paths)`
-/// instead of a traversal per container.
+/// `treepo-vcs`'s extraction rolls `category_bytes`, per-author line counts, commit timestamps
+/// *and* the `F-EXT-6` derived signals from children into parents — the log pass credits "every
+/// ancestor" of every touched path — so a directory's mixture, its contributor set, its history
+/// span and its debt are already its whole subtree's. Summing the member records is therefore the
+/// complete answer, not an approximation of one, which is what keeps this
+/// `O(nodes × members × log paths)` instead of a traversal per container.
+///
+/// The three gatherings combine differently, and the difference is the whole of what could go
+/// wrong here invisibly. Bytes and category shares **add**. Contribution shares are weighted back
+/// into line counts first (`ownership_over`). Debt signals are ratios and are weighted by their
+/// own denominators (`debt_over`). Every one of them produces a plausible material if it is
+/// wrong.
 ///
 /// # What `F-MAT-4` is not
 ///
@@ -370,6 +416,7 @@ pub fn materialize(manifest: &Manifest, skeleton: &Skeleton, table: &Table) -> M
             content.bytes,
             &content.ownership,
             content.age,
+            &content.debt,
             &node.role,
         ));
     }
@@ -387,6 +434,7 @@ struct Content<'a> {
     bytes: u64,
     ownership: Cow<'a, OwnershipPrimitives>,
     age: Option<AgeSpan>,
+    debt: DebtSignals,
 }
 
 /// Gathers one node's content — see [`materialize`] for the table this implements.
@@ -407,6 +455,7 @@ fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
                 mix: mix_over(records.clone().map(|record| &record.size)),
                 bytes,
                 age: age_over(records.clone(), reference),
+                debt: debt_over(records.clone()),
                 ownership: Cow::Owned(ownership_over(records)),
             }
         }
@@ -419,6 +468,7 @@ fn resolve<'a>(manifest: &'a Manifest, role: &NodeRole) -> Content<'a> {
                 mix: mix_over(records.clone().map(|record| &record.size)),
                 bytes: aggregate.bytes,
                 age: age_over(records.clone(), reference),
+                debt: debt_over(records.clone()),
                 ownership: Cow::Owned(ownership_over(records)),
             }
         }
@@ -433,12 +483,14 @@ fn single<'a>(manifest: &'a Manifest, path: &RepoPath, reference: i64) -> Conten
             bytes: 0,
             ownership: Cow::Owned(OwnershipPrimitives::default()),
             age: None,
+            debt: DebtSignals::default(),
         },
         |record| Content {
             mix: mix_over(core::iter::once(&record.size)),
             bytes: record.size.bytes,
             ownership: Cow::Borrowed(&record.ownership),
             age: age_over(core::iter::once(record), reference),
+            debt: debt_over(core::iter::once(record)),
         },
     )
 }
@@ -554,6 +606,90 @@ fn ownership_over<'a>(records: impl Iterator<Item = &'a PathRecord>) -> Ownershi
     OwnershipPrimitives::from_line_counts(&counts, recency)
 }
 
+/// The debt signals across a set of records — `F-MAT-6`'s gathering.
+///
+/// The third gathering in this file, and the one facing [`ownership_over`]'s trap in its widest
+/// form: all three signals are *ratios*, each with a different denominator, so none of them can be
+/// summed and none of them can be averaged by record either. A directory of one ten-thousand-line
+/// file and one three-line file is very nearly the large file's story, and an unweighted mean
+/// would give the small one half of the say.
+///
+/// So each is a mean weighted by **its own denominator** — the quantity extraction divided by to
+/// produce it:
+///
+/// | Signal | Weight | Because it is |
+/// |---|---|---|
+/// | `markers_per_thousand` | `size.lines.code` | markers per thousand *code lines* |
+/// | `large_file_share` | `size.bytes` | large bytes over *total bytes* |
+/// | `stability` | `size.lines.total` | recent churn over *every line held* |
+///
+/// Each therefore reconstructs the number extraction would have produced had it rolled the set up
+/// itself, and the only loss is fixed-point rounding — the same argument [`ownership_over`] makes
+/// about undoing a division that already happened. A single record comes out exactly as it went
+/// in, because its weight is the whole weight.
+///
+/// `None` per signal where nothing here measured it, never zero. See
+/// [`Stress`](treepo_model::Stress) for why that distinction is carried this far.
+fn debt_over<'a>(records: impl Iterator<Item = &'a PathRecord> + Clone) -> DebtSignals {
+    DebtSignals {
+        markers_per_thousand: weighted_mean(
+            records.clone(),
+            |record| record.derived.todo_density,
+            |record| record.size.lines.code,
+        ),
+        large_file_share: weighted_mean(
+            records.clone(),
+            |record| record.derived.large_file_debt,
+            |record| record.size.bytes,
+        ),
+        stability: weighted_mean(
+            records,
+            |record| record.temporal.stability,
+            |record| record.size.lines.total,
+        ),
+    }
+}
+
+/// One signal's mean across a set of records, weighted by the denominator it was divided by.
+///
+/// Weights are normalized to shares *before* they multiply anything, rather than accumulating
+/// `value × weight` and dividing at the end. The obvious order overflows: a T3 subtree holds
+/// billions of bytes and [`Fx`] is `Q32.32`, so one term of a byte-weighted sum saturates and the
+/// mean comes out silently wrong for the largest directories — exactly the nodes whose stress is
+/// most visible. Each term here is at most the value itself, so nothing can saturate.
+///
+/// A record carrying a value with a zero weight contributes nothing. Extraction cannot produce
+/// one — every signal here is `Some` only when its denominator is positive — but a hand-built
+/// record can, and a ratio with no denominator behind it is not a measurement to average in.
+fn weighted_mean<'a>(
+    records: impl Iterator<Item = &'a PathRecord> + Clone,
+    value: impl Fn(&PathRecord) -> Option<Fx>,
+    weight: impl Fn(&PathRecord) -> u64,
+) -> Option<Fx> {
+    let mut total = 0u64;
+    for record in records.clone() {
+        if value(record).is_some() {
+            total = total.saturating_add(weight(record));
+        }
+    }
+    if total == 0 {
+        return None;
+    }
+
+    let mut mean = Fx::ZERO;
+    for record in records {
+        let Some(measured) = value(record) else {
+            continue;
+        };
+        let own = weight(record);
+        if own == 0 {
+            continue;
+        }
+        mean = mean.add(measured.mul(Fx::from_ratio(own as i64, total as i64)));
+    }
+    Some(mean)
+}
+
 /// The largest family in a mix, in [`MaterialFamily::ALL`] order on a tie.
 ///
 /// A tie has to resolve to something — every limb needs a material, so the `None` that
@@ -602,6 +738,8 @@ pub enum MaterialError {
     Normalize(NormalizeError),
     /// The `F-MAT-5` section is invalid.
     Enrich(EnrichError),
+    /// The `F-MAT-6` section is invalid.
+    Stress(StressError),
 }
 
 impl fmt::Display for MaterialError {
@@ -615,6 +753,7 @@ impl fmt::Display for MaterialError {
             Self::Decision { row, detail } => write!(f, "`{row}`: {detail}"),
             Self::Normalize(error) => error.fmt(f),
             Self::Enrich(error) => error.fmt(f),
+            Self::Stress(error) => error.fmt(f),
         }
     }
 }
@@ -660,6 +799,13 @@ mod tests {
         OwnershipPrimitives::default()
     }
 
+    /// A path nothing measured a debt signal for, which yields no stress at all — the right
+    /// input for every test here that is about family, budget, mosaic or age rather than about
+    /// `F-MAT-6`. The stress tests build their own signals.
+    fn unexamined() -> DebtSignals {
+        DebtSignals::default()
+    }
+
     fn owned(counts: &[(AuthorKey, u64)]) -> OwnershipPrimitives {
         OwnershipPrimitives::from_line_counts(&counts.iter().copied().collect(), OrderedMap::new())
     }
@@ -690,8 +836,14 @@ mod tests {
             (ContentCategory::Unknown, MaterialFamily::Stone),
         ];
         for (category, family) in cases {
-            let material =
-                table.material_of(&sized(&[(category, 1000)]), 1000, &unowned(), None, &limb());
+            let material = table.material_of(
+                &sized(&[(category, 1000)]),
+                1000,
+                &unowned(),
+                None,
+                &unexamined(),
+                &limb(),
+            );
             assert_eq!(material.family, family, "{category:?}");
             assert_eq!(
                 material.composition,
@@ -712,7 +864,7 @@ mod tests {
             (ContentCategory::Binary, 300),
             (ContentCategory::Code, 400),
         ]);
-        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &unexamined(), &limb());
         // 60% together beats 40% of code; separately, 30% each would have lost.
         assert_eq!(material.family, MaterialFamily::Ore);
         assert_eq!(
@@ -727,7 +879,7 @@ mod tests {
     fn a_mixed_limb_is_veined_rather_than_reassigned() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 550), (ContentCategory::Asset, 450)]);
-        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &unexamined(), &limb());
 
         assert_eq!(material.family, MaterialFamily::Heartwood);
         let Composition::Blended { secondary, weight } = material.composition else {
@@ -754,7 +906,7 @@ mod tests {
         ]);
         assert_eq!(
             table
-                .material_of(&size, 2000, &unowned(), None, &limb())
+                .material_of(&size, 2000, &unowned(), None, &unexamined(), &limb())
                 .composition,
             Composition::Pure
         );
@@ -766,7 +918,7 @@ mod tests {
     fn an_exact_tie_resolves_and_carries_the_loser_at_full_weight() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 500), (ContentCategory::Docs, 500)]);
-        let material = table.material_of(&size, 1000, &unowned(), None, &limb());
+        let material = table.material_of(&size, 1000, &unowned(), None, &unexamined(), &limb());
         assert_eq!(
             material.family,
             MaterialFamily::Heartwood,
@@ -792,7 +944,7 @@ mod tests {
             (ContentCategory::Config, 100),
         ]);
 
-        let held = table.material_of(&size, 4096, &unowned(), None, &container());
+        let held = table.material_of(&size, 4096, &unowned(), None, &unexamined(), &container());
         assert_eq!(held.family, MaterialFamily::Parchment);
         let contents = held
             .composition
@@ -807,7 +959,7 @@ mod tests {
         assert_eq!(held.composition.secondary(), None);
 
         // The same content drawn as a limb is a different reading of the same fact.
-        let made_of = table.material_of(&size, 4096, &unowned(), None, &limb());
+        let made_of = table.material_of(&size, 4096, &unowned(), None, &unexamined(), &limb());
         assert_eq!(made_of.family, held.family);
         assert_eq!(made_of.composition.secondary(), Some(MaterialFamily::Ore));
     }
@@ -817,7 +969,14 @@ mod tests {
     #[test]
     fn a_node_with_no_content_is_stone_at_the_floor() {
         let table = Table::built_in();
-        let material = table.material_of(&SizePrimitives::default(), 0, &unowned(), None, &limb());
+        let material = table.material_of(
+            &SizePrimitives::default(),
+            0,
+            &unowned(),
+            None,
+            &unexamined(),
+            &limb(),
+        );
         assert_eq!(material.family, MaterialFamily::Stone);
         assert_eq!(material.composition, Composition::Pure);
         assert_eq!(material.budget, per_mille(table.normalize.floor));
@@ -835,8 +994,8 @@ mod tests {
         let size = sized(&[(ContentCategory::Code, 1000)]);
         let pair = owned(&[(author(1), 60), (author(2), 40)]);
 
-        let bare = table.material_of(&size, 1000, &unowned(), None, &limb());
-        let shared = table.material_of(&size, 1000, &pair, None, &limb());
+        let bare = table.material_of(&size, 1000, &unowned(), None, &unexamined(), &limb());
+        let shared = table.material_of(&size, 1000, &pair, None, &unexamined(), &limb());
 
         // Same wood, same size — the mosaic is what differs.
         assert_eq!(bare.family, shared.family);
@@ -856,8 +1015,8 @@ mod tests {
         let size = sized(&[(ContentCategory::Code, 1000)]);
         let sole = owned(&[(author(1), 100)]);
 
-        let small = table.material_of(&size, 1, &sole, None, &limb());
-        let large = table.material_of(&size, 60_000_000, &sole, None, &limb());
+        let small = table.material_of(&size, 1, &sole, None, &unexamined(), &limb());
+        let large = table.material_of(&size, 60_000_000, &sole, None, &unexamined(), &limb());
 
         assert!(small.mosaic.cells() >= table.normalize.mosaic_min_cells);
         assert!(large.mosaic.cells() > small.mosaic.cells());
@@ -873,8 +1032,15 @@ mod tests {
     fn a_container_is_budgeted_for_what_it_stands_for() {
         let table = Table::built_in();
         let size = sized(&[(ContentCategory::Code, 100)]);
-        let small = table.material_of(&size, 100, &unowned(), None, &container());
-        let large = table.material_of(&size, 100_000_000, &unowned(), None, &container());
+        let small = table.material_of(&size, 100, &unowned(), None, &unexamined(), &container());
+        let large = table.material_of(
+            &size,
+            100_000_000,
+            &unowned(),
+            None,
+            &unexamined(),
+            &container(),
+        );
         assert!(large.budget > small.budget);
     }
 
@@ -1137,6 +1303,7 @@ mod tests {
             8_000_000,
             &blob,
             None,
+            &unexamined(),
             &limb(),
         );
         assert_eq!(material.family, MaterialFamily::Ore);
@@ -1254,6 +1421,7 @@ mod tests {
             record.size.bytes,
             &record.ownership,
             Some(span),
+            &unexamined(),
             &limb(),
         );
         let gradient = material.gradient.unwrap();
@@ -1335,8 +1503,269 @@ mod tests {
         assert!(!undated.temporal.has_history());
 
         assert_eq!(age_over(core::iter::once(&undated), 1_800_000_000), None);
-        let material = table.material_of(&undated.size, 0, &unowned(), None, &limb());
+        let material =
+            table.material_of(&undated.size, 0, &unowned(), None, &unexamined(), &limb());
         assert_eq!(material.gradient, None);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // F-MAT-6 — stress
+    // ---------------------------------------------------------------------------------
+
+    /// The requirement's own word, and the only thing `F-MAT-6` actually promises: stress
+    /// *coexists* with the primary material. The same content read twice, once with every debt
+    /// signal at its worst, must produce the same limb — same family, same vein, same size, same
+    /// contributors, same age — with one reading added.
+    ///
+    /// This is what a stress that reached `family` or `budget` would fail, and nothing else here
+    /// would notice: a stressed limb drawn one family over is still a plausible limb.
+    #[test]
+    fn stress_coexists_with_the_primary_material() {
+        let table = Table::built_in();
+        let size = sized(&[(ContentCategory::Code, 550), (ContentCategory::Asset, 450)]);
+        let pair = owned(&[(author(1), 60), (author(2), 40)]);
+        let span = AgeSpan {
+            oldest_days: 900,
+            newest_days: 3,
+        };
+        let ruined = DebtSignals {
+            markers_per_thousand: Some(Fx::from_int(400)),
+            large_file_share: Some(Fx::ONE),
+            stability: Some(Fx::ZERO),
+        };
+
+        let sound = table.material_of(&size, 40_000, &pair, Some(span), &unexamined(), &limb());
+        let stressed = table.material_of(&size, 40_000, &pair, Some(span), &ruined, &limb());
+
+        assert_eq!(sound.family, stressed.family);
+        assert_eq!(sound.composition, stressed.composition);
+        assert_eq!(sound.budget, stressed.budget);
+        assert_eq!(sound.mosaic, stressed.mosaic);
+        assert_eq!(sound.gradient, stressed.gradient);
+
+        // And the reading is really there, or the equalities above hold for the wrong reason.
+        assert_eq!(sound.stress, None, "nothing was measured");
+        assert_eq!(
+            stressed.stress.expect("everything was measured").count(),
+            3,
+            "all three kinds should fire on this"
+        );
+    }
+
+    /// `F-MAT-6` over the walk. Every node of the fixture has its debt measured, and the
+    /// readings **spread** — a fixture where every node were stressed could not tell a working
+    /// floor from a broken one, and one where none were could not tell a working signal from a
+    /// dead one. Both guards are the point of the test.
+    #[test]
+    fn stress_over_the_walk_discriminates() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        let ceiling = per_mille(table.stress.ceiling);
+        let mut drawn = [0u32; treepo_model::StressKind::ALL.len()];
+        let mut unmeasured = [0u32; treepo_model::StressKind::ALL.len()];
+        let mut nodes = 0;
+
+        for (id, material) in materials.iter() {
+            let stress = material
+                .stress
+                .unwrap_or_else(|| panic!("node {id:?} had no debt signal measured at all"));
+            nodes += 1;
+            for kind in treepo_model::StressKind::ALL {
+                match stress.intensity_of(kind) {
+                    None => unmeasured[kind.position()] += 1,
+                    Some(intensity) => {
+                        assert!(
+                            intensity <= ceiling,
+                            "node {id:?} is {kind:?} at {intensity}, past the ceiling {ceiling}"
+                        );
+                        if !intensity.is_zero() {
+                            drawn[kind.position()] += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cracks and sparseness both discriminate on this fixture: some nodes carry them and
+        // some do not, which is what makes a floor regression visible here.
+        for kind in [
+            treepo_model::StressKind::Cracked,
+            treepo_model::StressKind::Sparse,
+        ] {
+            let count = drawn[kind.position()];
+            assert!(count > 0, "no node is {kind:?} — the signal may be dead");
+            assert!(
+                count < nodes,
+                "every one of the {nodes} nodes is {kind:?} — a signal that fires on everything \
+                 is texture rather than information (P6)"
+            );
+        }
+
+        // And a node whose debt genuinely was not measured, which is the case the `Option` inside
+        // `Stress` exists for: the fixture's assets are never read, so nothing knows their marker
+        // density or how much of them is being rewritten.
+        assert!(
+            unmeasured[treepo_model::StressKind::Cracked.position()] > 0,
+            "every node had its markers counted, so the unmeasured case is untested here"
+        );
+    }
+
+    /// The fixture's own limitation, pinned rather than left as a comment: **every** node comes
+    /// out restless, because every path in it was committed inside the last forty days and
+    /// `stability` is churn against line count over ninety.
+    ///
+    /// This is the gap S14 recorded about `churn_full_scale_lines` arriving in a second feature —
+    /// `tools/corpus` builds every fixture in a single day, so no synthetic repository can offer
+    /// a dormant path, and the `restless` floor cannot be judged here. It is judged against a
+    /// real repository instead, and the measurement is in `claude-progress.md`.
+    ///
+    /// Asserted positively so that a fixture which later *does* gain a dormant corner fails this
+    /// test and forces the claim to be updated, rather than quietly making it stale.
+    #[test]
+    fn the_fixture_cannot_offer_a_dormant_path() {
+        let table = Table::built_in();
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+        let materials = materialize(&manifest, &skeleton, &table);
+
+        for (id, material) in materials.iter() {
+            let stress = material.stress.expect("something was measured");
+            match stress.intensity_of(treepo_model::StressKind::Restless) {
+                // The asset paths, which are never read and so have no line count to divide
+                // churn by.
+                None => {}
+                Some(intensity) => assert!(
+                    !intensity.is_zero(),
+                    "node {id:?} is settled — the fixture has gained a dormant path, so the \
+                     restless floor is now testable here and this test should become a spread \
+                     assertion like the one above"
+                ),
+            }
+        }
+    }
+
+    /// The merge trap, in the form `F-MAT-6` meets it: every debt signal is a *ratio*, so
+    /// gathering several records has to weight each by the denominator extraction divided by.
+    /// An unweighted mean would give a three-line file the same say as a ten-thousand-line one.
+    #[test]
+    fn a_gathered_debt_signal_is_weighted_by_its_own_denominator() {
+        let marked = |text: &str, code: u64, markers: u64| {
+            let mut record = PathRecord::new(path(text), treepo_model::NodeKind::File);
+            record.size.bytes = code * 40;
+            record.size.lines = treepo_model::primitives::size::LineCounts {
+                total: code,
+                code,
+                comment: 0,
+                blank: 0,
+            };
+            record.derived.todo_density = Some(Fx::from_ratio(markers as i64 * 1000, code as i64));
+            record
+        };
+
+        // Ten thousand clean lines beside three lines that are nothing but markers.
+        let large = marked("src/engine.rs", 10_000, 0);
+        let tiny = marked("src/stub.rs", 3, 3);
+
+        let merged = debt_over([&large, &tiny].into_iter())
+            .markers_per_thousand
+            .expect("both were measured");
+
+        // The honest answer is 3 markers across 10,003 code lines — about 0.3 per thousand.
+        assert!(
+            merged < Fx::ONE,
+            "the merged density is {merged} per thousand; an unweighted mean of 0 and 1000 \
+             would have come out at 500"
+        );
+        assert!(merged > Fx::ZERO, "and the three markers are not erased");
+
+        // Order must not matter, or a fold that kept the first or last seen would pass one
+        // arrangement and fail the other.
+        assert_eq!(
+            debt_over([&tiny, &large].into_iter()).markers_per_thousand,
+            Some(merged)
+        );
+    }
+
+    /// The exactness claim the weighting rests on: a single record comes out as itself, because
+    /// its own weight is the whole weight. Without this the merge would be an approximation even
+    /// for a limb, which is the overwhelmingly common node.
+    #[test]
+    fn one_record_merges_to_exactly_its_own_signals() {
+        let manifest = shaped_repository();
+        let record = manifest.path(&path("src/main.rs")).unwrap();
+
+        assert_eq!(
+            debt_over(core::iter::once(record)),
+            DebtSignals {
+                markers_per_thousand: record.derived.todo_density,
+                large_file_share: record.derived.large_file_debt,
+                stability: record.temporal.stability,
+            },
+            "the fixture measures all three, and a merge of one must not move them"
+        );
+    }
+
+    /// PRD §6, and the distinction the `Option` layering exists for: a repository extracted
+    /// without a content pass has *unknown* debt, not clean debt. A path git has never seen has
+    /// no stability either.
+    #[test]
+    fn a_path_nothing_measured_has_no_stress_rather_than_a_clean_one() {
+        let table = Table::built_in();
+        let unscanned = PathRecord::new(path("assets/opaque.bin"), treepo_model::NodeKind::File);
+        assert!(!unscanned.derived.is_measured());
+        assert_eq!(unscanned.temporal.stability, None);
+
+        let gathered = debt_over(core::iter::once(&unscanned));
+        assert_eq!(gathered, DebtSignals::default());
+        assert_eq!(
+            table
+                .material_of(&unscanned.size, 0, &unowned(), None, &gathered, &limb())
+                .stress,
+            None
+        );
+    }
+
+    /// A container's debt is its members' debt, gathered — so a container holding one troubled
+    /// subtree is troubled, and the roll-up is not an average over its immediate children.
+    #[test]
+    fn a_container_carries_the_debt_of_what_it_stands_for() {
+        let manifest = shaped_repository();
+        let skeleton = crate::grow(&manifest, &crate::Table::built_in());
+
+        let mut containers = 0;
+        for node in skeleton.nodes() {
+            let (NodeRole::Aggregate(treepo_model::AggregateNode { members, .. })
+            | NodeRole::Group { members, .. }) = &node.role
+            else {
+                continue;
+            };
+            containers += 1;
+            let gathered = resolve(&manifest, &node.role).debt;
+
+            // Every member's reading is inside the gathered range, which is what a weighted mean
+            // guarantees and what a summed or a maximum-taking gathering would break.
+            let mut lowest = Fx::ONE;
+            let mut highest = Fx::ZERO;
+            for member in members.iter().filter_map(|p| manifest.path(p)) {
+                let own = debt_over(core::iter::once(member))
+                    .markers_per_thousand
+                    .expect("the fixture measures every path");
+                lowest = lowest.min(own);
+                highest = highest.max(own);
+            }
+            let merged = gathered
+                .markers_per_thousand
+                .expect("so the gathering measures it too");
+            assert!(
+                merged >= lowest && merged <= highest,
+                "{:?} gathered {merged} from members spanning {lowest}..={highest}",
+                node.role
+            );
+        }
+        assert!(containers > 0, "the fixture should gather something");
     }
 
     /// A container's budget comes from its own byte total — already "everything beneath the
@@ -1378,8 +1807,14 @@ mod tests {
         let materials = materialize(&manifest, &skeleton, &table);
 
         let root = manifest.path(&treepo_model::RepoPath::root()).unwrap();
-        let expected =
-            table.material_of(&root.size, root.size.bytes, &root.ownership, None, &limb());
+        let expected = table.material_of(
+            &root.size,
+            root.size.bytes,
+            &root.ownership,
+            None,
+            &unexamined(),
+            &limb(),
+        );
 
         let mut roots = 0;
         for (id, node) in skeleton.nodes().iter().enumerate() {

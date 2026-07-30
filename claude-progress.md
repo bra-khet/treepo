@@ -3,7 +3,9 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 open — `F-MAT-1`…`F-MAT-5` landed**
+**Last updated:** 2026-07-29 · **Phases 0–3 closed (M0 EXIT); Phase 4 feature-complete —
+`F-MAT-1`…`F-MAT-6` and every `F-ID-*` in scope landed; `AC-MAT-3` and the `AC-DET-2`/`AC-ID-2`
+CI compare are all that remain**
 
 ---
 
@@ -1459,8 +1461,15 @@ entered the harness. **Superseded again by Phase 4's identity probes — see bel
 | `crates/treepo-vcs/src/self_ident.rs` (`F-ID-1`) | **done** — moved out of `treepo-id`, see S9 |
 | `crates/treepo-id/src/policy.rs` (`F-ID-5`, `F-ID-7`) | **done** — 8 tests |
 | `crates/treepo-vcs/tests/privacy.rs` (`AC-ID-1`) | **done** — 7 tests |
-| `crates/treepo-gen/src/{material,normalize,gradient,enrichment,classify}.rs` (`F-MAT-*`) | next |
+| `crates/treepo-gen/src/{material,normalize}.rs` (`F-MAT-1`…`F-MAT-4`) | **done** — S10–S13 |
+| `crates/treepo-gen/src/enrich.rs` (`F-MAT-5`) | **done** — S14 |
+| `crates/treepo-gen/src/stress.rs` (`F-MAT-6`) | **done** — S15 |
 | `F-ID-6` reveal opt-in in `config.json`; `AC-ID-3`/`AC-ID-4` | Phase 10 (settings), per the campaign |
+
+The architecture's file tree named `gradient.rs`, `enrichment.rs` and `classify.rs`; what exists
+is `normalize.rs` (which owns every absolute scale, the gradient's included), `enrich.rs` and
+`stress.rs`. `classify.rs` is `F-GROW-8`'s threshold crossings and belongs to Phase 6, where the
+transitions it classifies are computed.
 
 `treepo-id` is 14 packages, the same `ron` + `serde` as `treepo-gen`, and `no_std` for the
 same reason. `dep-guard` already listed it under Phase 4 and picked it up on sight.
@@ -2337,30 +2346,141 @@ the CI run.
 
 ---
 
+## S15 — `F-MAT-6`, stress materials (2026-07-29)
+
+> Quality/debt signals introduce subtle stress materials (cracks, sparse density) coexisting with
+> the primary material.
+
+The fifth and last material slice, and the only one that adds nothing to the picture's structure:
+`Stress` is a field beside `family`, `composition`, `budget`, `mosaic` and `gradient`, and the
+whole of what `F-MAT-6` promises is that it *coexists* with them. `treepo-model::material` holds
+the type; `treepo-gen::stress` is the rules; `materialize` gained one gathered input and no pass.
+
+### Three appearances, one signal each, and four signals refused
+
+§8.5 names three appearances — cracks, sparse density, restless micro-particles — so there are
+three `StressKind`s and no fourth invented to fill a grid. Each reads exactly one primitive, and
+which one is code rather than a table row, for the reason `enrich::signal_of` already gives.
+
+| Kind | Signal | Measured on this repository |
+|---|---|---|
+| `Cracked` | `todo_density`, linear against 40 markers per thousand code lines | 14 of 152 |
+| `Sparse` | `large_file_debt` | 0 of 152 |
+| `Restless` | `1 - stability` | 152 of 152 |
+
+**Four `F-EXT-6` debt signals are deliberately not read, and one principle covers three of
+them.** `generated_debt` is the exact ratio `F-MAT-1` already spends on the `Machined` family, so
+reading it again would draw one fact twice. `test_to_source` and `comment_density` are both *low*
+where the debt is, so either would require treepo to decide how many tests a project ought to have
+or how much commenting is enough — and `Stone`'s doc settled that direction already: `N4`'s refusal
+to judge people extends to not editorializing about their files. What the three chosen signals have
+in common is that none needs such a view: a marker is the *author's own* statement that something is
+unfinished, and the other two are measurements of shape and of motion. `doc_staleness_days` is out
+for a different reason — it is a relation *between* two categories, so drawn as stress on a limb it
+would crack the source code because the README is old.
+
+### The measurement, and the one number that came back wrong
+
+Measured over three repositories rather than one, which is what S14 said it wanted and could not
+get. treepo itself is four months old; ripgrep 14.1.1 is mature and dormant at its pin; bevy
+v0.17.1 is mature and active.
+
+| | treepo (152 nodes) | ripgrep (115) | bevy (300) |
+|---|---|---|---|
+| measured, clear | 0 | 111 | 214 |
+| cracked | 14 | 1 | 22 |
+| sparse | 0 | 0 | 6 |
+| restless | **152** | 2 | 68 |
+| unmeasured per kind | 0 | 22 | 32 |
+
+`cracked` discriminates at every age and saturates nowhere, which is what the marker scale exists
+to check. `sparse` is silent on treepo and ripgrep because neither holds an oversized file, and
+fires on bevy, which does — silent rather than dead, and the corpus `huge-file` fixture is where
+the material digest moved.
+
+**`restless` fires on all 152 nodes here at full intensity, and that is not the failure it looks
+like.** `stability` is churn over ninety days against the path's own line count, and this
+repository has had every line it holds rewritten inside that window. On a repository older than
+the window it discriminates properly — 2 of 115, 68 of 300 — which is exactly the opposite of what
+S14 found when it measured the first work-site formulation: a *share* of lifetime churn said
+nothing at any age, where this says nothing only about a project younger than the question. The
+reading is recorded in `materials.ron` beside the floor so nobody "fixes" it, and
+`the_fixture_cannot_offer_a_dormant_path` pins the same limitation in the unit fixture as a
+checked fact rather than a comment — a fixture that later gains a dormant corner fails that test
+and forces the claim to be updated.
+
+### Three decisions worth finding again
+
+**`None` is carried two levels deep, and the two levels say different things.**
+`Material::stress` is `None` when nothing was measured at all; inside a `Stress`, each kind's
+intensity is `Option<Fx>` where `None` is "this signal was never measured" and `Some(ZERO)` is
+"measured, nothing wrong". Both draw as an unmarked surface, so the distinction buys a renderer
+nothing and `F-INSP-5` everything: a why-panel saying "no debt here" about a file treepo never
+opened would be inventing a finding. `Stress::new` returns `Option<Self>` so that decision is made
+in one place, and a `Some` therefore always carries at least one real measurement.
+
+**The floor is on the signal; the ceiling is on the result.** `present_at` cuts noise before
+scaling and `ceiling` bounds the scaled intensity, and they act on different values on purpose —
+were the floor applied afterwards, raising the ceiling would push content past the floor and create
+stress that had not been there. `ceiling` is also `F-MAT-6`'s own word "subtle" made checkable:
+`validate` refuses anything above 500 per mille, because past half the stress material *is* the
+limb and the primary material has become the accent, which is the requirement inverted.
+
+**The gathering trap, in its widest form yet.** All three signals are ratios with *different*
+denominators, so a Group or an Aggregate cannot sum them and cannot average them by record either.
+`debt_over` weights each by the quantity extraction divided by — code lines for marker density,
+bytes for large-file share, total lines for stability — so each reconstructs the number extraction
+would have produced had it rolled the set up itself. Weights are normalized to shares *before*
+they multiply anything, and that is not stylistic: `Fx` is Q32.32, so accumulating `value × bytes`
+saturates on a T3 subtree and the mean would come out silently wrong for the largest directories,
+which are exactly the nodes whose stress is most visible.
+
+### What moved, and the digests
+
+`materials.ron` gained `todo_full_scale_per_thousand` (in `normalize`, with the other three
+absolute scales — and the only linear one, because marker density spans two orders of magnitude
+rather than twenty and the interesting end is the low one) and a `stress` section; the material
+`TABLE_VERSION` is **2**, since a version 1 table would parse as a table describing an unstressed
+tree. `MATERIAL_DIGEST_TAG` is `treepo-material-v4`. The shared `compose::tests` fixture gained
+line counts, marker counts, large-byte counts, the ninety-day churn window and their roll-up —
+without which every stress assertion over it would have been vacuous, the same trap S14 hit — and
+its asset paths now carry *no* line count, which is what real extraction does and what gives the
+walk nodes whose debt is genuinely unmeasured.
+
+`probe_material` gained the stress sweep rather than earning a probe of its own: the arithmetic is
+one division and one multiplication, the same shape as everything already in that probe. What it
+does add is a *branch* on a fixed-point comparison at each presence floor, so the sweep straddles
+all three.
+
+```
+material      69d489c2b60ec62d907f2b96b51e8599c1cf4aa78243d92d6cbf09bb5a2417d8
+enrichment    787d0bc48e74ceea4e881a6ab9bd9be4554a11e673192b515630dd79d741c5ad
+overall       e01b14967c10b489aab742d543a0b84e5af4d41fb560d413063a7ebbdfe1ebff
+```
+
+**The blast radius is the coexistence claim as evidence.** The reports either side of this sprint
+were diffed line by line: 17 `material/*` lines and the `material` probe changed, and **all 18
+`skeleton/*` and all 17 `enrichment/*` lines are byte-identical**. Stress moved the material layer
+and moved neither the geometry nor the furniture. `enrichment_ignores_a_stressed_surface` asserts
+the same thing at the pass level, and asserts the converse too — a changed budget still moves it —
+so the equality is not an insensitive comparison.
+
+Local gate green: fmt, clippy `-D warnings` (workspace, all targets), **603 tests**, dep-guard
+(6 crates clean, `treepo-gen` still 14 packages — `stress.rs` added no dependency), `cargo deny`,
+readonly-audit (18 fixtures, 0 writes, detector 4/4), determinism reproducible over 3 runs, and no
+new rustdoc warning. `AC-DET-2` proper still needs the CI run.
+
+---
+
 ## Next
 
-**Phase 4 is one slice from its end conditions.** S10 built the families and the arithmetic,
-S11 gave every node a material, S12 a mosaic, S13 an age, S14 what is built on it. What remains
-is `F-MAT-6` and one acceptance test.
+**Every `F-MAT-*` requirement is built.** S10 built the families and the arithmetic, S11 gave
+every node a material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong with
+it. What remains for Phase 4 is **one acceptance test and one CI run** — no unbuilt feature.
 
-**`F-MAT-6`, stress materials** — `P2` and the designated cut. "High TODO / debt signals can
-introduce subtle stress materials (cracks, sparse density, restless micro-particles) that
-coexist with the primary material" (§8.5). The primitives are extracted and unread:
-`DerivedSignals::todo_density`, `generated_debt`, `large_file_debt`, `doc_staleness_days`, and
-`TemporalPrimitives::stability`. It is the smallest remaining slice — one optional field on
-`Material`, one section of `materials.ron`, no new pass — because it modulates a surface rather
-than placing anything.
-
-Two things S14 leaves for it. First, `DerivedSignals::test_to_source` is deliberately *not* read
-by `F-MAT-5` — `test_like_ratio` is the proportion-of-content reading the placement pass needs,
-and `test_to_source` is unbounded above and is the debt reading, which is `F-MAT-6`'s. Second,
-every `DerivedSignals` field is `Option` and `None` means "not measured" rather than zero, so
-the slice has to carry that distinction through rather than defaulting it — the same refusal
-`Option<AgeGradient>` makes about a path with no history.
-
-Also outstanding for Phase 4's end conditions: **`AC-MAT-3`'s "no `treepo-model` type exposes
-an ordered contributor collection or a share as a figure"** — still needing a test that says so
-at the crate level rather than the type's. S12 sharpened what such a test can honestly claim:
+**`AC-MAT-3` — "no `treepo-model` type exposes an ordered contributor collection or a share as a
+figure"** still needs a test that says so at the crate level rather than the type's. S12 sharpened
+what such a test can honestly claim:
 `AuthorShare` is closed at the type level (neither `Ord` nor `PartialOrd`, with `compile_fail`
 doctests), but `Mosaic`'s cell counts are `u32` and sortable by anyone who collects them, and
 that is accepted rather than overlooked. The crate-level test should therefore assert the
@@ -2382,20 +2502,29 @@ Recorded rather than resolved, all waiting on materials having an appearance:
   90`, which decides whether a limb reads as one archive or several — cannot be judged until
   structures render. `merge_window` is the one to point the lab at: it is what the whole
   compounding character lives on.
+- **`F-MAT-6`'s `ceiling: 400` is set by argument** (S15). It decides whether a troubled limb is
+  visibly troubled or merely dirty, which is the one thing about stress that only a picture can
+  answer. The three `present_at` floors were measured; this was not.
 
 **`blend_floor` is the first material number set by argument rather than by looking.** 80 per
 mille is a reasoned guess at where a vein reads as deliberate; it cannot be judged until
 materials have an appearance, and it is the first thing the silhouette lab should be pointed
-at once they do. The mosaic's cell bounds are the second, `merge_window` the third.
+at once they do. The mosaic's cell bounds are the second, `merge_window` the third, and
+`stress.ceiling` the fourth.
 
-**Two `F-MAT-5` numbers were set by measurement instead, and both want a second repository.**
-`churn_full_scale_lines: 5000` and `forms.run_at`/`cluster_at`/`platform_at` were tuned against
-this repository, which is four months old and under heavy active development — 116 of 151 nodes
-still carry a work site after the fix, which is arguably honest for a project in this state and
-arguably still too many. Neither can be confirmed without measuring a repository with years of
-history. `tools/corpus` cannot supply one: every fixture is built in a single day, so every path
-in the corpus is wholly "recent" and the churn row is untestable against it. That is a real gap
-in the corpus rather than in the table.
+**The measured numbers now have three repositories behind them, and the gap S14 recorded is
+closed.** `churn_full_scale_lines: 5000` and `forms.*` were tuned against this repository alone
+and wanted "a repository with years of history"; `tools/corpus` still cannot supply one, but the
+**pinned clones already on disk can** — S15 measured `F-MAT-6` against `target/corpus-pinned/`'s
+ripgrep 14.1.1 and bevy v0.17.1 as well as this repository, and the second and third readings are
+what settled the marker scale and exonerated the `restless` floor. `F-MAT-5`'s two numbers should
+be re-measured the same way; the instrument is a throwaway that extracts a path and counts, and it
+took ten lines.
+
+What no repository can settle is the reading itself. 116 of 151 nodes carrying a work site (S14)
+and 152 of 152 carrying restlessness (S15) are both *true* of a four-month-old project under heavy
+development, and both are arguably still too much furniture. That is a judgement about the picture,
+not about the numbers, and it waits on the same appearance everything else in this list does.
 
 Three things carried in from the M0 tuning campaign, all recorded rather than resolved:
 

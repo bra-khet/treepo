@@ -556,23 +556,103 @@ pub(crate) mod tests {
         (first, last)
     }
 
-    /// How many of one fixture file's lines changed inside the thirty-day window.
+    /// How many of one fixture file's lines changed inside a churn window of `window` days.
     ///
-    /// `F-MAT-5`'s work sites read recent churn against lifetime churn, so a fixture leaving
-    /// `days_30` at zero would place none and `every_kind_is_reachable_over_a_real_repository`
-    /// would be one kind short.
+    /// `F-MAT-5`'s work sites read the thirty-day window and `F-MAT-6`'s restlessness the
+    /// ninety-day one, so a fixture leaving either at zero would make a whole signal untestable —
+    /// no kind placed, or no node stressed.
     ///
     /// Derived from the date [`history_of`] already assigned rather than from a second
     /// independent knob, so the fixture cannot describe a path that was touched a year ago and
     /// churned heavily last week. Linear decay across the window: a file touched today has all
-    /// of its churn inside it, one touched thirty or more days ago has none.
-    fn recent_churn_of(path: &str, lines: u64) -> u64 {
+    /// of its churn inside it, one touched at or beyond the window has none. The ninety-day
+    /// window therefore contains the thirty-day one, as a real pair of windows does.
+    fn recent_churn_of(path: &str, lines: u64, window: i64) -> u64 {
         const DAY: i64 = 86_400;
         let days = (REFERENCE - history_of(path).1) / DAY;
-        if days >= 30 {
+        if days >= window {
             return 0;
         }
-        lines.saturating_sub(lines.saturating_mul(days as u64) / 30)
+        lines.saturating_sub(lines.saturating_mul(days as u64) / window as u64)
+    }
+
+    /// Bytes at or above which a fixture file counts toward `large_file_debt`.
+    ///
+    /// A fixture threshold, not `treepo-vcs`'s — this crate has no dependency on the extractor
+    /// and should not grow one for a test, the same reason [`category_of`] is a miniature. Set so
+    /// that the shaped repositories the material tests use contain files on both sides of it;
+    /// were everything large or everything small, `Sparse` could not be told from a dead signal.
+    const LARGE_FILE_BYTES: u64 = 16_384;
+
+    /// The per-record counters a real content pass accumulates and rolls up.
+    ///
+    /// [`PathRecord`] has no field for any of them, because extraction divides them away into
+    /// [`DerivedSignals`](treepo_model::DerivedSignals) and `stability` before it stores anything.
+    /// A fixture that wants those ratios to be *rolled up* rather than per-file has to carry the
+    /// numerators the same way `treepo-vcs::lang` does.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Counters {
+        /// Unfinished-work markers.
+        markers: u64,
+        /// Bytes in files at or above [`LARGE_FILE_BYTES`].
+        large_bytes: u64,
+        /// Lines changed inside the thirty-day window — `F-MAT-5`.
+        churn_30: u64,
+        /// Lines changed inside the ninety-day window — `F-MAT-6`.
+        churn_90: u64,
+    }
+
+    /// One fixture file's line counts and debt signals — `F-MAT-6`'s inputs.
+    ///
+    /// A miniature of `treepo-vcs::lang`'s content pass and of `apply_history_signals`. Without
+    /// it every `DerivedSignals` field and `stability` stay `None`, `Material::stress` is `None`
+    /// on every node, and every assertion about stress over this fixture passes vacuously —
+    /// which is the trap the enrichment slice hit with its churn windows and folder signals.
+    ///
+    /// The three signals are given a **spread** rather than a value, and that matters as much as
+    /// their being present: a fixture where every path was equally cracked could not tell a
+    /// working floor from a broken one, and one where nothing was cracked could not tell a
+    /// working signal from a dead one. Derived from the path bytes, like every other knob here,
+    /// so a manifest built from the same files in a different order signals them identically.
+    ///
+    /// `generated_debt` is set too, for one reason: `treepo-gen::stress` deliberately does *not*
+    /// read it, and a fixture that left it `None` could not tell that decision from an oversight.
+    fn content_of(path: &str, bytes: u64) -> (treepo_model::primitives::size::LineCounts, u64) {
+        use treepo_model::primitives::size::{ContentCategory as C, LineCounts};
+
+        // Asset and binary content is never read, so it has no line count and no marker count —
+        // the same refusal `treepo-vcs::lang` makes, and what gives the walk nodes whose debt is
+        // genuinely *unmeasured* rather than measured clean. Without it every path in the fixture
+        // would carry every signal and `F-MAT-6`'s `None` case would never be reached by a walk.
+        if matches!(category_of(path), C::Asset | C::Binary) {
+            return (LineCounts::default(), 0);
+        }
+
+        // Forty bytes a line, the same ratio `authors_of` uses — a fixture where the two
+        // disagreed would describe a file whose attributed lines outnumber its lines.
+        let lines = (bytes / 40).max(2);
+
+        // A tenth blank, a tenth comment, the rest code, so `code` is a real denominator for the
+        // marker density and `total` a real one for stability.
+        let blank = lines / 10;
+        let comment = lines / 10;
+        let counts = LineCounts {
+            total: lines,
+            code: lines - blank - comment,
+            comment,
+            blank,
+        };
+
+        // Nought to two markers, capped at the lines there are to put them on. A count rather
+        // than a density, because the density is what `treepo-vcs` *divides out* of a count after
+        // rolling it up, and a fixture setting the ratio directly would have to reimplement
+        // `debt_over`'s weighting to roll it up — the code under test.
+        //
+        // The consequence is that a small file carrying one marker reads as heavily cracked while
+        // a four-hundred-line file carrying two reads as faintly cracked. That is not a fixture
+        // artefact; it is what a marker density *is*, and real extraction produces the same thing.
+        let spread = path.bytes().map(u64::from).sum::<u64>();
+        (counts, (spread % 3).min(counts.code))
     }
 
     /// The folder-convention record a fixture directory carries, if the name is one.
@@ -617,7 +697,7 @@ pub(crate) mod tests {
 
         let mut records: Vec<PathRecord> = Vec::new();
         let mut counts: Vec<OrderedMap<AuthorKey, u64>> = Vec::new();
-        let mut recent: Vec<u64> = Vec::new();
+        let mut counters: Vec<Counters> = Vec::new();
         let mut seen: Vec<RepoPath> = Vec::new();
 
         for (text, bytes) in files {
@@ -628,12 +708,24 @@ pub(crate) mod tests {
             let (first, last) = history_of(text);
             record.temporal.first_commit_time = Some(first);
             record.temporal.last_commit_time = Some(last);
+            let (lines, markers) = content_of(text, *bytes);
+            record.size.lines = lines;
             seen.push(path.clone());
             records.push(record);
 
             let attributed: OrderedMap<AuthorKey, u64> =
                 authors_of(text, *bytes).into_iter().collect();
-            recent.push(recent_churn_of(text, attributed.values().sum()));
+            let churned: u64 = attributed.values().sum();
+            counters.push(Counters {
+                markers,
+                large_bytes: if *bytes >= LARGE_FILE_BYTES {
+                    *bytes
+                } else {
+                    0
+                },
+                churn_30: recent_churn_of(text, churned, 30),
+                churn_90: recent_churn_of(text, churned, 90),
+            });
             counts.push(attributed);
 
             let mut ancestor = path.parent();
@@ -649,17 +741,17 @@ pub(crate) mod tests {
                         .and_then(folder_signal_of);
                     records.push(directory);
                     counts.push(OrderedMap::new());
-                    recent.push(0);
+                    counters.push(Counters::default());
                 }
             }
         }
         if !seen.contains(&RepoPath::root()) {
             records.push(PathRecord::new(RepoPath::root(), NodeKind::Directory));
             counts.push(OrderedMap::new());
-            recent.push(0);
+            counters.push(Counters::default());
         }
 
-        roll_up(&mut records, &mut counts, &mut recent);
+        roll_up(&mut records, &mut counts, &mut counters);
 
         // Attributed lines and lifetime churn come out of one per-commit tally in the real log
         // pass, so `lifetime` is exactly the sum of the author counts. `treepo-gen::material`
@@ -669,14 +761,49 @@ pub(crate) mod tests {
         // The thirty-day window is a share of that same tally, rolled up the same way, because
         // `F-MAT-5` reads one against the other — a fixture where the windows came from
         // somewhere else could describe a directory churning harder this month than it ever has.
-        for ((record, counts), recent) in records.iter_mut().zip(counts).zip(recent) {
+        for ((record, counts), counters) in records.iter_mut().zip(counts).zip(counters) {
             record.temporal.churn.lifetime = counts.values().sum();
-            record.temporal.churn.days_30 = recent.min(record.temporal.churn.lifetime);
+            record.temporal.churn.days_30 = counters.churn_30.min(record.temporal.churn.lifetime);
+            record.temporal.churn.days_90 = counters
+                .churn_90
+                .max(record.temporal.churn.days_30)
+                .min(record.temporal.churn.lifetime);
             record.ownership =
                 treepo_model::primitives::ownership::OwnershipPrimitives::from_line_counts(
                     &counts,
                     OrderedMap::new(),
                 );
+
+            // The `F-EXT-6` signals and `stability`, divided out of the rolled-up counters
+            // exactly where `treepo-vcs::lang` divides them — after the roll-up, so a
+            // directory's ratio is its whole subtree's rather than an average of its children's.
+            // `treepo-gen::material::debt_over` reconstructs these when it merges several
+            // records, and a fixture that computed them any other way would be measuring a
+            // weight no repository produces.
+            let lines = record.size.lines;
+            let all_bytes = record.size.bytes;
+            let generated = record
+                .size
+                .category_bytes
+                .get(&treepo_model::primitives::size::ContentCategory::Generated)
+                .copied()
+                .unwrap_or(0);
+            record.derived = treepo_model::DerivedSignals {
+                todo_density: (lines.code > 0)
+                    .then(|| Fx::from_ratio(counters.markers as i64 * 1000, lines.code as i64)),
+                large_file_debt: (all_bytes > 0)
+                    .then(|| Fx::from_ratio(counters.large_bytes as i64, all_bytes as i64)),
+                // Set although `treepo-gen::stress` deliberately never reads it — a fixture that
+                // left it `None` could not tell that decision from an oversight.
+                generated_debt: (all_bytes > 0)
+                    .then(|| Fx::from_ratio(generated as i64, all_bytes as i64)),
+                ..treepo_model::DerivedSignals::default()
+            };
+            record.temporal.stability = (lines.total > 0).then(|| {
+                let churn =
+                    Fx::from_ratio(record.temporal.churn.days_90 as i64, lines.total as i64);
+                Fx::ONE.sub(churn.min(Fx::ONE))
+            });
         }
 
         let mut manifest = Manifest::new("test".to_string(), Seed::root(b"compose-test"));
@@ -690,7 +817,7 @@ pub(crate) mod tests {
     fn roll_up(
         records: &mut [PathRecord],
         counts: &mut [treepo_det::OrderedMap<treepo_model::identity::AuthorKey, u64>],
-        recent: &mut [u64],
+        counters: &mut [Counters],
     ) {
         let mut order: Vec<usize> = (0..records.len()).collect();
         order.sort_by_key(|&index| core::cmp::Reverse(records[index].path.depth()));
@@ -713,14 +840,34 @@ pub(crate) mod tests {
                 *counts[index].entry(key).or_insert(0) += lines;
             }
 
-            // And the recent window with them, off the same per-commit tally.
-            let churned: u64 = records
+            // And the churn windows with them, off the same per-commit tally, alongside the
+            // content counters `F-EXT-6`'s ratios are divided out of. All four sum, which is what
+            // makes a directory's debt its whole subtree's — the property
+            // `treepo-gen::material::debt_over` relies on when it merges several records.
+            let gathered: Vec<Counters> = records
                 .iter()
                 .enumerate()
                 .filter(|(_, record)| record.path.parent().as_ref() == Some(&path))
-                .map(|(child, _)| recent[child])
-                .sum();
-            recent[index] = recent[index].saturating_add(churned);
+                .map(|(child, _)| counters[child])
+                .collect();
+            for child in gathered {
+                let own = &mut counters[index];
+                own.markers = own.markers.saturating_add(child.markers);
+                own.large_bytes = own.large_bytes.saturating_add(child.large_bytes);
+                own.churn_30 = own.churn_30.saturating_add(child.churn_30);
+                own.churn_90 = own.churn_90.saturating_add(child.churn_90);
+            }
+
+            // Line counts roll up the same way, because they are the denominators of two of
+            // those ratios — `LineCounts::merge` is the method extraction uses for it.
+            let child_lines: Vec<treepo_model::primitives::size::LineCounts> = records
+                .iter()
+                .filter(|record| record.path.parent().as_ref() == Some(&path))
+                .map(|record| record.size.lines)
+                .collect();
+            for lines in child_lines {
+                records[index].size.lines = records[index].size.lines.merge(lines);
+            }
 
             // Dates roll up the same way, and in both directions: a directory was created when
             // its earliest child was and touched when its latest child was. That is what gives

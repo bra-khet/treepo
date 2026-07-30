@@ -6,8 +6,8 @@
 //! * **the structural skeleton** — topology, limb geometry, thickness, angles.
 //!   [`params`], [`lsystem`], [`trunk`] (`F-SKEL-1`…`F-SKEL-7`).
 //! * **material** — what each limb is made of, who is drawn on it, how old it is, how much of
-//!   the picture it may occupy, and what is built on it. [`material`], [`normalize`],
-//!   [`enrich`] (`F-MAT-1` … `F-MAT-5`).
+//!   the picture it may occupy, what is built on it, and what is wrong with it. [`material`],
+//!   [`normalize`], [`enrich`](mod@enrich), [`stress`] (`F-MAT-1` … `F-MAT-6`).
 //!
 //! Everything alive arrives in later layers and later phases.
 //!
@@ -71,12 +71,14 @@ pub mod lsystem;
 pub mod material;
 pub mod normalize;
 pub mod params;
+pub mod stress;
 pub mod trunk;
 
 pub use enrich::{EnrichError, enrich};
 pub use lsystem::compose;
 pub use normalize::{Normalize, NormalizeError};
 pub use params::{LimbParams, SkeletonInputs, Table, TableError, TrunkParams};
+pub use stress::StressError;
 pub use trunk::grow;
 
 // Renamed on the way out, not in its own module. Two parameter tables now exist and

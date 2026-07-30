@@ -1,4 +1,4 @@
-// The material table — `F-MAT-1` … `F-MAT-5`, `design/feature-system.md` §8.3–§8.7.
+// The material table — `F-MAT-1` … `F-MAT-6`, `design/feature-system.md` §8.3–§8.7.
 //
 // Read by `treepo-gen::material`. This file decides what a limb is made of and how much of
 // the picture it may occupy. Editing it changes every material treepo draws with no rebuild,
@@ -30,10 +30,17 @@
 //   run of shelving, never two shelves overlapping. That is the visual language, not a
 //   setting; it lives on `treepo-model::enrichment::Placement::fuse`. What is tunable is how
 //   close "one place" is, and how big the result has to be before it reads as a cluster.
+// * **Which primitive each stress kind reads, and which debt signals are not read at all.**
+//   Markers crack, large-file share thins, instability unsettles; `generated_debt`,
+//   `test_to_source`, `comment_density` and `doc_staleness_days` are deliberately unread. Both
+//   halves of that live in `treepo-gen::stress` with the argument, for the same reason the
+//   enrichment pairings do. What is tunable is how much of a signal it takes and how strongly
+//   the result shows.
 //
 // What is left is the one genuinely tunable material decision — how much of a second material
 // it takes before you can see it — plus the `F-MAT-3` normalization constants, the mosaic's
-// granularity, and the `F-MAT-5` placement rules. All of them are below.
+// granularity, the `F-MAT-5` placement rules, and the `F-MAT-6` stress intensities. All of them
+// are below.
 //
 // # Units: integers, never floats
 //
@@ -49,8 +56,17 @@
 //   about a commit timestamp supplied by someone else's machine.
 // * **cells** — counts, for the mosaic.
 // * **sources** — counts, for how many pieces of content grew into one structure.
+// * **markers per thousand code lines** — only for `todo_full_scale_per_thousand`, because that
+//   is the unit `DerivedSignals::todo_density` is already carried in and converting at the
+//   boundary would round twice.
+//
+// # Version 2
+//
+// A version 1 table has no `stress` section and no `todo_full_scale_per_thousand`. It would
+// compose the same tree and draw an unstressed one, so the version says which of the two a file
+// was written for rather than leaving a reader to notice.
 (
-    version: 1,
+    version: 2,
 
     // ---------------------------------------------------------------------------------
     // F-MAT-1 — the blend threshold
@@ -213,6 +229,37 @@
         // Refused below 100 lines: the failure it was introduced to fix, made unreachable
         // rather than merely avoided.
         churn_full_scale_lines: 5000,
+
+        // ---------------------------------------------------------------------------------
+        // F-MAT-6 — the marker scale
+        // ---------------------------------------------------------------------------------
+
+        // Unfinished-work markers per thousand code lines that read as fully cracked. Drives
+        // where `F-MAT-6` cracks a surface and nothing else.
+        //
+        // Absolute, like the three scales above and for their reason. **Linear**, unlike any of
+        // them, and that is the one place this file departs from "compress the extremes":
+        // marker density does not span orders of magnitude the way bytes and days do — it lives
+        // between nothing and a few percent of lines — and the distinction worth drawing is at
+        // the *low* end, which linear resolves fully. A logarithm would spend its resolution
+        // separating a neglected file from a hopeless one.
+        //
+        // 40 per thousand — one marker every twenty-five code lines is a surface that is more
+        // plan than program. Ordinary code lands in the bottom fifth of the range, which is
+        // where the reading should be: `F-MAT-6` is `P2` and the material is meant to be subtle.
+        //
+        // Measured, like `churn_full_scale_lines` and unlike everything else in this file, and
+        // over three repositories rather than one — the second repository is what the enrichment
+        // slice said it wanted and could not get. Cracked nodes: **14 of 152** here, **1 of 115**
+        // on ripgrep 14.1.1, **22 of 300** on bevy v0.17.1, and *nothing saturated on any of the
+        // three*. The signal is discriminating at every age, which is what this row exists to
+        // check.
+        //
+        // Refused below 5: one marker every two hundred lines is an ordinary file, so a scale at
+        // or under that would read every repository as fully cracked — the same failure
+        // `churn_full_scale_lines` was corrected for, made unreachable in advance this time
+        // rather than after measuring it.
+        todo_full_scale_per_thousand: 40,
     ),
 
     // ---------------------------------------------------------------------------------
@@ -335,5 +382,74 @@
             // tree looks like a construction yard or like a ruin.
             work_site: (anchor: 800, spread: 300, present_at: 250),
         ),
+    ),
+
+    // ---------------------------------------------------------------------------------
+    // F-MAT-6 — stress materials
+    // ---------------------------------------------------------------------------------
+    //
+    // > Quality/debt signals introduce subtle stress materials (cracks, sparse density)
+    // > coexisting with the primary material.
+    //
+    // Three appearances, from §8.5's own list — cracks, sparse density, restless
+    // micro-particles. Each reads exactly one primitive, and which one is code rather than a row
+    // here for the reason the enrichment signals are: a table that could re-point a signal could
+    // make the picture say something else. `treepo-gen::stress` has the pairings, and the
+    // argument for the three debt signals this feature deliberately does *not* read —
+    // `generated_debt` (already spent on the machined family), `test_to_source` and
+    // `comment_density` (both would need treepo to hold a view about how software should be
+    // written), and `doc_staleness_days` (would crack the source because the README is old).
+    //
+    // The marker scale is above with the other three absolute scales, not here.
+    stress: (
+        // The most intensity any stress may reach. `F-MAT-6`'s word is "subtle", and this is
+        // that word as a number rather than as taste: a signal at its full scale produces this
+        // much stress and no more, so the primary material is always the larger part of what a
+        // viewer sees.
+        //
+        // 400 per mille. Enough that a heavily marked, heavily churning limb is visibly
+        // troubled at medium zoom; not enough that it stops reading as the material it is made
+        // of. This is the row to move if stress is invisible or if the tree looks diseased, and
+        // it is set by argument rather than by looking — like `blend_floor`, and third in the
+        // queue behind it and the mosaic's cell bounds when materials get an appearance.
+        //
+        // Refused outside 1..=500: past half, the stress material is what the limb is made of
+        // and the primary material has become the accent, which is this requirement inverted.
+        // Zero would place no stress while the floors below looked configured.
+        ceiling: 400,
+
+        // How much of each kind's own signal it takes before anything is drawn, per mille of
+        // that signal. `P6` at the small end — a trace of debt is noise, and a signal that fires
+        // on everything is texture rather than information.
+        //
+        // A floor on the *signal*, not on the finished intensity, so that raising `ceiling`
+        // makes existing stress stronger rather than creating stress that was not there.
+        //
+        // Per kind, because the three are not equally noisy — the same argument the enrichment
+        // floors above make:
+        //
+        // * `cracked: 60` — six percent of the scale, about two and a half markers per thousand
+        //   code lines. The lowest floor of the three, because a marker is exact and is the
+        //   author's own statement that something is unfinished. treepo is repeating it.
+        // * `sparse: 250` — a quarter of a subtree's bytes in over-threshold files. High,
+        //   because almost every directory containing one image has a nonzero share and a low
+        //   floor would make `large_file_debt` a synonym for "contains an asset". Measured: 0 of
+        //   152 here and 0 of 115 on ripgrep, both of which genuinely hold no oversized file, and
+        //   6 of 300 on bevy, which does. Silent where there is nothing to say rather than dead.
+        // * `restless: 300` — three-tenths of every line held, rewritten inside ninety days.
+        //   The highest floor, because this is the only signal here that is about activity
+        //   rather than about content, so it is the one a busy fortnight can swing. Same
+        //   reasoning as `work_site`'s `present_at: 250` above, and the two are worth moving
+        //   together — one places scaffolding on a limb and the other unsettles its surface.
+        //
+        //   **Expect a repository younger than the ninety-day window to come out uniformly
+        //   restless, and do not read that as this floor being wrong.** Measured: 2 of 115 on
+        //   ripgrep, 68 of 300 on bevy, and **152 of 152 here at full intensity** — because this
+        //   repository is four months old and has had every line it holds rewritten inside the
+        //   window. That is a true sentence about a four-month-old project, and it is the
+        //   opposite of the failure the enrichment slice found in its first work-site
+        //   formulation: a *share* of lifetime churn said nothing at any age, where this
+        //   discriminates on every repository old enough for the question to mean something.
+        present_at: (cracked: 60, sparse: 250, restless: 300),
     ),
 )

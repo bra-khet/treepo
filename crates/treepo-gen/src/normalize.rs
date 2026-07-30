@@ -169,6 +169,22 @@ pub struct Normalize {
     /// — the same disparity [`full_scale_bytes`](Self::full_scale_bytes) compresses, arriving
     /// through a different primitive.
     pub churn_full_scale_lines: u64,
+    /// Unfinished-work markers per thousand code lines that read as fully cracked — `F-MAT-6`.
+    ///
+    /// The unit [`todo_density`](treepo_model::DerivedSignals::todo_density) is already carried
+    /// in, so no conversion happens at the boundary. Absolute, for the third time and the same
+    /// reason: a repository-relative scale would make the most-marked corner of every repository
+    /// equally cracked and say nothing about which repositories are actually neglected.
+    ///
+    /// # The one linear scale here
+    ///
+    /// [`budget`](Self::budget), [`age`](Self::age) and [`heat`](Self::heat) are logarithmic
+    /// because their inputs span orders of magnitude and the interesting distinctions sit at one
+    /// end. Marker density does not: it lives in a narrow band — nothing to a few percent of
+    /// lines — and the distinction worth drawing is at the *low* end, which linear already
+    /// resolves fully. A logarithm would compress the high end, which is the end this saturates
+    /// anyway, and spend resolution separating a neglected file from a hopeless one.
+    pub todo_full_scale_per_thousand: i32,
 }
 
 impl Normalize {
@@ -271,6 +287,27 @@ impl Normalize {
             return Fx::ZERO;
         };
         magnitude.div(scale).min(Fx::ONE)
+    }
+
+    /// How cracked a marker density reads, in `0..=1` — `F-MAT-6`.
+    ///
+    /// `markers_per_thousand` is
+    /// [`todo_density`](treepo_model::DerivedSignals::todo_density) exactly as extraction
+    /// recorded it. Zero is unmarked, one is at or beyond
+    /// [`todo_full_scale_per_thousand`](Self::todo_full_scale_per_thousand). Linear and
+    /// saturating — see that row for why this is the one scale here that is not logarithmic.
+    ///
+    /// Clamped below as well as above. A negative density is not something extraction can
+    /// produce, and reading one as "very cracked" through a sign error is the kind of failure
+    /// that would show up as a stressed tree with no explanation.
+    #[must_use]
+    pub fn debt(&self, markers_per_thousand: Fx) -> Fx {
+        if self.todo_full_scale_per_thousand <= 0 {
+            return Fx::ZERO;
+        }
+        markers_per_thousand
+            .div(Fx::from_int(self.todo_full_scale_per_thousand))
+            .clamp(Fx::ZERO, Fx::ONE)
     }
 
     /// One node's age gradient — `F-MAT-4` over a commit span.
@@ -507,6 +544,18 @@ impl Normalize {
                 row: "churn_full_scale_lines",
                 detail: "the churn scale spans at least a hundred lines, or every path touched \
                          this month reads as equally hot and the signal stops distinguishing",
+            });
+        }
+
+        // The same failure the row above is refused for, in the third feature to meet it. One
+        // marker every two hundred code lines is an ordinary file, so a scale at or below five
+        // per thousand is already reached by content nobody would call neglected — and a signal
+        // that fires on everything is texture rather than information (`P6`).
+        if self.todo_full_scale_per_thousand < 5 {
+            return Err(NormalizeError {
+                row: "todo_full_scale_per_thousand",
+                detail: "the marker scale spans at least five markers per thousand code lines, \
+                         or an ordinary file already reads as fully cracked",
             });
         }
 
@@ -832,6 +881,45 @@ mod tests {
         assert!(brand_new.is_uniform());
     }
 
+    /// `F-MAT-6`'s scale: unmarked is zero, the full scale is one, and it saturates rather than
+    /// passing one — a file that is nothing but `FIXME` is as cracked as the material gets.
+    #[test]
+    fn marker_density_runs_from_unmarked_to_the_full_scale() {
+        let n = shipped();
+        let full = Fx::from_int(n.todo_full_scale_per_thousand);
+
+        assert_eq!(n.debt(Fx::ZERO), Fx::ZERO, "no markers, no cracks");
+        assert_eq!(n.debt(full), Fx::ONE, "the full scale is fully cracked");
+        assert_eq!(n.debt(full.mul(Fx::from_int(20))), Fx::ONE, "and saturates");
+        assert_eq!(n.debt(full.div(Fx::from_int(4))), Fx::from_ratio(1, 4));
+
+        // Linear, which is the claim the row makes: equal steps in density are equal steps in
+        // the reading, so the low end keeps its full resolution.
+        let step = full.div(Fx::from_int(8));
+        assert_eq!(
+            n.debt(step.mul(Fx::from_int(2))).sub(n.debt(step)),
+            n.debt(step.mul(Fx::from_int(3)))
+                .sub(n.debt(step.mul(Fx::from_int(2)))),
+        );
+
+        // Monotonic, and never outside the range, across the whole band a real repository lands
+        // in and well past it.
+        let mut previous = Fx::ZERO;
+        for markers in 0..200i64 {
+            let reading = n.debt(Fx::from_int(i32::try_from(markers).unwrap()));
+            assert!(reading >= previous, "the reading fell at {markers}");
+            assert!(reading <= Fx::ONE);
+            previous = reading;
+        }
+    }
+
+    /// A negative density is not something extraction can produce, and reading one as heavily
+    /// cracked through a sign error would stress a tree with no explanation available.
+    #[test]
+    fn a_negative_marker_density_reads_as_unmarked() {
+        assert_eq!(shipped().debt(Fx::from_int(-40)), Fx::ZERO);
+    }
+
     /// `P6`: a node drawn small is subdivided coarsely, and one drawn large finely — so a
     /// cell covers about the same area wherever it appears.
     #[test]
@@ -998,6 +1086,22 @@ mod tests {
                 "age_full_scale_days",
                 Normalize {
                     age_full_scale_days: 0,
+                    ..base
+                },
+            ),
+            // Below five markers per thousand code lines an ordinary file is already fully
+            // cracked, which is the churn row's failure arriving in a third feature.
+            (
+                "todo_full_scale_per_thousand",
+                Normalize {
+                    todo_full_scale_per_thousand: 4,
+                    ..base
+                },
+            ),
+            (
+                "todo_full_scale_per_thousand",
+                Normalize {
+                    todo_full_scale_per_thousand: 0,
                     ..base
                 },
             ),

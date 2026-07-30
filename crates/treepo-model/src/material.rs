@@ -6,19 +6,17 @@
 //! during a transition, and `treepo-render` binds them to a texture and a palette. A type
 //! three crates exchange belongs in the crate they all already depend on.
 //!
-//! # This module arrives incomplete, on purpose
+//! # The slices this module arrived in
 //!
 //! The crate header said material types would "arrive with the phases that produce them",
-//! and Phase 4 produces them in slices. What is here is [`MaterialFamily`], the primary
-//! material of `F-MAT-1`; [`Composition`], what the rest of a node is made of or holds;
-//! [`Material::budget`], the normalized representation of `F-MAT-3`; [`Mosaic`], the
-//! ownership partition of `F-MAT-2`; and [`AgeGradient`], where along a node its material
-//! sits (`F-MAT-4`).
+//! and Phase 4 produced them in slices: [`MaterialFamily`], the primary material of `F-MAT-1`;
+//! [`Composition`], what the rest of a node is made of or holds; [`Material::budget`], the
+//! normalized representation of `F-MAT-3`; [`Mosaic`], the ownership partition of `F-MAT-2`;
+//! [`AgeGradient`], where along a node its material sits (`F-MAT-4`).
 //!
-//! What is deliberately *not* here yet is the stress signals of `F-MAT-6`. They are a field on
-//! [`Material`] when the slice that computes them lands. Declaring one now would be the guess
-//! the crate header warned about — a field nothing writes is a field a renderer will read
-//! anyway.
+//! [`Stress`] is the last of them — `F-MAT-6`'s surface treatment, which an earlier revision of
+//! this header deferred on the grounds that "a field nothing writes is a field a renderer will
+//! read anyway". Something writes it now.
 //!
 //! # Made of, against owned by
 //!
@@ -551,7 +549,144 @@ impl AgeGradient {
     }
 }
 
-/// What one skeleton node is made of, who is drawn on it, and how old it is.
+/// One of the three ways a surface can read as stressed — `F-MAT-6`.
+///
+/// > Quality/debt signals introduce subtle stress materials (cracks, sparse density) coexisting
+/// > with the primary material.
+///
+/// `design/feature-system.md` §8.5 names the appearances: "high TODO / debt signals can introduce
+/// subtle stress materials (**cracks**, **sparse density**, **restless micro-particles**) that
+/// coexist with the primary material". Three appearances, so three variants, and no fourth
+/// invented to fill a grid — the same discipline [`EnrichmentKind`](crate::EnrichmentKind)
+/// applies to §8.7's four names.
+///
+/// # These are appearances, not signals
+///
+/// A variant says what the surface *looks* like; which primitive produces it is
+/// `treepo-gen::stress`'s decision and is documented there. The split is deliberate and matches
+/// [`MaterialFamily`]: a renderer binding a texture needs the appearance and must not have to
+/// know that a crack came from a `FIXME`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum StressKind {
+    /// Fissures in the surface. The author's own unfinished-work markers.
+    Cracked,
+    /// Coarse, thin, few-grained material. Mass concentrated in a handful of large files.
+    Sparse,
+    /// Unsettled — restless micro-particles, §8.8's "slight visual unease". Churning content.
+    Restless,
+}
+
+impl StressKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 3] = [Self::Cracked, Self::Sparse, Self::Restless];
+
+    /// This kind's index in [`ALL`](Self::ALL) — how a [`Stress`] is addressed.
+    ///
+    /// A `match` rather than a search, so a kind added without a slot does not compile. Same
+    /// discipline as [`MaterialFamily::position`].
+    #[must_use]
+    pub const fn position(self) -> usize {
+        match self {
+            Self::Cracked => 0,
+            Self::Sparse => 1,
+            Self::Restless => 2,
+        }
+    }
+
+    /// The name used in `assets/params/materials.ron` and in error messages.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Cracked => "cracked",
+            Self::Sparse => "sparse",
+            Self::Restless => "restless",
+        }
+    }
+}
+
+/// How stressed one node's surface is, per kind — `F-MAT-6`.
+///
+/// Indexed by position in [`StressKind::ALL`], so it is `Copy` and the same size for every node,
+/// for the reason [`FamilyMix`] is: at T3 there are eighty thousand of these.
+///
+/// # Coexisting is the whole requirement
+///
+/// `F-MAT-6` says stress "coexists with the primary material", and this type is what makes that
+/// structural rather than a promise. It sits *beside* [`Material::family`],
+/// [`Material::composition`], [`Material::budget`], [`Material::mosaic`] and
+/// [`Material::gradient`] and cannot alter any of them — a stressed limb is the same limb with an
+/// extra reading, never a limb made of something else. `treepo-gen`'s
+/// `stress_coexists_with_the_primary_material` is the test, and the ceiling in
+/// `assets/params/materials.ron` is what keeps "subtle" from being a matter of taste.
+///
+/// # Not measured is not clean
+///
+/// Each intensity is `Option<Fx>`, and `None` means the signal behind it was never measured —
+/// a binary blob nothing read, a path with no line count to divide churn by. Zero means it *was*
+/// measured and there is nothing to draw. Both render as an unmarked surface, so the distinction
+/// buys nothing for a renderer and everything for `F-INSP-5`'s why-panel and for `P1`: a
+/// why-panel that said "no debt here" about a file treepo never opened would be inventing a
+/// finding. It is the same refusal [`DerivedSignals`](crate::DerivedSignals) makes field by
+/// field, carried through instead of defaulted away.
+///
+/// [`new`](Self::new) returns `None` when nothing at all was measured, which is why
+/// [`Material::stress`] is an `Option` — a `Some` always carries at least one real measurement,
+/// so the two nullable layers say different things rather than the same thing twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stress([Option<Fx>; StressKind::ALL.len()]);
+
+impl Stress {
+    /// A reading from per-kind intensities, in [`StressKind::ALL`] order.
+    ///
+    /// `None` where nothing was measured — see the type header. The one place that decision is
+    /// made, so no caller can produce a `Stress` that claims a clean surface it never looked at.
+    #[must_use]
+    pub fn new(intensities: [Option<Fx>; StressKind::ALL.len()]) -> Option<Self> {
+        intensities
+            .iter()
+            .any(Option::is_some)
+            .then_some(Self(intensities))
+    }
+
+    /// How strongly one kind shows, or `None` where its signal was not measured.
+    #[must_use]
+    pub fn intensity_of(&self, kind: StressKind) -> Option<Fx> {
+        self.0[kind.position()]
+    }
+
+    /// Every kind with something to draw, in [`StressKind::ALL`] order.
+    ///
+    /// Skips both the unmeasured and the measured-clean, because a renderer asking what to draw
+    /// wants the same answer for either — the distinction is [`intensity_of`](Self::intensity_of)'s
+    /// to report.
+    pub fn present(&self) -> impl Iterator<Item = (StressKind, Fx)> + '_ {
+        StressKind::ALL
+            .into_iter()
+            .zip(self.0)
+            .filter_map(|(kind, intensity)| {
+                intensity
+                    .filter(|value| !value.is_zero())
+                    .map(|value| (kind, value))
+            })
+    }
+
+    /// Whether something was measured and there is nothing to draw.
+    ///
+    /// The healthy surface, and an ordinary answer rather than a gap.
+    #[must_use]
+    pub fn is_clear(&self) -> bool {
+        self.present().next().is_none()
+    }
+
+    /// How many kinds have something to draw.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.present().count()
+    }
+}
+
+/// What one skeleton node is made of, who is drawn on it, how old it is, and what is wrong
+/// with it.
 ///
 /// Keyed to a [`NodeId`](crate::segment::NodeId) by [`MaterialMap`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,6 +718,15 @@ pub struct Material {
     /// same as *old* — a neutral value here would render a brand-new working directory as
     /// ancient, and the user is already being told separately that age is unavailable.
     pub gradient: Option<AgeGradient>,
+    /// What is wrong with its surface, subtly and over the top of everything else — `F-MAT-6`.
+    ///
+    /// `None` where none of the debt signals behind it was measured: a binary blob nothing read,
+    /// a repository extracted without the content pass. That is *unknown* rather than *healthy*,
+    /// for the reason [`gradient`](Self::gradient) is `None` rather than new — see [`Stress`].
+    ///
+    /// A `Some` never changes any other field. `F-MAT-6` says stress "coexists with the primary
+    /// material", and every other reading of this node is what it coexists with.
+    pub stress: Option<Stress>,
 }
 
 /// Every node's material, indexed by [`NodeId`](crate::segment::NodeId).
@@ -710,6 +854,25 @@ impl MaterialMap {
                 }
             }
 
+            // Discriminants again, and one per kind rather than one for the whole reading: an
+            // unmeasured signal and a measured-clean one are different facts (see `Stress`), so
+            // they must not encode alike even though they draw alike.
+            match &material.stress {
+                None => hasher.update(&[0]),
+                Some(stress) => {
+                    hasher.update(&[1]);
+                    for kind in StressKind::ALL {
+                        match stress.intensity_of(kind) {
+                            None => hasher.update(&[0]),
+                            Some(intensity) => {
+                                hasher.update(&[1]);
+                                hasher.update(&intensity.to_bits().to_le_bytes());
+                            }
+                        }
+                    }
+                }
+            }
+
             match &material.composition {
                 Composition::Pure => hasher.update(&[0]),
                 Composition::Blended { secondary, weight } => {
@@ -737,9 +900,10 @@ impl MaterialMap {
 ///
 /// Bumped whenever the encoding changes, so a digest from an older build cannot be mistaken
 /// for a disagreement about materials. Same discipline as `treepo-skeleton-v2`. `v1` predated
-/// the ownership mosaic and `v2` the age gradient, so neither could tell two limbs apart that
-/// differ only in who wrote them or in when.
-const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v3";
+/// the ownership mosaic, `v2` the age gradient and `v3` the stress reading, so none of them
+/// could tell two limbs apart that differ only in who wrote them, in when, or in what is
+/// wrong with them.
+const MATERIAL_DIGEST_TAG: &[u8] = b"treepo-material-v4";
 
 #[cfg(test)]
 mod tests {
@@ -855,6 +1019,9 @@ mod tests {
                 Fx::from_ratio(9, 10),
                 Fx::from_ratio(1, 10),
             )),
+            // One of each state, so the digest tests below have a measured intensity, a
+            // measured zero and an unmeasured signal in them.
+            stress: Stress::new([Some(Fx::from_ratio(1, 8)), Some(Fx::ZERO), None]),
         }
     }
 
@@ -945,6 +1112,60 @@ mod tests {
             assert!(age <= previous, "the material got older toward the tip");
             previous = age;
         }
+    }
+
+    /// `position` indexes the array a [`Stress`] is, and a mismatch would report cracks where a
+    /// node is restless.
+    #[test]
+    fn stress_positions_index_all() {
+        for (index, kind) in StressKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.position(), index, "{kind:?}");
+        }
+        let mut sorted = StressKind::ALL;
+        sorted.sort();
+        let mut deduped = alloc::vec::Vec::from(sorted);
+        deduped.dedup();
+        assert_eq!(deduped.len(), StressKind::ALL.len());
+    }
+
+    /// The distinction the whole `Option` layering exists for: a surface nobody measured is not
+    /// a surface with nothing wrong. Both draw as unmarked, and only one of them is a finding.
+    #[test]
+    fn nothing_measured_is_not_the_same_as_nothing_wrong() {
+        assert_eq!(Stress::new([None, None, None]), None, "nothing to say");
+
+        let clear = Stress::new([Some(Fx::ZERO), None, None]).expect("one signal was measured");
+        assert!(clear.is_clear());
+        assert_eq!(clear.count(), 0);
+        assert_eq!(
+            clear.intensity_of(StressKind::Cracked),
+            Some(Fx::ZERO),
+            "measured, and there is nothing there"
+        );
+        assert_eq!(
+            clear.intensity_of(StressKind::Sparse),
+            None,
+            "not measured, so nothing can be claimed about it"
+        );
+    }
+
+    /// What a renderer asks for: the kinds with something to draw, and nothing else.
+    #[test]
+    fn only_the_kinds_with_something_to_draw_are_present() {
+        let stress = Stress::new([Some(Fx::from_ratio(1, 4)), Some(Fx::ZERO), Some(Fx::HALF)])
+            .expect("measured");
+
+        let present: alloc::vec::Vec<(StressKind, Fx)> = stress.present().collect();
+        assert_eq!(
+            present,
+            [
+                (StressKind::Cracked, Fx::from_ratio(1, 4)),
+                (StressKind::Restless, Fx::HALF),
+            ],
+            "ALL order, and the measured zero is not drawn"
+        );
+        assert_eq!(stress.count(), 2);
+        assert!(!stress.is_clear());
     }
 
     /// The three numbers must agree with the map, or a renderer draws a mosaic whose parts do
@@ -1126,6 +1347,35 @@ mod tests {
             brand_new.digest(),
             ageless.digest(),
             "unknown age and zero age are different facts"
+        );
+    }
+
+    /// `F-MAT-6` in `AC-DET-1`. The pair that matters is the last one: a surface nobody measured
+    /// must not encode like one measured and found clean, or a repository extracted without the
+    /// content pass would hash like a healthy one.
+    #[test]
+    fn every_part_of_a_stress_reaches_the_digest() {
+        let baseline = sample().digest();
+
+        let mut worse = sample();
+        worse.materials[0].stress = Stress::new([Some(Fx::from_ratio(1, 4)), Some(Fx::ZERO), None]);
+        assert_ne!(worse.digest(), baseline, "a different intensity");
+
+        let mut spread = sample();
+        spread.materials[0].stress =
+            Stress::new([Some(Fx::from_ratio(1, 8)), Some(Fx::ZERO), Some(Fx::ZERO)]);
+        assert_ne!(spread.digest(), baseline, "a third signal was measured");
+
+        let mut unknown = sample();
+        unknown.materials[0].stress = None;
+        assert_ne!(unknown.digest(), baseline, "nothing measured at all");
+
+        let mut clean = sample();
+        clean.materials[0].stress = Stress::new([Some(Fx::ZERO), Some(Fx::ZERO), Some(Fx::ZERO)]);
+        assert_ne!(
+            clean.digest(),
+            unknown.digest(),
+            "an unexamined surface and a clean one are different facts"
         );
     }
 

@@ -636,8 +636,9 @@ fn probe_material() -> Digest {
         path: treepo_model::path::RepoPath::root(),
     };
     // The mixture sweep is about families and budgets; the mosaic gets its own sweep below,
-    // where the contributor counts are what varies.
+    // where the contributor counts are what varies, and the stress sweep is at the end.
     let unowned = OwnershipPrimitives::default();
+    let unexamined = treepo_gen::material::DebtSignals::default();
 
     for (i, first) in ContentCategory::ALL.into_iter().enumerate() {
         for (j, second) in ContentCategory::ALL.into_iter().enumerate() {
@@ -653,7 +654,14 @@ fn probe_material() -> Digest {
                 let bytes = 4096 + (i as u64 * 7 + j as u64) * 131;
                 let mut sampled = treepo_model::MaterialMap::new();
                 for role in [&limb, &container] {
-                    sampled.push(table.material_of(&size, bytes, &unowned, None, role));
+                    sampled.push(table.material_of(
+                        &size,
+                        bytes,
+                        &unowned,
+                        None,
+                        &unexamined,
+                        role,
+                    ));
                 }
                 // Through the canonical encoding rather than a local one — `MaterialMap` owns
                 // it for the reason `Skeleton` owns its own, and a second copy here would be
@@ -727,6 +735,50 @@ fn probe_material() -> Digest {
             hasher.update(&gradient.tip().to_bits().to_le_bytes());
             hasher.update(&gradient.span().to_bits().to_le_bytes());
             hasher.update(&gradient.at(Fx::HALF).to_bits().to_le_bytes());
+        }
+    }
+
+    // `F-MAT-6`. Here rather than in a probe of its own — the opposite of the call
+    // `probe_enrichment` earns — because the arithmetic is one division against a scale and one
+    // multiplication by a ceiling, which is the same shape as everything above it and would look
+    // like an over-reaction split out. What it does add that no other sweep has is a *branch* on
+    // a fixed-point comparison, at each kind's presence floor, so the sweep straddles all three.
+    let debt = |markers: Option<i64>, large: Option<(i64, i64)>, stability: Option<(i64, i64)>| {
+        treepo_gen::material::DebtSignals {
+            markers_per_thousand: markers.map(|per_thousand| {
+                Fx::from_ratio(per_thousand, 4) // quarter-marker steps, so the floor lands between samples
+            }),
+            large_file_share: large.map(|(n, d)| Fx::from_ratio(n, d)),
+            stability: stability.map(|(n, d)| Fx::from_ratio(n, d)),
+        }
+    };
+
+    for markers in [
+        None,
+        Some(0),
+        Some(1),
+        Some(9),
+        Some(10),
+        Some(160),
+        Some(4000),
+    ] {
+        for share in [None, Some((0, 1)), Some((1, 5)), Some((1, 4)), Some((1, 1))] {
+            for stability in [None, Some((1, 1)), Some((7, 10)), Some((0, 1))] {
+                let sampled = table.stress_of(&debt(markers, share, stability));
+                // Through a `MaterialMap` rather than by reading the intensities out, so the
+                // discriminants that separate "not measured" from "measured clean" are hashed by
+                // the one encoding that owns them.
+                let mut map = treepo_model::MaterialMap::new();
+                map.push(treepo_model::Material {
+                    family: treepo_model::MaterialFamily::Heartwood,
+                    composition: treepo_model::Composition::Pure,
+                    budget: Fx::HALF,
+                    mosaic: treepo_model::Mosaic::default(),
+                    gradient: None,
+                    stress: sampled,
+                });
+                hasher.update(map.digest().as_bytes());
+            }
         }
     }
 
@@ -810,6 +862,11 @@ fn probe_enrichment() -> Digest {
                         .unwrap_or(0),
                     newest_days: record.temporal.last_commit_age_days(reference).unwrap_or(0),
                 }),
+                // Deliberately unexamined. Enrichment reads a material's budget and its gradient
+                // and nothing else, so a stress reading here would change this probe's digest
+                // without changing anything it measures — which is exactly the claim `F-MAT-6`
+                // makes about coexisting, and `probe_material` is where it is gated.
+                &treepo_gen::material::DebtSignals::default(),
                 &role,
             );
             sampled.push(table.enrichment_of(&manifest, &role, &material));

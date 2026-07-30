@@ -77,7 +77,8 @@ pub use manifest::{
     PathRecord, SCHEMA_VERSION,
 };
 pub use material::{
-    AgeGradient, Composition, FamilyMix, Material, MaterialFamily, MaterialMap, Mosaic,
+    AgeGradient, Composition, FamilyMix, Material, MaterialFamily, MaterialMap, Mosaic, Stress,
+    StressKind,
 };
 pub use path::{PathError, RepoPath};
 pub use primitives::{

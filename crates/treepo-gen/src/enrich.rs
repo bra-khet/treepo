@@ -689,7 +689,60 @@ mod tests {
             budget,
             mosaic: treepo_model::Mosaic::default(),
             gradient,
+            // Nothing here reads it. `F-MAT-6` is a treatment of a surface and this module
+            // decides what is built on one, so a stress value would be an input no assertion
+            // below could be affected by — see `enrichment_ignores_a_stressed_surface`.
+            stress: None,
         }
+    }
+
+    /// `F-MAT-6` coexists with this pass too, and that is worth a test rather than an argument:
+    /// enrichment is sized by a material's budget and positioned along its gradient, so a stress
+    /// reading must not move a single structure. A pass that read one would place furniture
+    /// differently on a troubled limb, which is a picture nobody asked for.
+    #[test]
+    fn enrichment_ignores_a_stressed_surface() {
+        let table = table();
+        let manifest = manifest_of(&[
+            ("docs/guide.md", 40_000),
+            ("docs/api.md", 20_000),
+            ("assets/logo.png", 90_000),
+            ("src/main.rs", 30_000),
+        ]);
+        let role = NodeRole::Limb { path: path("docs") };
+        let record = manifest.path(&path("docs")).unwrap();
+
+        let mut sound = table.material_of(
+            &record.size,
+            record.size.bytes,
+            &record.ownership,
+            Some(crate::material::AgeSpan {
+                oldest_days: 900,
+                newest_days: 3,
+            }),
+            &crate::material::DebtSignals::default(),
+            &role,
+        );
+        assert_eq!(sound.stress, None);
+
+        let mut troubled = sound.clone();
+        troubled.stress = treepo_model::Stress::new([Some(Fx::ONE), Some(Fx::HALF), Some(Fx::ONE)]);
+
+        let placed = table.enrichment_of(&manifest, &role, &sound);
+        assert!(
+            !placed.placements().is_empty(),
+            "the fixture must build something, or this proves nothing"
+        );
+        assert_eq!(
+            table.enrichment_of(&manifest, &role, &troubled),
+            placed,
+            "a stressed surface changed what was built on it"
+        );
+
+        // And the converse, so the equality above is not simply an insensitive comparison: the
+        // two inputs the pass *does* read still move it.
+        sound.budget = sound.budget.div(Fx::from_int(4));
+        assert_ne!(table.enrichment_of(&manifest, &role, &sound), placed);
     }
 
     fn placed(kind: EnrichmentKind, position: i64, weight: i64) -> Placement {
@@ -1232,6 +1285,7 @@ mod tests {
                     .last_commit_age_days(manifest.reference_time)
                     .unwrap(),
             }),
+            &crate::material::DebtSignals::default(),
             &container,
         );
 
