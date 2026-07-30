@@ -5,6 +5,10 @@
 //! cargo run -p treepo-app --features brp -- <path>  # + agent control on localhost:15702 (D10)
 //! ```
 //!
+//! Agents needing BRP: launch with the second line via shell — **not** `bevy_brp` MCP
+//! `brp_launch` (it rebuilds without `--features brp` and can strip the listener). Details in
+//! [`debug::brp`](crate::debug).
+//!
 //! # What this binary is, at M1
 //!
 //! One of exactly two crates that may name `bevy`. Everything it draws was computed by crates

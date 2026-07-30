@@ -335,8 +335,11 @@ unconditionally.
 paths remain fully offline (`NFR-8`). CI `cargo deny check` and storefront builds use default
 features so network clients never enter the shipped dependency graph.
 
-**Agent run recipe:** `cargo run -p treepo-app --features brp`, then use `bevy_brp` MCP tools
-against port 15702.
+**Agent run recipe:** start via shell —
+`cargo run -p treepo-app --features brp -- <path-to-repository>` — then use `bevy_brp` MCP
+tools against port 15702. Do **not** use `brp_launch`: its freshness rebuild omits
+`--features brp` and can silently strip the listener. Operational detail also in
+`crates/treepo-app/src/debug/brp.rs`.
 
 ---
 

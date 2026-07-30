@@ -25,9 +25,10 @@ These apply to **every** phase. A phase is not complete if any of them regress.
   (`N3`, `AC-DET-1/2/3`).
 - From Phase 5 onward: `cargo xtask id-coverage` reports zero colored pixels without an element
   ID (`P1`, `N7`).
-- From Phase 5 onward: agents may run `cargo run -p treepo-app --features brp` for live Bevy
-  Remote Protocol control via host MCP server `bevy_brp` (`bevy_brp_mcp`, port 15702). Product
-  and default builds must not register BRP.
+- From Phase 5 onward: agents may run `cargo run -p treepo-app --features brp -- <path>` for
+  live Bevy Remote Protocol control via host MCP server `bevy_brp` (`bevy_brp_mcp`, port 15702).
+  Launch that binary via shell with the feature flag — not `brp_launch` (rebuilds without `brp`).
+  Product and default builds must not register BRP.
 
 ## Execution Order
 

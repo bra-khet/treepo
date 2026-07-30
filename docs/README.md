@@ -80,7 +80,11 @@ Bevy Remote Protocol:
 | Plugins | `bevy_brp_extras::BrpExtrasPlugin` (adds Bevy `RemotePlugin` + HTTP if needed) |
 | Port | **15702** (`BRP_EXTRAS_PORT` override) |
 | Host MCP server | `bevy_brp` → binary `bevy_brp_mcp` (user-level Grok config: `~/.grok/config.toml`) |
-| Run | `cargo run -p treepo-app --features brp` |
+| Run | `cargo run -p treepo-app --features brp -- <path>` **via shell** |
+
+**Agent launch:** start with that `cargo` command. Do **not** use `bevy_brp` MCP `brp_launch` —
+it rebuilds without `--features brp` and can replace a BRP binary with one that has no listener.
+Once the app is listening on 15702, use the other `bevy_brp` tools.
 
 Authoritative decision: architecture **D10**. Design note: [`design/engine-architecture.md`](design/engine-architecture.md) §8.1.
 **Do not** enable BRP in product builds; `N2` / `NFR-8` remain absolute for shipped paths.

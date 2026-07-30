@@ -584,8 +584,9 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
      `BRP_EXTRAS_PORT` or `BrpExtrasPlugin::with_port`.
   3. **Agent host**: globally installed `bevy_brp_mcp` binary (`cargo install bevy_brp_mcp`),
      registered as MCP server **`bevy_brp`** in the agent config (Grok: `~/.grok/config.toml`
-     → `[mcp_servers.bevy_brp]`). Agents launch or attach to the app and use BRP tools over
-     the local port.
+     → `[mcp_servers.bevy_brp]`). Agents **start** the app via shell with `--features brp`
+     (see "How to run" below), then use BRP MCP tools over the local port. Do **not** use
+     `brp_launch` to build/start treepo — its freshness rebuild omits the feature flag.
   4. **`N2` boundary**: product builds never enable `brp`. `cargo deny check`, release CI, and
      storefront packages use default features only. BRP is loopback-only tooling; it is not a
      product network path and does not export repository data off-machine. Generative crates
@@ -603,8 +604,9 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
   `treepo-app` is enough and keeps one main entrypoint.
 - **How to run (agents / developers)**:
   ```text
-  cargo run -p treepo-app --features brp
-  # then use MCP tools from bevy_brp_mcp against port 15702
+  # Shell launch only — not bevy_brp MCP brp_launch (rebuilds without --features brp).
+  cargo run -p treepo-app --features brp -- <path-to-repository>
+  # then use the other MCP tools from bevy_brp_mcp against port 15702
   ```
   Canonical registration sketch (lands in Phase 5 with the shell):
   ```rust

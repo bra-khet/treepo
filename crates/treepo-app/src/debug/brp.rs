@@ -10,6 +10,11 @@
 //! # then use the bevy_brp MCP tools against port 15702
 //! ```
 //!
+//! **Agent launch (read this):** start the process with that `cargo` line (shell), **not**
+//! `bevy_brp_mcp`'s `brp_launch`. That tool's freshness rebuild omits `--features brp` and can
+//! silently replace a BRP-enabled binary with one that has no listener. After the app is up on
+//! 15702, use the other `bevy_brp` MCP tools (status, screenshot, world_*, input, …).
+//!
 //! The port is 15702 by default and `BRP_EXTRAS_PORT` overrides it — both are
 //! `bevy_brp_extras`' own contract, not treepo's, and are documented in the campaign's
 //! deployment notes as dev/agent-only environment variables.

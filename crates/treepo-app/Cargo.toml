@@ -20,6 +20,9 @@ publish.workspace = true
 # Enabling it puts an HTTP listener on 127.0.0.1:15702 in the process. That is acceptable for
 # a developer machine and is not acceptable in a consumer product, which is the whole of why
 # it is a feature and not a runtime flag.
+#
+# Agent launch: `cargo run -p treepo-app --features brp -- <path>` via shell. Do not use
+# bevy_brp MCP `brp_launch` — it rebuilds without this feature. See `src/debug/brp.rs`.
 [features]
 default = []
 brp = ["dep:bevy_brp_extras", "bevy/bevy_remote"]

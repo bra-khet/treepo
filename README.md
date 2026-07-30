@@ -32,9 +32,10 @@ Host side (already available on this machine for Grok): globally installed `bevy
 registered as MCP server **`bevy_brp`** in `~/.grok/config.toml`.
 
 ```text
-# after Phase 5 scaffolding:
-cargo run -p treepo-app --features brp
-# then use bevy_brp MCP tools against localhost:15702
+# Agent: launch via shell with the feature (do not use bevy_brp MCP brp_launch —
+# it rebuilds without --features brp and can silently drop the listener).
+cargo run -p treepo-app --features brp -- <path-to-repository>
+# then use the other bevy_brp MCP tools against localhost:15702
 ```
 
 ## Documentation
