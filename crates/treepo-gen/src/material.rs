@@ -423,6 +423,75 @@ pub fn materialize(manifest: &Manifest, skeleton: &Skeleton, table: &Table) -> M
     map
 }
 
+/// Counts from [`audit_significant_presence`] — the measurable form of `AC-MAT-2`.
+///
+/// `holds` is the acceptance bit: at least one significant pair was examined, and none of
+/// them vanished from their mosaic. `saved_by_quota` is diagnostic: how many would have
+/// earned zero cells from pure proportional allocation and therefore needed the guaranteed
+/// floor. A green run with that counter still at zero has proven less than it looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignificantPresence {
+    /// Significant author-on-node pairs examined.
+    pub pairs_checked: u64,
+    /// Significant contributors missing from their node's mosaic.
+    pub missing: u64,
+    /// Significant contributors whose proportional cell count was zero before the quota.
+    pub saved_by_quota: u64,
+}
+
+impl SignificantPresence {
+    /// `AC-MAT-2` as a yes/no: something was checked, and nothing significant disappeared.
+    #[must_use]
+    pub const fn holds(&self) -> bool {
+        self.missing == 0 && self.pairs_checked > 0
+    }
+}
+
+/// `AC-MAT-2` over a whole tree: every contributor at or above
+/// [`Normalize::significant_ppm`](crate::normalize::Normalize::significant_ppm) on a node is
+/// present in that node's mosaic.
+///
+/// Uses the same ownership gathering [`materialize`] does, so a harness that extracts a real
+/// repository and calls this is checking the product path rather than a reimplementation.
+/// The synthetic unit fixture exercises the two-percent case by construction; the T2 pin
+/// (`cargo xtask ac-mat-2`) is the campaign's named evidence on a real mid-size tree.
+#[must_use]
+pub fn audit_significant_presence(
+    manifest: &Manifest,
+    skeleton: &Skeleton,
+    materials: &MaterialMap,
+    table: &Table,
+) -> SignificantPresence {
+    let mut pairs_checked = 0u64;
+    let mut missing = 0u64;
+    let mut saved_by_quota = 0u64;
+
+    for (id, node) in skeleton.nodes().iter().enumerate() {
+        let Some(material) = materials.get(treepo_model::NodeId::new(id as u32)) else {
+            continue;
+        };
+        let ownership = resolve(manifest, &node.role).ownership;
+        for (key, share) in ownership.shares() {
+            if share.to_ppm() < table.normalize.significant_ppm {
+                continue;
+            }
+            pairs_checked = pairs_checked.saturating_add(1);
+            if !material.mosaic.is_present(key) {
+                missing = missing.saturating_add(1);
+            }
+            if share.allocate(material.mosaic.cells()) == 0 {
+                saved_by_quota = saved_by_quota.saturating_add(1);
+            }
+        }
+    }
+
+    SignificantPresence {
+        pairs_checked,
+        missing,
+        saved_by_quota,
+    }
+}
+
 /// What one node is made of, how big it is, who wrote it, and when.
 ///
 /// The ownership is borrowed for a node standing for one path and owned for one standing for
@@ -1331,42 +1400,21 @@ mod tests {
 
     /// `AC-MAT-2` over a whole tree rather than over one synthetic share. The fixture gives
     /// every path a two-percent contributor, which is the case the criterion names by number.
+    /// The same check on a T2 pin is `cargo xtask ac-mat-2`.
     #[test]
     fn a_two_percent_contributor_is_drawn_on_every_node_they_touched() {
         let table = Table::built_in();
         let manifest = shaped_repository();
         let skeleton = crate::grow(&manifest, &crate::Table::built_in());
         let materials = materialize(&manifest, &skeleton, &table);
-
-        let mut checked = 0;
-        let mut saved_by_the_quota = 0;
-        for (id, node) in skeleton.nodes().iter().enumerate() {
-            let material = materials.get(treepo_model::NodeId::new(id as u32)).unwrap();
-            let ownership = resolve(&manifest, &node.role).ownership.into_owned();
-
-            for (key, share) in ownership.shares() {
-                if share.to_ppm() < table.normalize.significant_ppm {
-                    continue;
-                }
-                checked += 1;
-                assert!(
-                    material.mosaic.is_present(key),
-                    "a significant contributor vanished from {:?}'s mosaic of {} cells",
-                    node.role,
-                    material.mosaic.cells()
-                );
-                if share.allocate(material.mosaic.cells()) == 0 {
-                    saved_by_the_quota += 1;
-                }
-            }
-        }
+        let report = audit_significant_presence(&manifest, &skeleton, &materials, &table);
 
         assert!(
-            checked > 0,
-            "the fixture attributes nothing — nothing was tested"
+            report.holds(),
+            "AC-MAT-2 failed on the synthetic fixture: {report:?}"
         );
         assert!(
-            saved_by_the_quota > 0,
+            report.saved_by_quota > 0,
             "every contributor here earned a cell on the arithmetic alone, so the guaranteed \
              quota was never the thing keeping anyone visible and this proves less than it looks"
         );

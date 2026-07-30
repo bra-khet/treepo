@@ -84,4 +84,7 @@ pub use trunk::grow;
 // Renamed on the way out, not in its own module. Two parameter tables now exist and
 // `crate::Table` has meant the skeleton's since Phase 3; a second bare `Table` at the root
 // would make every import site ambiguous to a reader even where it compiles.
-pub use material::{AgeSpan, MaterialError, Table as MaterialTable, materialize};
+pub use material::{
+    AgeSpan, MaterialError, SignificantPresence, Table as MaterialTable,
+    audit_significant_presence, materialize,
+};

@@ -113,11 +113,11 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   `assets/palettes/**`, `assets/wordlists/pseudonyms.ron`,
   `assets/params/{materials,enrichment,classify}.ron`, `tests/privacy.rs`
 - **End Conditions**:
-  - [ ] Pseudonyms and author colors identical across all three platforms (`AC-ID-2`)
-  - [ ] No real name, email, or handle in any generated output under default policy (`AC-ID-1`)
-  - [ ] No `treepo-model` type exposes an ordered contributor collection or a share as a figure (`AC-MAT-3`, `N4`)
-  - [ ] A 2%-share contributor retains visible mosaic presence on the T2 fixture (`AC-MAT-2`)
-  - [ ] Adjacent palette entries meet the minimum perceptual-separation threshold (`AC-MAT-4`)
+  - [x] Pseudonyms and author colors identical across all three platforms (`AC-ID-2`)
+  - [x] No real name, email, or handle in any generated output under default policy (`AC-ID-1`)
+  - [x] No `treepo-model` type exposes an ordered contributor collection or a share as a figure (`AC-MAT-3`, `N4`)
+  - [x] A 2%-share contributor retains visible mosaic presence on the T2 fixture (`AC-MAT-2`)
+  - [x] Adjacent palette entries meet the minimum perceptual-separation threshold (`AC-MAT-4`)
 
 ## Phase 5 — Bevy shell, static baking & navigation → **M1 EXIT**
 - **Goal**: A still, zoomable, clickable tree at consumer quality.

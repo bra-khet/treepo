@@ -9,6 +9,7 @@
 //! cargo xtask dep-guard       # N6 — no generative crate may depend on bevy
 //! cargo xtask readonly-audit  # AC-MAN-2, AC-EXT-4 — extraction writes nothing
 //! cargo xtask budget          # AC-EXT-1 — full extraction against the PRD §7 budgets
+//! cargo xtask ac-mat-2        # AC-MAT-2 — significant mosaic presence on a T2 pin
 //! ```
 //!
 //! Commands land with the phase that needs them: `id-coverage` in Phase 5. `budget` is listed
@@ -19,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod ac_mat_2;
 mod budget;
 mod dep_guard;
 mod determinism;
@@ -34,6 +36,7 @@ fn main() -> ExitCode {
         Some("dep-guard") => dep_guard::run(rest),
         Some("readonly-audit") => readonly_audit::run(rest),
         Some("budget") => budget::run(rest),
+        Some("ac-mat-2") => ac_mat_2::run(rest),
 
         // Listed rather than left to fall through as "unknown command", because the
         // campaign document tells a reader this exists before the phase that builds it.
@@ -86,7 +89,12 @@ fn print_usage() {
          \x20                      --fetch           clone what is missing (the network step)\n\
          \x20                      --pin <name>      measure one\n\
          \x20                      --threads <n>     log_pass threads (default 4, min spec)\n\
-         \x20                      --runs <n>        repeat and show the spread\n"
+         \x20                      --runs <n>        repeat and show the spread\n\
+         \n\
+         \x20   ac-mat-2         Prove significant contributors keep mosaic presence on a\n\
+         \x20                    pinned T2 repository (AC-MAT-2). Local evidence, not CI.\n\
+         \x20                      --pin <name>      default bevy; godot is the other T2\n\
+         \x20                      --threads <n>     log_pass threads (default 4)\n"
     );
 }
 

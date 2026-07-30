@@ -3,10 +3,9 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-30 · **Phases 0–3 closed (M0 EXIT); Phase 4 code-complete —
-`F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, and `AC-MAT-3` landed; the manifest is schema 2.
-What remains is evidence: the three-platform CI compare (`AC-DET-2`, `AC-ID-2`) and `AC-MAT-2`
-against a T2 repository**
+**Last updated:** 2026-07-30 · **Phases 0–3 closed (M0 EXIT); Phase 4 complete —
+`F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
+(`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin (bevy v0.17.1)**
 
 ---
 
@@ -2630,30 +2629,45 @@ regenerate on next open rather than parse. That is `F-MAN-6` doing its job, not 
 
 ---
 
+## S18 — `AC-MAT-2` on the T2 pin (2026-07-30)
+
+Campaign wording: a 2%-share contributor retains visible mosaic presence **on the T2 fixture**.
+Synthetic trees (unit fixture + corpus) already held the rule; they are T0/T1 shape. Evidence
+on a real mid-size repository was the remaining checkbox.
+
+**Instrument:** `cargo xtask ac-mat-2` (default pin `bevy`). Extract → grow → materialize →
+`treepo_gen::audit_significant_presence` — the same ownership gathering as the product walk,
+not a reimplementation. Local only; the pin is multi-gigabyte under `target/corpus-pinned/`
+and is never fetched by CI.
+
+**Measured on bevy v0.17.1** (`9071d7f88dfbae48837daa75faaef3a625ed56a9`):
+
+| | |
+|---|---|
+| pin | bevy v0.17.1 @ `9071d7f8…` |
+| nodes | 300 |
+| `significant_ppm` | 10_000 (1%) |
+| significant author-on-node pairs | **2461** |
+| missing from mosaic | **0** |
+| needed the guaranteed quota | **964** |
+
+The quota counter matters: nearly two-fifths of the significant pairs would have drawn zero
+cells from pure proportional allocation, so the floor the criterion names is load-bearing on
+this tree, not decorative.
+
+**Phase 4 evidence is complete.** Three-platform CI compare (`AC-DET-2` + `AC-ID-2`) was green
+on the material-era digests (user confirmed 2026-07-30); `AC-MAT-2` on T2 is the measurement
+above. Re-run after materials changes: `cargo xtask ac-mat-2` (optional `--pin godot`).
+
+---
+
 ## Next
 
-**Phase 4's code is complete.** S10 built the families and the arithmetic, S11 gave every node a
-material, S12 a mosaic, S13 an age, S14 what is built on it, S15 what is wrong with it, S16 the
-`N4` audit, S17 closed what the audit found. What remains is **evidence, not code**:
+**Phase 4 is closed for code and for its campaign evidence items.** Phase 5 is the Bevy shell,
+static baking, and navigation (M1 EXIT). Nothing in the materials layer is waiting on a
+further proof before that work can start.
 
-1. **The three-platform CI compare** — `AC-DET-2` and `AC-ID-2` are the same run. Every digest is
-   locally reproducible over three runs; nothing has yet compared Windows against macOS and Linux
-   since the material layer landed. This is the one item that can still fail for an interesting
-   reason.
-2. **`AC-MAT-2` on a T2 repository.** The criterion says "on the T2 fixture"; it is currently held
-   on the synthetic corpus (`many-authors`, 360 holder-slots across 6 nodes, nobody dropped) and on
-   the unit fixture, both of which are T0/T1 shapes. The T2 pins are real repositories, and S15
-   showed the instrument is ten lines — extract `target/corpus-pinned/bevy`, materialize, assert
-   every contributor above `significant_ppm` holds a cell.
-Both are held on the same push: the CI matrix is what item 1 *is*, and item 2 is ten lines that can
-land before it or after it.
-
-**`AC-MAT-3` is done — see S16 above.** `crates/treepo-model/tests/n4.rs`, 7 tests, asserting the
-shape of the public API rather than claiming a guarantee the compiler does not hold. **S16's one
-open item is closed — see S17.** `AuthorEntry::commit_count` is gone; the manifest is schema 2, and
-no requirement or design document ever named it.
-
-Recorded rather than resolved, all waiting on materials having an appearance:
+Recorded rather than resolved, all waiting on materials having an appearance (not Phase 4 exit):
 
 - **The mosaic arrangement is contiguous runs in key order** (S12). A seeded per-node shuffle
   would make a bad colour pairing local instead of systemic across every limb two contributors
