@@ -20,7 +20,7 @@
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 
-use crate::mesh::Extent;
+use crate::chunk::Extent;
 
 /// The camera that looks at the tree.
 ///

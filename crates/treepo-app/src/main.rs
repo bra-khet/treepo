@@ -16,15 +16,17 @@
 //! [`load::open`], on a background thread, in `no_std` crates with no `World` in scope. That is
 //! architecture D1, and `cargo xtask dep-guard` is what notices if it stops being true.
 //!
-//! The shell is the first vertical slice of Phase 5 and is honest about which of the phase's
-//! end conditions it does *not* meet. Three are not attempted here and each has a named home:
+//! The shell is honest about which of Phase 5's end conditions it does *not* meet. Two are not
+//! attempted here and each has a named home:
 //!
-//! * **`AC-NAV-2`** (30 fps far→near on T3) and `NFR-2` need architecture D5's chunked bake and
-//!   LOD bands. `treepo-render::mesh` submits one mesh for the whole tree at every zoom level.
 //! * **`P1`/`N7`/`xtask id-coverage`** need the element-ID buffer. `treepo-render::pick` answers
 //!   clicks geometrically instead, which is `AC-INSP-1` without the machine-checkable half.
 //! * **`AC-NAV-1`** is a recorded user test with three participants, which needs materials to
 //!   have an appearance first.
+//!
+//! `AC-NAV-2` and `NFR-2` now have their mechanism — architecture D5's chunked bake, in
+//! `treepo-render::{chunk, bake, lod}` — and what they still want is a measurement on a T3
+//! repository rather than more code.
 //!
 //! `NFR-4`'s five-second cold launch on a cached T2 repository is met by the store path in
 //! [`load`], and `AC-MAN-2` is unaffected: nothing here opens a repository for write.

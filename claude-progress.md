@@ -5,9 +5,9 @@
 
 **Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
-(`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy
-shell's first vertical slice is in (S19); the static bake, the ID buffer and the consumer UI
-are not.**
+(`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy shell
+(S19) and D5's chunked static bake (S20) are in; the element-ID buffer, the T3 measurement and
+the consumer UI are not.**
 
 ---
 
@@ -2825,19 +2825,119 @@ This is the second time the "Agent hygiene" rule above has been violated in the 
 written down to prevent, and the shape is the same both times: the gate was not run, or was run
 and not read. `cargo fmt --all --check` costs under a second.
 
+## Phase 5 — the static bake
+
+### S20 — D5's chunked bake replaces the whole-tree mesh (2026-07-30)
+
+`treepo-render::mesh` is **deleted**, not deprecated. In its place:
+
+| Module | What it decides |
+|---|---|
+| `chunk.rs` | what a chunk *is* (identity, partitioning) and what keeps one in memory (residency) |
+| `bake.rs` | what a chunk *looks like* — a CPU scanline rasterizer, one chunk to one RGBA layer |
+| `lod.rs` | what density it is baked at — `Band`, a quantized texel density |
+
+`snapshot_sync` no longer spawns geometry. It cuts the committed skeleton into a `TreePlan` and
+stops; `treepo-render::chunk::stream` decides every frame which pieces of that plan are in
+memory. That is D4's split made literal — **the app owns what is committed, the renderer owns
+what is resident** — and it is what keeps a repository's size out of the frame loop.
+
+### D5.1 — chunk identity is subtree-anchored (recorded in the architecture)
+
+The decision the sprint turned on, now written into `architecture-treepo.md` under D5 as
+**D5.1** with its rejected alternatives. Short form: a chunk is a connected piece of the
+*hierarchy*, keyed by an anchor node, cut greedily bottom-up at a weight aimed to give
+`TARGET_CHUNKS` chunks whatever the repository's size. Three reasons, in the order they decided
+it — `AC-GROW-4`'s dirtying becomes a chunk-level fact; the intended 2.5-D focus behaviour makes
+layer membership a property a chunk *has*; and a chunk already names a node, so `F-INSP-*` has
+an answer before the ID buffer exists.
+
+The accepted cost, which is where the work actually went: **a chunk's world extent is not
+bounded by its segment count.** A three-segment trunk spans the whole tree, and texture size is
+`extent × density`. So a chunk too large for one texture splits into a uniform grid over *its
+own* extent — that limb only — and the grid index is `ChunkId::piece`. The grid is recomputed
+per band because density is what made it necessary; the anchor never is.
+
+### What the numbers said
+
+Measured over BRP against treepo's own repository (374 segments, 156 nodes):
+
+| | |
+|---|---|
+| Far band, whole tree framed | **8 chunks, 9 pieces** — and the one chunk that split spatially is the **trunk**, exactly as "extent is not bounded by segment count" predicts |
+| Near band, ≈18× in on the trunk | 35 pieces resident, 472 MB working set — a **debug** build, where Bevy's own baseline dominates and 35 pieces is ~35 MiB of it |
+| Band crossing, 9 notches out in one step (≈2.6 bands) | complete picture on the very next frame, no holes |
+| Zoom into empty space | **an empty screen, correctly** — mistaken for a bug until the camera transform put it at world `(5.86, 1.22)`, beside the trunk rather than on it |
+
+The far-band count is the claim D5 makes, on a real repository: **9 quads for a tree of 374
+segments**, and the number that grows with the repository is the chunk *contents*, not the
+chunk count.
+
+### The one that needed fixing: empty pieces
+
+A chunk's texture covers its **bounding box**, and a limb is a line through one — so at the
+near band most cells of a subdivided chunk hold nothing, and each is a megabyte of baked
+transparency. That is D5.1's accepted cost arriving *unbounded*, which is RISK-B through the
+side door. `chunk::occupancy` bounds it: walk the chunk's **segments** and mark the cells they
+touch, then skip any visible cell no segment reaches. Segments rather than cells because the
+grid is the term that gets large; the one-piece chunk — the common case — skips the map
+entirely.
+
+The unit test states the bound as arithmetic rather than as a hope: a 16×16 grid whose only
+geometry is one row of limb wants **16 pieces, not 256**. The two live readings (38 before, 35
+after) are *not* a before/after — they were taken at different camera positions, and a view
+centred on the trunk is one where most visible cells genuinely do hold segments.
+
+### Two things verified rather than assumed
+
+- **No texture seams at piece boundaries.** Faint horizontal tone steps down the trunk looked
+  like the classic chunked-texture seam. They are not. The camera put the piece boundaries at
+  screen rows 144, 508 and 873; sampling the PNG there gives `170,170,169` / `171,171,171` /
+  `169,169,169` — continuous. The real step is at row ~367 (`167,134,97` → `172,138,100`),
+  which is a **segment-to-segment join in the age gradient**: `F-MAT-4` runs base-to-tip within
+  each segment and adjacent endpoints need not agree. The vertex-coloured mesh did the same
+  thing; the bake did not introduce it.
+- **Crossing a band does not flash.** Evicting every layer on the frame the band changes, while
+  baking only `BAKES_PER_FRAME`, would blank the window for as many frames as a refill takes. A
+  superseded layer is the wrong *resolution*, not the wrong picture, so it is held until
+  nothing is still owed (`missing == baked`). Confirmed by screenshotting immediately after a
+  9-notch jump: whole tree, no holes.
+
+And one found by a test rather than by an eye: **the rasterizer's texel rule.** Flooring both
+ends of a scanline span — the obvious version — silently drops the last covered texel.
+Invisible on a thick limb; it deletes a thin one outright. Fixed by rounding about texel
+*centres* at `index + 0.5`, and `MIN_HALF_TEXELS` is deliberately a shade over one half so a
+limb whose centre line lands on a texel boundary does not depend on a float equality to be
+drawn at all.
+
+### What the bake still does not do
+
+- **No element-ID plane.** `N7`/`P1` want a parallel `u32` buffer and `xtask id-coverage` wants
+  to scan it. The rasterizer is already the right shape — `fill` visits each texel once and
+  knows whose segment it is — but a plane nothing samples and no gate reads is a green check
+  that cannot fail. It lands with `id_buffer.rs`, and it retires `pick.rs` when it does.
+- **No anti-aliasing.** Coverage is binary; `MIN_HALF_TEXELS` is what stands in for it.
+- **The bake is on the main thread**, budgeted at `BAKES_PER_FRAME`. Moving it to the async pool
+  removes the trade rather than tuning it, and it belongs with `grow_task` in Phase 7 where a
+  producer already publishes while Thrive is reading.
+- **`AC-NAV-2` and `NFR-3` are unmeasured at T3.** The mechanism exists and the budget binds;
+  what is missing is a T3 repository, a frame trace, and a number. `RESIDENT_TEXEL_BUDGET` is
+  64 Mi texels — 256 MiB of colour, 512 MiB once the ID plane joins it — and it is a *choice*
+  until that measurement replaces it.
+
 ## Next
 
-**Phase 4 is closed. Phase 5's shell exists; the phase does not.** The slice above is the
-vertical one — a repository reaches a window and a click reaches a path. What M1 exit needs
-next is the horizontal half, and it is roughly in this order:
+**Phase 4 is closed. Phase 5 has its shell and its bake; the phase does not close yet.**
 
-1. **The static bake (D5).** `bake.rs` + `chunk.rs` + `lod.rs`: chunked layer textures per LOD
-   band with residency streaming. This is the one that carries `AC-NAV-2`, `NFR-2` and RISK-B's
-   T3 memory measurement, and it replaces `treepo-render::mesh` rather than growing out of it.
-2. **The element-ID buffer (`id_buffer.rs`) and `xtask id-coverage`.** `P1`/`N7` are not
+1. **The element-ID buffer (`id_buffer.rs`) and `xtask id-coverage`.** `P1`/`N7` are not
    satisfiable without it, and `treepo-render::pick`'s geometric hit test is the thing it
    retires. Do these two together: the command exists to scan the buffer, and shipping either
-   alone leaves a gate that cannot fail.
+   alone leaves a gate that cannot fail. `bake::fill` is where the second plane attaches.
+2. **The T3 measurement** — `AC-NAV-2` (30 fps far→near) and `NFR-3` (under 4 GB). This is
+   RISK-B's mitigation actually being run, and it is now a measurement rather than a build:
+   pin a T3 repository, drive a far→near zoom over BRP, and read frame time and working set.
+   Expect it to tune `RESIDENT_TEXEL_BUDGET`, `TARGET_CHUNKS` and `BAKES_PER_FRAME`, which are
+   the three constants written down as choices.
 3. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
    Everything under "recorded rather than resolved" below has been waiting on this since
    Phase 4, and so has `AC-NAV-1`'s user test, which cannot be run against six placeholder

@@ -16,12 +16,17 @@
 //! determinism boundary is drawn at the data this crate *receives*. Every conversion is one
 //! direction — fixed-point in, `f32` out — and no value computed here flows back.
 //!
-//! # What this crate is not, yet
+//! # The static bake, and the one piece of it still missing
 //!
-//! Architecture D5's static bake — chunked layer textures per LOD band plus a parallel
-//! element-ID buffer — is what `bake.rs`, `chunk.rs`, `lod.rs` and `id_buffer.rs` will be, and
-//! it is what `NFR-2` and `AC-NAV-2` depend on. [`mesh`] and [`pick`] each carry a header
-//! saying what they stand in for and where they will disagree with the real thing.
+//! Architecture D5 is here: [`chunk`] cuts the tree into subtree-anchored pieces and keeps the
+//! visible ones resident within a texel budget, [`bake`] rasterizes a piece into a layer
+//! texture, and [`lod`] quantizes the density it is baked at. That is what makes `NFR-2` a
+//! property rather than a hope — frame cost follows the viewport, not the repository.
+//!
+//! What is not here is the parallel element-ID buffer. `N7`/`P1` want every coloured pixel to
+//! carry the element it belongs to, and until `id_buffer.rs` lands [`pick`] answers
+//! geometrically instead — a different computation from the one that drew the picture, with a
+//! header saying where the two can disagree.
 
 #![forbid(unsafe_code)]
 // The workspace turns on `rust_2018_idioms`, which includes `elided_lifetimes_in_paths`. Every
@@ -33,22 +38,27 @@
 // the full idiom lints.
 #![allow(elided_lifetimes_in_paths)]
 
+pub mod bake;
 pub mod camera;
-pub mod mesh;
+pub mod chunk;
+pub mod lod;
 pub mod pick;
 
 use bevy::prelude::*;
 
+pub use bake::family_color;
 pub use camera::{CameraSystems, FrameTarget, PointerDrag, TreeCamera};
-pub use mesh::{Extent, family_color, tree_mesh};
+pub use chunk::{Chunk, ChunkId, ChunkSet, Extent, ResidentChunk, TreePlan};
+pub use lod::Band;
 pub use pick::pick_node;
 
-/// Spawns the camera and runs the navigation gestures.
+/// Spawns the camera, runs the navigation gestures, and keeps the baked layers resident.
 ///
-/// Deliberately does *not* spawn anything for a tree. What is on screen follows from the
-/// committed snapshot, and reconciling ECS entities to a snapshot is `snapshot_sync`'s job in
+/// Deliberately does *not* decide what the tree is. What is on screen follows from the
+/// committed snapshot, and cutting one into a [`TreePlan`] is `snapshot_sync`'s job in
 /// `treepo-app` (architecture D4) — a render plugin that also owned the world's contents would
-/// be a second place the two could disagree about what is committed.
+/// be a second place the two could disagree about what is committed. What this plugin owns is
+/// the other half: given a plan, which pieces of it are in memory right now.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TreepoRenderPlugin;
 
@@ -56,10 +66,16 @@ impl Plugin for TreepoRenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FrameTarget>()
             .init_resource::<PointerDrag>()
+            .init_resource::<TreePlan>()
             .add_systems(Startup, camera::spawn)
             .add_systems(
                 Update,
                 (camera::frame, camera::pan, camera::zoom).in_set(CameraSystems),
-            );
+            )
+            // After the camera, so residency is decided from where the camera *is* rather
+            // than from where it was last frame. A zoom that outruns the bake shows the
+            // previous band stretched for a frame, which is a blur; deciding on stale input
+            // shows a hole, which is a missing limb.
+            .add_systems(Update, chunk::stream.after(CameraSystems));
     }
 }

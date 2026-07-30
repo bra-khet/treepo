@@ -41,10 +41,11 @@ fn main() -> ExitCode {
         // Listed rather than left to fall through as "unknown command", because the
         // campaign document tells a reader this exists before the phase that builds it.
         //
-        // It scans the element-ID buffer for a coloured pixel with no id (`P1`, `N7`), and
-        // `treepo-render` has no such buffer yet — Phase 5's first slice picks geometrically
-        // instead. A command that reported "zero unaccountable pixels" by scanning nothing
-        // would be a green gate that cannot fail, which is worse than an absent one.
+        // It scans the element-ID buffer for a coloured pixel with no id (`P1`, `N7`).
+        // `treepo-render::bake` now produces the colour plane; the parallel `u32` plane is the
+        // half still missing, and `treepo-render::pick` answers clicks geometrically until it
+        // lands. A command that reported "zero unaccountable pixels" by scanning nothing would
+        // be a green gate that cannot fail, which is worse than an absent one.
         Some(pending @ "id-coverage") => Err(format!(
             "`{pending}` lands with treepo-render's ID buffer (Phase 5, D5)"
         )),

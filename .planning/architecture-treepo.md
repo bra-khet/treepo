@@ -516,6 +516,46 @@ No database. Two persisted artifacts per repository, plus global settings. Layou
   render-pipeline investment before M1, and it does not solve picking any better than an ID
   buffer does.
 
+#### D5.1 — Chunk identity is subtree-anchored, not screen-space
+*(Adopted 2026-07-30, Phase 5. D5 says the tree is chunked; it does not say what a chunk is a
+chunk of, and that is the choice this records.)*
+- **Chosen**: A chunk is a **connected piece of the skeleton hierarchy**, identified by an
+  **anchor node** — the root of the subtree it covers, minus whatever descendant subtrees were
+  already cut into chunks of their own. A greedy bottom-up cut on subtree segment weight aims
+  at `TARGET_CHUNKS` chunks whatever the repository's size, so chunk count stays in one order
+  of magnitude from T0 to T3. Residency keys are `(anchor, piece, band)`; **identity is
+  `anchor`**.
+  Reasoning, in the order the reasons decided it:
+  1. **Dirtying.** `AC-GROW-4` wants a one-file change confined to the affected limb. With an
+     anchor that is a chunk-level fact — invalidate every key whose anchor lies on the changed
+     node's ancestor chain. With screen tiles it is a spatial query that gets the answer right
+     and cannot explain it.
+  2. **The intended Thrive UX.** Focus a major branch and that limb stays sharp and forward
+     while overlapping siblings recede — a 2.5-D layer feel. Layer membership is then a
+     property a chunk *has*. Screen tiles cut across siblings, so a tile would have to be in
+     two layers at once.
+  3. **`F-INSP-*`.** A chunk already names a node, so "what is this region of the picture" has
+     an answer before the ID buffer exists.
+- **Accepted costs**, stated rather than designed away:
+  - **Chunk sizes are uneven.** The greedy cut bounds them from below and only loosely from
+    above.
+  - **A chunk's world extent is not bounded by its segment count.** A three-segment trunk spans
+    the whole tree, and texture size is `world extent × texel density`. So a chunk whose
+    texture would exceed `MAX_PIECE_SIDE` is split into a uniform grid over **its own extent —
+    that limb only**, leaving every other chunk alone. That grid is the `piece` index, it is
+    recomputed per LOD band because density is what made it necessary, and the anchor never is.
+  - **`AC-NAV-2` / `NFR-2` / RISK-B are not satisfied by hierarchy purity.** Residency is
+    visible-first and capped at `RESIDENT_TEXEL_BUDGET`, sorted nearest-camera-first; over
+    budget the farthest pieces are dropped rather than the set refused.
+- **Rejected**: *Uniform screen-space tiles* — simpler to bake, simpler to stream, and it
+  makes every one of the three reasons above into a spatial query over a structure that has
+  forgotten the hierarchy.
+- **Rejected**: *Spatial sub-pieces as the primary key, anchor as metadata* — same data, and it
+  inverts which of the two survives a re-band: the piece grid changes with density and the
+  anchor does not, so keying on the piece would make "this limb changed" unexpressible at the
+  band where it was asked.
+- **Files**: `crates/treepo-render/src/{chunk,bake,lod}.rs`.
+
 ### D6 — Grow determinism boundary: the timeline is deterministic, pixels are not
 - **Chosen**: `treepo-grow` produces a `GrowTimeline` — every frame's element positions,
   material states, and particle seeds as data. *That* is what `AC-DET-1/2` and `AC-GROW-2` are

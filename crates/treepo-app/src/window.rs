@@ -17,7 +17,7 @@ use bevy::window::WindowResolution;
 
 /// The colour behind the tree.
 ///
-/// Dark, because every material family in `treepo-render::mesh` is a mid-tone and a pale
+/// Dark, because every material family in `treepo-render::bake` is a mid-tone and a pale
 /// background would leave the silhouette — the thing `AC-NAV-1` asks a participant to read —
 /// competing with the page it is drawn on.
 const BACKGROUND: Color = Color::srgb(0.06, 0.06, 0.07);
