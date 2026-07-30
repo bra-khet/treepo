@@ -284,6 +284,14 @@ impl ChunkSet {
 /// number of quads". Sixty-four keeps both ends in the same order of magnitude, and it is also
 /// roughly the number of top-level limbs a reader can hold as *places* — which is the unit the
 /// 2.5-D focus behaviour will operate on.
+///
+/// The second failure mode above turns out not to exist, and the measurement is worth keeping
+/// because the reasoning was wrong in an instructive direction. The T3 pin's 52,527 paths grow
+/// a skeleton of **521 nodes and 1,042 segments** — `P6` aggregation and `F-SKEL-7` containers
+/// collapse the tree by two orders of magnitude before it is ever chunked. So at T3 this
+/// constant does not bind at all: `target_weight` falls to [`MIN_CHUNK_SEGMENTS`] and the cut
+/// yields ~43 chunks. Nothing here needs changing, but "a T3 tree has T3-many segments" is an
+/// assumption that should not be made again elsewhere.
 pub const TARGET_CHUNKS: usize = 64;
 
 /// The fewest segments worth cutting a chunk at.
@@ -321,10 +329,21 @@ pub const MAX_PIECE_SIDE: u32 = 512;
 
 /// How many texels may be resident at once, across every chunk and band.
 ///
-/// 64 Mi texels is 256 MiB of RGBA8 colour, and 512 MiB once the element-ID plane joins it —
-/// an eighth of `NFR-3`'s 4 GB, leaving the manifest, the skeleton, and Bevy's own allocations
-/// the rest. RISK-B's mitigation names this as tunable via `F-SET-4`; until settings exist it
-/// is a constant, and the number it should be is a measurement Phase 5 still owes.
+/// 64 Mi texels is 256 MiB of RGBA8 colour plus 256 MiB of element-ID plane — 512 MiB, an
+/// eighth of `NFR-3`'s 4 GB, leaving the manifest, the skeleton, and Bevy's own allocations the
+/// rest. RISK-B's mitigation names this as tunable via `F-SET-4`; until settings exist it is a
+/// constant.
+///
+/// **This bounds residency, not selection.** The distinction was not free: for as long as
+/// [`stream`] charged only the newly selected pieces, a fast zoom out across eleven bands held
+/// every superseded layer on top of a full budget and reached 3.5x it on the T3 pin. Both
+/// halves — the selection in [`within_budget`] and the hold-over in [`stream`] — draw on this
+/// same number now, so the ceiling is the budget plus one frame of bakes.
+///
+/// The measurement that set it (T3 pin `rust` 1.83.0, release, 2026-07-30): steady residency
+/// peaks at **32 Mi texels** at the sharpest band and 67 Mi in the middle bands, where the
+/// budget binds. It is therefore *tight but not wrong* — halving it would put holes in the
+/// mid-band picture, and doubling it would buy nothing the camera can see.
 pub const RESIDENT_TEXEL_BUDGET: u64 = 64 * 1024 * 1024;
 
 /// How far beyond the viewport a chunk is kept resident, as a fraction of the viewport.
@@ -337,10 +356,17 @@ pub const RESIDENCY_MARGIN: f32 = 0.5;
 /// How many pieces may be baked in one frame.
 ///
 /// Baking is CPU rasterization on the main thread, so this is the direct lever on the hitch a
-/// zoom costs. Four keeps a frame's bake under a millisecond at [`MAX_PIECE_SIDE`] while still
-/// filling a fresh viewport in a handful of frames. Moving the bake onto the async pool is
-/// what removes the trade rather than tuning it, and it belongs with `grow_task` in Phase 7,
-/// where a producer already publishes while Thrive is reading.
+/// zoom costs. Four fills a fresh viewport in a handful of frames while keeping the bake well
+/// inside a frame. Moving the bake onto the async pool is what removes the trade rather than
+/// tuning it, and it belongs with `grow_task` in Phase 7, where a producer already publishes
+/// while Thrive is reading.
+///
+/// Measured on the T3 pin (release, 2026-07-30): a frame that bakes costs about **6.5 ms more
+/// than a frame that does not** — roughly 1.6 ms per piece, not the "under a millisecond" this
+/// comment claimed before anyone timed it. Four is still right, because the worst frame in a
+/// full far-to-near traversal was 14.5 ms against a 33.3 ms budget; but the headroom is 2x, not
+/// the 30x the old figure implied, and a materials pass that makes [`bake::rasterize`] do more
+/// per texel spends it.
 pub const BAKES_PER_FRAME: usize = 4;
 
 /// The committed tree, cut into chunks and ready to bake from.
@@ -418,7 +444,7 @@ pub fn stream(
     mut images: ResMut<Assets<Image>>,
     window: Option<Single<&Window>>,
     camera: Option<Single<(&Transform, &Projection, &crate::camera::TreeCamera)>>,
-    resident: Query<(Entity, &ResidentChunk)>,
+    resident: Query<(Entity, &ResidentChunk, &IdPlane)>,
 ) {
     let (Some(window), Some(camera), Some(snapshot)) = (window, camera, plan.snapshot.as_ref())
     else {
@@ -465,19 +491,46 @@ pub fn stream(
     // Three fates, not two. Despawning drops the last strong handle to a piece's image and Bevy
     // frees an asset with no strong handles left — that drop *is* the eviction, and RISK-B is
     // answered by releasing what is not drawn rather than by choosing what is. What the third
-    // fate buys is stated at `superseded`'s own despawn below.
+    // fate buys is stated at the `keep` despawn below, and what it costs is bounded by the
+    // budget charge between the two.
     let mut present: Vec<(ChunkId, Band)> = Vec::new();
-    let mut superseded: Vec<Entity> = Vec::new();
-    for (entity, chunk) in &resident {
+    let mut superseded: Vec<(Entity, i32, u64)> = Vec::new();
+    let mut held: u64 = 0;
+    for (entity, chunk, plane) in &resident {
+        let cost = u64::from(plane.size().x) * u64::from(plane.size().y);
         if chunk.generation != plan.generation() || !chunk.region.intersects(&resident_rect) {
             commands.entity(entity).despawn();
         } else if chunk.band == band && keys.binary_search(&(chunk.id, band)).is_ok() {
             present.push((chunk.id, band));
+            held += cost;
         } else {
-            superseded.push(entity);
+            let distance = (i32::from(chunk.band.index()) - i32::from(band.index())).abs();
+            superseded.push((entity, distance, cost));
         }
     }
     present.sort_unstable();
+
+    // BUG FIX: the texel budget bounded the selection, not the residency
+    // Fix: `within_budget` caps `wanted`, but superseded pieces are held *in addition* to it and
+    // nothing counted them. A zoom that crosses several bands in a second supersedes a set at
+    // each one and holds them all, so residency was a multiple of the budget rather than the
+    // budget — measured at 3.5x on the T3 pin (238 M texels against a 67 M budget, 1.9 GB of
+    // texel data). Held-over pieces are now charged to the same budget, nearest band first.
+    //
+    // The eviction order falls out rather than being a second rule. Early in a band change
+    // `present` is nearly empty, so the budget has room for the whole previous band and the
+    // screen stays filled; as bakes land, `present` grows and the softest layers are dropped
+    // to pay for them. Residency is bounded by the budget plus one frame of bakes, which is at
+    // most `BAKES_PER_FRAME * MAX_PIECE_SIDE^2` — 1 Mi texels, 8 MiB.
+    let affordable = affordable(&mut superseded, held);
+    let mut keep: Vec<Entity> = Vec::with_capacity(affordable);
+    for (index, (entity, _, _)) in superseded.into_iter().enumerate() {
+        if index < affordable {
+            keep.push(entity);
+        } else {
+            commands.entity(entity).despawn();
+        }
+    }
 
     let (mut missing, mut baked) = (0, 0);
     for piece in &wanted {
@@ -533,8 +586,11 @@ pub fn stream(
     // dropped on the frame the band changes, it costs a blank window for as many frames as
     // `BAKES_PER_FRAME` needs to refill one — which is the difference between a zoom that feels
     // continuous and one that flickers. `missing == baked` is "nothing is still owed".
+    //
+    // `keep` rather than every superseded piece: the ones the budget could not afford are
+    // already gone, and a piece the budget refused is one the picture is better off without.
     if missing == baked {
-        for entity in superseded {
+        for entity in keep {
             commands.entity(entity).despawn();
         }
     }
@@ -632,6 +688,29 @@ fn select(
     }
     wanted.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     wanted
+}
+
+/// Orders held-over pieces by how wrong their resolution is, and returns how many of them
+/// [`RESIDENT_TEXEL_BUDGET`] can still afford once `already_held` is spent.
+///
+/// The same shape as [`within_budget`] one line down, and deliberately: both are "sort by how
+/// much the viewer wants it, then truncate where the budget runs out". The two together are
+/// what make the budget a bound on residency rather than on selection.
+///
+/// Generic over the handle so the arithmetic can be tested without a `World`. It is the half of
+/// the rule that was wrong, and a rule that was wrong once should be a rule something checks.
+fn affordable<T>(superseded: &mut [(T, i32, u64)], already_held: u64) -> usize {
+    superseded.sort_by_key(|&(_, distance, _)| distance);
+    let mut held = already_held;
+    let mut kept = 0;
+    for &(_, _, cost) in superseded.iter() {
+        if held + cost > RESIDENT_TEXEL_BUDGET {
+            break;
+        }
+        held += cost;
+        kept += 1;
+    }
+    kept
 }
 
 /// Truncates a nearest-first selection at [`RESIDENT_TEXEL_BUDGET`].
@@ -1005,6 +1084,48 @@ mod tests {
             .sum();
         assert!(kept.len() < over, "the budget did not bind");
         assert!(texels <= RESIDENT_TEXEL_BUDGET);
+    }
+
+    /// The other half of RISK-B, and the half that was missing. Selection stopping at the
+    /// budget is worth nothing if the layers held over during a band change are free.
+    ///
+    /// Measured on the T3 pin before this bound existed: a zoom out across eleven bands reached
+    /// 238 M resident texels against a 67 M budget, because each band supersedes a set and every
+    /// one of them was held. The numbers here are that gesture in miniature.
+    #[test]
+    fn held_over_layers_are_charged_to_the_budget_too() {
+        let per_piece = u64::from(MAX_PIECE_SIDE) * u64::from(MAX_PIECE_SIDE);
+        let per_band = (RESIDENT_TEXEL_BUDGET / per_piece) as usize;
+
+        // Eleven bands' worth of superseded pieces, each band a full budget on its own.
+        let mut superseded: Vec<(u32, i32, u64)> = (0..11)
+            .flat_map(|band| (0..per_band).map(move |piece| (piece as u32, band, per_piece)))
+            .collect();
+
+        let kept = affordable(&mut superseded, 0);
+        let texels: u64 = superseded[..kept].iter().map(|&(_, _, cost)| cost).sum();
+
+        assert!(texels <= RESIDENT_TEXEL_BUDGET, "{texels} texels held");
+        assert!(kept < superseded.len(), "the budget did not bind");
+        // Nearest band first: what survives is the least wrong resolution, not an arbitrary set.
+        assert!(superseded[..kept].iter().all(|&(_, band, _)| band == 0));
+    }
+
+    /// A band change with the new band already paid for holds nothing, because there is nothing
+    /// left to hold it with. This is the end of a zoom, where the sharp layer is complete and
+    /// the soft one underneath it is only costing memory.
+    #[test]
+    fn a_full_budget_holds_no_previous_layer() {
+        let mut superseded = vec![(0_u32, 1, 1_024_u64)];
+        assert_eq!(affordable(&mut superseded, RESIDENT_TEXEL_BUDGET), 0);
+    }
+
+    /// ...and the start of the same zoom, where nothing of the new band exists yet, keeps the
+    /// whole previous one. Between these two the screen never blanks and never overruns.
+    #[test]
+    fn an_empty_budget_holds_the_whole_previous_layer() {
+        let mut superseded: Vec<(u32, i32, u64)> = (0..8).map(|i| (i, 1, 1_024)).collect();
+        assert_eq!(affordable(&mut superseded, 0), 8);
     }
 
     #[test]

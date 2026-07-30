@@ -785,7 +785,8 @@ chunk of, and that is the choice this records.)*
 - **End Conditions**:
   - [ ] A T2 repository is legible at far, medium and near zoom; a known top-level directory is
         findable by eye within 30 s (`AC-NAV-1`) — recorded user test, ≥3 participants
-  - [ ] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`)
+  - [~] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`) — measured on the dev
+        machine (worst frame 14.5 ms over a full traversal); minimum spec still unmeasured
   - [ ] `cargo xtask id-coverage` reports zero colored pixels without an element ID
         (`P1`, `N7`, `AC-INSP-1`)
   - [ ] Clicking any element resolves to a real path or an explicit aggregate (`AC-INSP-1`)
@@ -975,10 +976,17 @@ the store out of the repository. Implemented per D9; gated in Phase 2.
 3. **RISK-2 (PRD) — cross-platform float determinism.** **Mitigation:** D2 confines trig to
    `treepo-det` tables; Phase 0 gates on tri-platform bit-identical trig before any generative
    code exists.
-4. **RISK-B — Static baking memory at T3.** *(new)* Baked layer textures plus ID buffers for an
-   80k-path tree can exceed `NFR-3`'s 4 GB if held resident. **Mitigation:** chunk residency
-   with LOD-appropriate resolution and streaming; Phase 5 end conditions measure T3 memory,
-   and the chunk budget is tunable via `F-SET-4`.
+4. **RISK-B — Static baking memory at T3.** ~~*(new)*~~ **Measured and closed, 2026-07-30.**
+   Baked layer textures plus ID buffers for an 80k-path tree can exceed `NFR-3`'s 4 GB if held
+   resident. **Mitigation:** chunk residency with LOD-appropriate resolution and streaming; the
+   chunk budget is tunable via `F-SET-4`.
+   **Outcome on the T3 pin (`rust` 1.83.0, 52,527 paths, release):** peak working set **676 MB**
+   across a full far→near traversal, 17% of the 4 GB. The risk was real but not where it was
+   written: `P6` aggregation collapses the tree to 521 nodes / 1,042 segments, so *baked layers
+   for 80k paths* never existed. What did exceed the budget was the hold-over set kept across a
+   band change, which `RESIDENT_TEXEL_BUDGET` bounded on selection but not on residency —
+   3.5× overrun, since fixed. The residual T3 memory risk is **extraction**, not baking:
+   the traversal peaks at 3.1 GB working set / 4.05 GB private before a texel is drawn.
 5. **RISK-3 (PRD) — the first Grow may not carry `R1`'s weight.** **Mitigation:** D11 stages
    rather than forces play; Phase 7 delivers Watch/Skip + single-stage cinema for M2 viewing;
    Phase 11 multi-checkpoint stack is scheduled before M3 and remains the designated cut line

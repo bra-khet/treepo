@@ -139,10 +139,17 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   15702. Do **not** enable `brp` by default. Sketch in architecture D10.
 - **End Conditions**:
   - [ ] T2 legible at far, medium, near zoom; known top-level directory findable by eye within 30 s — **recorded user test, ≥3 participants** (`AC-NAV-1`)
-  - [ ] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`)
+  - [~] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`) — **measured on the dev
+        machine, not on minimum spec.** Full 12-band traversal of the T3 pin: worst frame
+        14.5 ms, zero frames over 33.3 ms. Across 16 continuous 44-notch gestures, one frame
+        exceeded the budget (33.6 ms, first traversal after launch). Mean 6.94 ms, vsync-bound.
+        Still open because the machine is an i7-12650H / RTX 4050, well above §7's minimum spec
   - [ ] `cargo xtask id-coverage` reports zero colored pixels without an element ID (`P1`, `N7`, `AC-INSP-1`)
   - [ ] Clicking any element resolves to a real path or an explicit aggregate (`AC-INSP-1`)
-  - [ ] T3 resident memory under 4 GB (`NFR-3`)
+  - [x] T3 resident memory under 4 GB (`NFR-3`) — peak working set **676 MB** over a full
+        far→near traversal, steady 380–507 MB. Caveat recorded rather than resolved: the
+        *extraction* pass peaks at 3.1 GB working set / 4.05 GB private, which is the T3 memory
+        risk that survives, and it is Phase 1 code rather than Phase 5's
   - [ ] `readonly-audit` green across association → extraction → session, wired into CI (`AC-MAN-2`)
   - [ ] Cold launch on a cached T2 repository under 5 s (`NFR-4`)
   - [ ] **D10**: `--features brp` run listens on localhost:15702; default build has no BRP;

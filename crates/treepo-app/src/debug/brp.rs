@@ -36,11 +36,18 @@
 use bevy::prelude::*;
 use bevy_brp_extras::BrpExtrasPlugin;
 
-/// Registers BRP on the default port.
+/// Registers BRP on the default port, and the one resource treepo puts behind it.
 ///
 /// `BrpExtrasPlugin` adds Bevy's `RemotePlugin` and the HTTP transport itself if they are not
 /// already present, and registers the extras an agent needs beyond raw entity access —
 /// screenshot, input injection, graceful shutdown, and type discovery.
+///
+/// [`frame_log`](super::frame_log) is the exception to the paragraph above about remote
+/// surfaces, and it is the shape of exception that argument allows: a counter of frame times
+/// and resident texels, which reaches neither the store nor the repository, and which exists
+/// because `AC-NAV-2` and `NFR-3` are claims that have to be measured from inside a running
+/// frame loop. It is still not a remote *method* — BRP's own resource access reads it.
 pub(crate) fn register(app: &mut App) {
     app.add_plugins(BrpExtrasPlugin::default());
+    super::frame_log::register(app);
 }

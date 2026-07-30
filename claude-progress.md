@@ -6,8 +6,9 @@
 **Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
 (`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy shell
-(S19) and D5's chunked static bake (S20) are in; the element-ID buffer, the T3 measurement and
-the consumer UI are not.**
+(S19), D5's chunked static bake (S20), the element-ID plane (S21) and the T3 measurement (S22)
+are in. `NFR-3` is met and RISK-B is closed; `AC-NAV-2` is green on the dev machine and
+unmeasured at minimum spec. The consumer UI and materials-with-an-appearance are not started.**
 
 ---
 
@@ -27,6 +28,8 @@ Phase 0 — workspace and determinism foundation — is built and green.
 | `AC-DET-2` | determinism.yml compare job | **green — confirmed 2026-07-27** |
 | `N7`/`P1` | `cargo xtask id-coverage` | green — 17 fixtures, 90.7 M texels, 0 unaccountable (S21) |
 | `N7` detector | `cargo xtask id-coverage --self-test` | green — 3 of 3 mutations caught |
+| `NFR-3` | T3 pin, release, far→near traversal | green — 676 MB peak working set, 17% of 4 GB (S22) |
+| `AC-NAV-2` | T3 pin, release, far→near traversal | green **on the dev machine** — worst frame 14.5 ms; minimum spec unmeasured (S22) |
 
 **Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
 
@@ -2678,6 +2681,7 @@ A window that opens a repository, runs the existing pipeline off-thread, and dra
 | `crates/treepo-app/src/{main,window,phase,load,snapshot_sync}.rs` | **done** |
 | `crates/treepo-app/src/{ui/mod,interact/{mod,pick}}.rs` | **done** — 6 tests |
 | `crates/treepo-app/src/debug/{mod,brp}.rs` (D10) | **done** — feature-gated, default off |
+| `crates/treepo-app/src/debug/frame_log.rs` | **done** in S22 — same feature gate; not in the campaign's file list, added because `AC-NAV-2` needs per-frame data and a moving average is not it |
 | `crates/treepo-model/src/snapshot.rs` (`WorldSnapshot`, D4) | **done** — 2 tests |
 | `bake.rs`, `chunk.rs`, `lod.rs` | **not started at S19** — landed in S20 |
 | `id_buffer.rs`, `xtask id-coverage` | **not started at S19** — landed in S21 |
@@ -3012,17 +3016,81 @@ follows an edit, which is the tightest loop in the project and the one the "loca
 push" habit depends on. Recorded in `xtask/Cargo.toml` beside the way out, so the trade can be
 re-made on evidence rather than re-argued.
 
+### S22 — the T3 measurement, and a budget that was not one (2026-07-30)
+
+`AC-NAV-2` and `NFR-3` measured against the T3 pin (`rust` 1.83.0 @ `90b35a62`), release
+build, `--features brp`. **The measurement found a bug, and the bug was worth more than the
+tuning it was supposed to produce: none of the constants needed to move.**
+
+**Machine** — i7-12650H (10c/16t), 31.7 GB, RTX 4050 Laptop (6 GB), 1280×800 logical, vsync
+at 144 Hz. **This is well above §7's minimum spec**, so a pass here is not a pass at minimum
+spec; a failure here would have been.
+
+**Subject** — 49,964 tracked files, 268,290 commits: T3 on both axes, pessimistic on commits.
+Cold open (full extraction) **296 s** against §7's 600 s T3 target. Cached open **4 s**.
+
+**The first finding is the subject, not the code.** 52,527 paths grow a skeleton of **521
+nodes / 1,042 segments / 236 containers** — `P6` aggregation and `F-SKEL-7` collapse the tree
+by two orders of magnitude before anything is chunked. RISK-B was written about "baked layer
+textures for an 80k-path tree", and that tree does not exist. `TARGET_CHUNKS = 64` does not
+even bind at T3: `target_weight` falls through to `MIN_CHUNK_SEGMENTS` and the cut yields ~43.
+
+**The bug.** `RESIDENT_TEXEL_BUDGET` bounded *selection* (`within_budget` truncating `wanted`)
+but not *residency*: pieces superseded at a band change are held until `missing == baked`, and
+nothing charged them. Zooming **out** is the pathological direction — each coarser band grows
+`resident_rect`, so the previous band's pieces keep intersecting it and none are evicted by
+the view test. Eleven bands in one second, eleven layers held:
+
+| | before | after |
+|---|---|---|
+| peak resident texels, zoom out | 218–238 M | **68.15 M** (budget 67.11 M + one frame of bakes) |
+| peak pieces, zoom out | 931–1011 | **338–346** |
+| worst frame, zoom out | 53.0–59.7 ms | **18.7–33.6 ms** |
+| frames over 33.3 ms in 8 gestures | 4 | **1** |
+| peak working set over a traversal | 1515 MB | **676 MB** |
+| growth per zoom cycle | ~20 MB | ~2 MB |
+
+The overrun and the hitch were one defect: `worst_quiet_ms == worst_ms` on every zoom-out said
+the worst frame was one where the piece count *fell* — releasing ~1,000 sprites and their GPU
+textures at once. Bounding residency removed both.
+
+The fix charges held-over layers to the same budget, nearest band first, and the eviction
+order falls out instead of being a second rule: early in a band change `present` is nearly
+empty so the whole previous layer fits and the screen stays filled; as bakes land, `present`
+grows and the softest layers are dropped to pay for them. `affordable()` is split out from
+`stream` so the arithmetic has tests — three of them, including the eleven-band gesture in
+miniature.
+
+**`AC-NAV-2` — measured, not closed.** Full 12-band stepped traversal: **worst frame 14.5 ms,
+zero over budget**, mean 6.94 ms. Across 16 continuous 44-notch gestures: one frame over, at
+33.6 ms, on the first traversal after launch. Open only because this machine is not minimum
+spec. A pathological *single* 44-notch event is the cheapest gesture of all (7.9 ms) — it
+clamps straight to the sharpest band and never bakes the intermediates.
+
+**`NFR-3` — met, with the risk relocated.** Peak working set **676 MB**, 17% of 4 GB. The T3
+memory risk that survives is **extraction**, which peaks at 3.1 GB working set / 4.05 GB
+private before a texel is drawn. That is Phase 1 code, and it is now the number to watch.
+
+**Constants: none changed.** Two doc comments did, because they made claims the measurement
+contradicts — `BAKES_PER_FRAME`'s "under a millisecond" (measured: ~1.6 ms per 512² piece,
+~6.5 ms for a baking frame) and `TARGET_CHUNKS`' assumption that a T3 tree has T3-many
+segments. `RESIDENT_TEXEL_BUDGET` stays at 64 Mi: it binds at bands −3…−6 and nowhere else,
+so halving it puts holes in the mid-band picture and doubling it buys nothing visible.
+
+**Method note.** `nvidia-smi` inside a measured window is worth several dropped frames — an
+early stepped run showed 5 over-budget frames that vanished when GPU sampling moved out of
+the window. Memory is read before the log is cleared, for the same reason.
+
 ## Next
 
-**Phase 4 is closed. Phase 5 has its shell, its bake and its ID plane.** What is left before
-M1 exit is two measurements and two surfaces:
+**Phase 4 is closed. Phase 5 has its shell, its bake, its ID plane and its T3 numbers.** What
+is left before M1 exit:
 
-1. **The T3 measurement** — `AC-NAV-2` (30 fps far→near) and `NFR-3` (under 4 GB). This is
-   RISK-B's mitigation actually being run, and it is now a measurement rather than a build:
-   pin a T3 repository, drive a far→near zoom over BRP, and read frame time and working set.
-   Expect it to tune `RESIDENT_TEXEL_BUDGET`, `TARGET_CHUNKS` and `BAKES_PER_FRAME`, which are
-   the three constants written down as choices. The ID plane doubles the per-texel cost, so
-   this is now the measurement that decides whether the budget is the right number.
+1. **`AC-NAV-2` at minimum spec.** The gesture is measured and green on the dev machine with
+   2× headroom; what is unmeasured is §7's minimum spec. The cheapest honest version is a
+   throttled run rather than another machine — and note that headroom is 2×, not the 30× the
+   old `BAKES_PER_FRAME` comment implied, so a materials pass that makes `rasterize` do more
+   per texel spends it.
 2. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
    Everything under "recorded rather than resolved" below has been waiting on this since
    Phase 4, and so has `AC-NAV-1`'s user test, which cannot be run against six placeholder
