@@ -3072,10 +3072,17 @@ memory risk that survives is **extraction**, which peaks at 3.1 GB working set /
 private before a texel is drawn. That is Phase 1 code, and it is now the number to watch.
 
 **Constants: none changed.** Two doc comments did, because they made claims the measurement
-contradicts — `BAKES_PER_FRAME`'s "under a millisecond" (measured: ~1.6 ms per 512² piece,
-~6.5 ms for a baking frame) and `TARGET_CHUNKS`' assumption that a T3 tree has T3-many
-segments. `RESIDENT_TEXEL_BUDGET` stays at 64 Mi: it binds at bands −3…−6 and nowhere else,
-so halving it puts holes in the mid-band picture and doubling it buys nothing visible.
+contradicts. `BAKES_PER_FRAME` said a bake costs "under a millisecond"; the gap between the
+worst baking frame and the worst quiet one is **1.0–20.2 ms over eleven samples**, so the
+headroom on this constant is a factor of two rather than thirty, and raising it is not the
+free win the comment implied. `TARGET_CHUNKS` assumed a T3 tree has T3-many segments.
+`RESIDENT_TEXEL_BUDGET` stays at 64 Mi: it binds at bands −3…−6 and nowhere else, so halving
+it puts holes in the mid-band picture and doubling it buys nothing visible.
+
+The instrument's floor is worth stating: the frame loop is vsync-bound at 6.94 ms, so those
+gaps are one to three intervals and no finer reading is available from it. The frame log also
+cannot say how many of the four pieces a slow frame actually baked, so per-piece cost is an
+upper bound, not a measurement.
 
 **Method note.** `nvidia-smi` inside a measured window is worth several dropped frames — an
 early stepped run showed 5 over-budget frames that vanished when GPU sampling moved out of

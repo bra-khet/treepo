@@ -361,12 +361,17 @@ pub const RESIDENCY_MARGIN: f32 = 0.5;
 /// tuning it, and it belongs with `grow_task` in Phase 7, where a producer already publishes
 /// while Thrive is reading.
 ///
-/// Measured on the T3 pin (release, 2026-07-30): a frame that bakes costs about **6.5 ms more
-/// than a frame that does not** — roughly 1.6 ms per piece, not the "under a millisecond" this
-/// comment claimed before anyone timed it. Four is still right, because the worst frame in a
-/// full far-to-near traversal was 14.5 ms against a 33.3 ms budget; but the headroom is 2x, not
-/// the 30x the old figure implied, and a materials pass that makes [`bake::rasterize`] do more
-/// per texel spends it.
+/// Measured on the T3 pin (release, 2026-07-30), as the gap between the worst frame that baked
+/// and the worst frame that did not: **1.0 to 20.2 ms over eleven samples**, against the "under
+/// a millisecond" this comment claimed before anyone timed it. The instrument cannot do better
+/// — the frame loop is vsync-bound at 6.94 ms, so those gaps are one to three intervals — and
+/// it cannot say how many of the four a slow frame actually baked, so the honest per-piece
+/// figure is only "up to about 5 ms at [`MAX_PIECE_SIDE`]".
+///
+/// Four is still right: the worst frame in a full far-to-near traversal was 14.5 ms against a
+/// 33.3 ms budget. But the headroom is a factor of two, not the thirty the old figure implied,
+/// and a materials pass that makes [`bake::rasterize`] do more per texel spends it. Raising
+/// this constant is not the free win the old comment made it look like.
 pub const BAKES_PER_FRAME: usize = 4;
 
 /// The committed tree, cut into chunks and ready to bake from.
