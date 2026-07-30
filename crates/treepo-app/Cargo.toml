@@ -1,0 +1,48 @@
+[package]
+name = "treepo-app"
+description = "The treepo desktop application: the Bevy shell, the phase boundary, and the product UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# `brp` is agent tooling and is **never** in `default` (architecture D10, RISK-D). It enables
+# Bevy's Remote Protocol over localhost so a coding agent can inspect and drive a running app.
+#
+# Three things depend on it staying out of the default graph, and each is enforced somewhere
+# other than here:
+#   * `cargo deny check` runs on default features and bans `bevy_remote` and
+#     `bevy_brp_extras` outright, so promoting this to a default fails that check (deny.toml).
+#   * CI never passes `--features brp`.
+#   * Release packaging asserts the shipped binary has no listener (Phase 12).
+#
+# Enabling it puts an HTTP listener on 127.0.0.1:15702 in the process. That is acceptable for
+# a developer machine and is not acceptable in a consumer product, which is the whole of why
+# it is a feature and not a runtime flag.
+[features]
+default = []
+brp = ["dep:bevy_brp_extras", "bevy/bevy_remote"]
+
+[dependencies]
+bevy = { workspace = true }
+treepo-render = { workspace = true }
+
+# The generative pipeline, unchanged and unaware of any of this. The app calls
+# extract → grow → materialize → enrich on a background thread and publishes the result;
+# none of these crates can name `bevy` (N6, architecture D1).
+treepo-model = { workspace = true }
+treepo-vcs = { workspace = true }
+treepo-store = { workspace = true }
+treepo-gen = { workspace = true }
+
+# D10, dev-only. Version-locked to the Bevy line: `bevy_brp_*` 0.22.x tracks Bevy 0.19.
+bevy_brp_extras = { version = "0.22", optional = true }
+
+# For building skeletons in unit tests — `Angle` and `Seed` are what `Skeleton::push_node`
+# takes. Not a runtime dependency: the app receives geometry, it never seeds any.
+[dev-dependencies]
+treepo-det = { workspace = true }
+
+[lints]
+workspace = true

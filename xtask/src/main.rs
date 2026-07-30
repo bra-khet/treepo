@@ -40,7 +40,14 @@ fn main() -> ExitCode {
 
         // Listed rather than left to fall through as "unknown command", because the
         // campaign document tells a reader this exists before the phase that builds it.
-        Some(pending @ "id-coverage") => Err(format!("`{pending}` lands with Phase 5")),
+        //
+        // It scans the element-ID buffer for a coloured pixel with no id (`P1`, `N7`), and
+        // `treepo-render` has no such buffer yet — Phase 5's first slice picks geometrically
+        // instead. A command that reported "zero unaccountable pixels" by scanning nothing
+        // would be a green gate that cannot fail, which is worse than an absent one.
+        Some(pending @ "id-coverage") => Err(format!(
+            "`{pending}` lands with treepo-render's ID buffer (Phase 5, D5)"
+        )),
 
         Some("help" | "--help" | "-h") | None => {
             print_usage();

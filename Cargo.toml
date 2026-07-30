@@ -7,6 +7,8 @@ members = [
   "crates/treepo-store",
   "crates/treepo-gen",
   "crates/treepo-id",
+  "crates/treepo-render",
+  "crates/treepo-app",
   "xtask",
   "tools/corpus",
   "tools/m0-silhouette",
@@ -30,6 +32,17 @@ treepo-vcs = { path = "crates/treepo-vcs" }
 treepo-store = { path = "crates/treepo-store" }
 treepo-gen = { path = "crates/treepo-gen" }
 treepo-id = { path = "crates/treepo-id" }
+treepo-render = { path = "crates/treepo-render" }
+
+# Bevy is pinned to a minor line, which is RISK-C's mitigation rather than habit: Bevy's
+# release cadence breaks APIs, and the phase boundary (D1) confines it to the two crates
+# below so that an upgrade is bounded work. `0.19` is a caret requirement — 0.19.x moves
+# freely, 0.20 needs a decision.
+#
+# `default-features = false` drops audio and the whole 3-D stack (gltf, pbr, mikktspace,
+# tonemapping LUTs). treepo draws a still 2-D tree; shipping a gltf loader and an audio
+# device in it would be dependency surface nothing in the product can reach.
+bevy = { version = "0.19", default-features = false, features = ["2d", "ui"] }
 
 # Lint policy applies to every member via `[lints] workspace = true`.
 #

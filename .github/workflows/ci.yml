@@ -45,6 +45,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Bevy links against the system's input and windowing libraries, and the GitHub image
+      # does not carry their headers. `libudev` is gamepad enumeration, the two `l*x*` ones
+      # are Wayland. No `libasound`: the workspace asks bevy for `2d` and `ui` only, so there
+      # is no audio backend to link (crates/treepo-app/Cargo.toml).
+      - name: Install Linux windowing headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libudev-dev libwayland-dev libxkbcommon-dev
+
       - name: Build
         run: cargo build --workspace --all-targets
 
@@ -66,6 +76,12 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
+
+      # As in the test job — clippy compiles the workspace, and that includes bevy.
+      - name: Install Linux windowing headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libudev-dev libwayland-dev libxkbcommon-dev
 
       - name: Formatting
         run: cargo fmt --all -- --check

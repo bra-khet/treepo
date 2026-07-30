@@ -3,9 +3,11 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-30 · **Phases 0–3 closed (M0 EXIT); Phase 4 complete —
+**Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
-(`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin (bevy v0.17.1)**
+(`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy
+shell's first vertical slice is in (S19); the static bake, the ID buffer and the consumer UI
+are not.**
 
 ---
 
@@ -2661,11 +2663,197 @@ above. Re-run after materials changes: `cargo xtask ac-mat-2` (optional `--pin g
 
 ---
 
+## Phase 5 — Bevy shell, static baking & navigation (in progress)
+
+### S19 — the shell, first vertical slice (2026-07-30)
+
+A window that opens a repository, runs the existing pipeline off-thread, and draws the result.
+`bevy` enters the workspace here and reaches exactly two crates.
+
+| Deliverable | Status |
+|---|---|
+| `crates/treepo-render/{lib,camera,mesh,pick}.rs` | **done** — 15 tests |
+| `crates/treepo-app/src/{main,window,phase,load,snapshot_sync}.rs` | **done** |
+| `crates/treepo-app/src/{ui/mod,interact/{mod,pick}}.rs` | **done** — 6 tests |
+| `crates/treepo-app/src/debug/{mod,brp}.rs` (D10) | **done** — feature-gated, default off |
+| `crates/treepo-model/src/snapshot.rs` (`WorldSnapshot`, D4) | **done** — 2 tests |
+| `bake.rs`, `chunk.rs`, `lod.rs`, `id_buffer.rs`, `xtask id-coverage` | **not started** — see below |
+| `assets/shaders/**`, `assets/textures/tiles/**`, `ui/{theme,onboarding,progress}.rs` | **not started** |
+
+**What is deliberately absent is the larger half of the phase.** Architecture D5 — chunked
+layer textures per LOD band plus a parallel element-ID buffer — is what `AC-NAV-2`, `NFR-2`
+and `P1`/`N7` all rest on, and none of it is here. Three end conditions are therefore
+untouched rather than partly met, and each placeholder carries a module header naming what it
+stands in for and where it will disagree with the real thing:
+
+* `treepo-render::mesh` submits **one triangle-list mesh for the whole tree** at every zoom
+  level. That is the exact cost LOD exists to remove, so `AC-NAV-2` is not attempted.
+* `treepo-render::pick` answers a click by **geometric hit test against the segments**, not by
+  sampling an ID buffer. It gives `AC-INSP-1` — every click resolves to a real path or an
+  explicit aggregate, and `every_node_kind_resolves_to_a_path` holds that over all four node
+  roles — without the machine-checkable half. `xtask id-coverage` stays unimplemented,
+  because there is no buffer for it to scan and a green scan over nothing would be worse than
+  a missing command.
+* `AC-NAV-1` is a recorded user test with three participants and waits on materials having an
+  appearance, which is the same thing everything under "Next" waits on.
+
+### The bevy pin, and what it is allowed to bring
+
+`bevy 0.19`, `default-features = false`, `features = ["2d", "ui"]`, pinned in the workspace
+manifest — RISK-C's mitigation, and a caret requirement, so 0.19.x moves freely and 0.20 is a
+decision. The feature trim drops audio and the entire 3-D stack (gltf, pbr, mikktspace,
+tonemapping LUTs). That is `N2`'s own argument applied one level out from the network ban: the
+way to be sure a capability is not reachable is for it not to be linked.
+
+Two things `cargo deny` had to be told, both recorded in `deny.toml` rather than waved through:
+
+- **`MIT-0` allowed.** The `encase` family (GPU buffer layout, under `bevy_render`) uses it.
+  MIT without the attribution clause — strictly more permissive than MIT, which was already
+  allowed, and unlike MPL-2.0 it leaves nothing to do at packaging time.
+- **`RUSTSEC-2026-0192` ignored, with the reasoning attached.** `ttf-parser` is *unmaintained*,
+  not vulnerable, the advisory offers no upgrade, and it is reached one way only —
+  `sctk-adwaita`, Wayland client-side window decorations, so Linux and neither of the other
+  two platforms. The three ways out are each worse than the notice: dropping Bevy's `wayland`
+  feature abandons the default display server on modern Linux (`N8`), forking to `skrifa` is a
+  font stack treepo does not own, and pinning an older winit forgoes fixes for a crate that is
+  not vulnerable.
+
+**`bans` stayed clean on the first run**, which is the part that mattered: Bevy's ~400 crates
+brought in no network-capable dependency, and `bevy_remote`/`bevy_brp_extras` are absent from
+the default graph exactly as D10 requires. `multiple-versions = "warn"` now reports 24
+duplicates; that is what a dependency tree this size looks like and none of them is a finding.
+
+### `WorldSnapshot` landed, carrying only what exists
+
+D4's handoff type, in `treepo-model`, holding `snapshot_id`, `built_from`, and the three
+index-parallel maps. The architecture's field list also names `heat_weights` and an `id_map`;
+both belong to passes that do not exist (Phase 8, and the ID buffer above), and a field
+carrying a default nobody computed reads as measured. They arrive with what fills them, the
+way `material` and `enrichment` did.
+
+`is_covered()` is the one method on it, and `phase::commit` asserts it in debug builds. The
+three maps agree by construction — every pass walks `Skeleton::nodes` in order — but the
+consumer indexes all three by one `NodeId`, and an off-by-one there is a silently wrong
+picture rather than a crash.
+
+### Staleness is decided on HEAD, and that is the blunt version on purpose
+
+`load::open` reuses a stored manifest only when its `built_from_commit` equals the
+repository's current HEAD; anything else re-extracts in full. `AC-EXT-2` asks for
+*incremental* re-extraction, where one commit costs one commit's work — that is Phase 6/7,
+where a Grow trigger is the thing that notices the repository moved (`F-GROW-2`). The cheap
+wrong alternative is worse than the expensive right one: showing yesterday's tree because
+yesterday's tree was already on disk is a bug a user cannot diagnose. `NFR-4` is unaffected,
+because its five seconds are claimed for a *cached* repository and an unchanged repository is
+exactly the cache hit.
+
+`Target::head()` is new in `treepo-vcs` so the shell can ask that question without opening a
+`gix::Repository` of its own, and `identity_io::tier_name` became public so the window and
+`identity.json` cannot disagree about what a repository was identified by.
+
+### Two lint decisions, both crate-local
+
+- **`treepo-app` is `pub(crate)` throughout.** It is a binary; nothing in it is externally
+  reachable, and `unreachable_pub` said so 53 times.
+- **`elided_lifetimes_in_paths` is allowed in the two Bevy crates only.** Every Bevy system
+  parameter is lifetime-generic (`Commands<'w, 's>`, `Query<'w, 's, D, F>`, `Single<'w, D>`),
+  so honouring `rust_2018_idioms` means writing `<'_, '_>` in every signature in both crates.
+  The lint exists to make *borrowing* visible and a system parameter is not a borrow a reader
+  can act on. The generative set keeps the full idiom lints.
+
+### D10 — BRP, verified on both sides (2026-07-30)
+
+The end condition has a positive half and a negative half, and the negative half is the one
+that matters (RISK-D). Both were run rather than reasoned about:
+
+| | |
+|---|---|
+| `cargo run -p treepo-app --features brp` | `BRP extras enabled on http://localhost:15702`; `netstat` shows the socket bound to **`127.0.0.1:15702`**, loopback and not `0.0.0.0` |
+| `cargo run -p treepo-app` (default) | **the process listens on nothing at all** — no socket of any kind, and the string `brp` does not appear in its log |
+| `cargo deny check` (default features) | `advisories ok, bans ok, licenses ok, sources ok` |
+
+`debug/brp.rs` is the only file that names `bevy_brp_extras`, and `main.rs` carries the only
+`#[cfg(feature = "brp")]` outside it. The module registers `BrpExtrasPlugin` and adds no
+treepo-specific remote method — a method that could reach the store or a repository would be a
+control surface the product cannot audit, in the one build that is pointed at real repositories.
+
+**One trap worth knowing.** `bevy_brp_mcp`'s `brp_launch` runs its own freshness check and can
+rebuild the binary *without* `--features brp`, silently replacing a BRP-enabled `treepo-app.exe`
+with one that has no listener — which then reports as "running but not responding to BRP". Build
+and launch it by hand instead:
+
+```
+cargo build -p treepo-app --features brp
+./target/debug/treepo-app <path-to-repository>
+```
+
+### What the picture said
+
+Driven over BRP against treepo's own repository (T1, 193 paths → 156 nodes, 374 segments,
+9 containers, manifest served from the store):
+
+- **The tree draws.** Trunk column, root cluster, and the hybrid basal overlap all appear as
+  the M0 silhouettes led one to expect, now in material colour with the `F-MAT-4` age gradient
+  running base-to-tip along each limb. Heartwood, Parchment and Resin are separable by eye;
+  whether they are separable *as materials* is the question the shader answers, not this.
+- **`AC-INSP-1` holds on a real repository, at every scale.** Injected clicks resolved to
+  `limb .claude/skills/architecture-hardening` (a directory), `limb
+  crates/treepo-model/src/primitives/size.rs` (a file), and `group <repository root> — 3 small
+  siblings on one stem` (an `F2` stem, reporting what it gathers). Three node roles, three real
+  answers.
+- **Idle is genuinely still.** Two screenshots taken back to back with no input between them
+  are **byte-identical**, which is the M1 goal stated as a measurement — "a still, zoomable,
+  clickable tree" — and rules out a camera that drifts.
+- **Zoom is continuous and bounded.** Six notches out scaled by ≈3.0 against the predicted
+  `1.2⁶`, and `TreeCamera::MAX_OUT` stops the tree becoming a speck at four times the framed
+  view.
+
+The lopsided crown — one long bare arm carrying no weight — is the same finding the M0 tuning
+campaign recorded under "Next" item 2, unchanged and now visible in colour. It is a tuning
+question for the lab, not a defect in the shell.
+
+### One thing fixed in passing, and it was the last sprint's
+
+`xtask/src/ac_mat_2.rs` was committed unformatted in `f249764`, so `cargo fmt --all -- --check`
+— and therefore CI's `fmt & clippy` job — was **failing on `main`** before this sprint started.
+`cargo fmt --all` corrected it here; the diff is pure reflow and touches no behaviour. Verified
+by running `rustfmt --check` against `git show HEAD:xtask/src/ac_mat_2.rs` rather than inferred
+from the diff, since "fmt reflowed something" and "the committed file was already wrong" look
+identical in a working tree.
+
+This is the second time the "Agent hygiene" rule above has been violated in the way it was
+written down to prevent, and the shape is the same both times: the gate was not run, or was run
+and not read. `cargo fmt --all --check` costs under a second.
+
 ## Next
 
-**Phase 4 is closed for code and for its campaign evidence items.** Phase 5 is the Bevy shell,
-static baking, and navigation (M1 EXIT). Nothing in the materials layer is waiting on a
-further proof before that work can start.
+**Phase 4 is closed. Phase 5's shell exists; the phase does not.** The slice above is the
+vertical one — a repository reaches a window and a click reaches a path. What M1 exit needs
+next is the horizontal half, and it is roughly in this order:
+
+1. **The static bake (D5).** `bake.rs` + `chunk.rs` + `lod.rs`: chunked layer textures per LOD
+   band with residency streaming. This is the one that carries `AC-NAV-2`, `NFR-2` and RISK-B's
+   T3 memory measurement, and it replaces `treepo-render::mesh` rather than growing out of it.
+2. **The element-ID buffer (`id_buffer.rs`) and `xtask id-coverage`.** `P1`/`N7` are not
+   satisfiable without it, and `treepo-render::pick`'s geometric hit test is the thing it
+   retires. Do these two together: the command exists to scan the buffer, and shipping either
+   alone leaves a gate that cannot fail.
+3. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
+   Everything under "recorded rather than resolved" below has been waiting on this since
+   Phase 4, and so has `AC-NAV-1`'s user test, which cannot be run against six placeholder
+   colours honestly.
+4. **`ui/{theme,onboarding,progress}.rs`** — D8's consumer surface, and `F-ASSOC-1`'s picker,
+   which is what makes the command-line argument stop being the only way in (`R1`).
+
+Two smaller things the slice noticed and did not fix:
+
+- **`TREEPO_DATA_DIR` does not exist.** The deployment notes name it as a test-only override of
+  the app-data root and `StoreRoot::platform()` does not consult it. Tests use `StoreRoot::at`,
+  so nothing is broken; what is missing is the ability to point a *running app* at a throwaway
+  store, which the session-level `readonly-audit` of `AC-MAN-2` will want.
+- **`readonly-audit` still stops at extraction.** Phase 5's end condition is "green across
+  association → extraction → session". The session half needs the app to be drivable
+  headlessly — BRP (D10) is the obvious lever, and it is now wired.
 
 Recorded rather than resolved, all waiting on materials having an appearance (not Phase 4 exit):
 

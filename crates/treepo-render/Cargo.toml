@@ -1,0 +1,23 @@
+[package]
+name = "treepo-render"
+description = "The Bevy render layer: skeleton geometry to drawable meshes, the navigation camera, and picking."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# One of exactly two crates in the workspace that may name `bevy` (architecture D1, N6).
+# `cargo xtask dep-guard` asserts the other seven cannot.
+bevy = { workspace = true }
+treepo-model = { workspace = true }
+
+# Not for randomness or trig — this crate needs neither. It is here to name `Fx`, because
+# converting fixed-point world coordinates to the `f32` a vertex buffer wants is the one
+# thing the render boundary has to do, and doing it in a function with a type on it is
+# better than doing it inline at six call sites.
+treepo-det = { workspace = true }
+
+[lints]
+workspace = true

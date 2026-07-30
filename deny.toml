@@ -18,7 +18,23 @@
 
 [advisories]
 yanked = "deny"
-ignore = []
+ignore = [
+  # RUSTSEC-2026-0192 — `ttf-parser` is unmaintained. **Unmaintained, not vulnerable**: the
+  # author has stated the crate will receive no further fixes, and the advisory offers no
+  # upgrade ("No safe upgrade is available").
+  #
+  # Reached only one way, and only on one platform:
+  #   ttf-parser → owned_ttf_parser → ab_glyph → sctk-adwaita → winit → bevy_winit
+  # `sctk-adwaita` is Wayland client-side window decorations, so it is linked on Linux and on
+  # neither Windows nor macOS. The three ways out are all worse than the notice: dropping
+  # Bevy's `wayland` feature abandons the default display server on modern Linux (`N8`),
+  # forking the chain to `skrifa` is a font stack treepo does not own, and pinning an older
+  # winit forgoes upstream fixes for a crate that is not vulnerable.
+  #
+  # Re-examine when Bevy or winit moves off `ab_glyph`, and whenever this advisory becomes a
+  # vulnerability rather than a maintenance notice. Recorded 2026-07-30, Phase 5.
+  "RUSTSEC-2026-0192",
+]
 
 [licenses]
 # treepo's own crates are `publish = false` and skipped via `private.ignore`.
@@ -46,6 +62,11 @@ allow = [
   # LICENSE-THIRD-PARTY.md at the repo root. Worth a lawyer's glance before the storefront
   # release, since this note is an engineering reading and not legal advice.
   "MPL-2.0",
+  # MIT-0 is MIT with the attribution clause removed — strictly more permissive than MIT,
+  # which is already allowed, and it imposes no obligation at all. Added when Bevy arrived in
+  # Phase 5: the `encase` family (GPU buffer layout, used by `bevy_render`) is licensed under
+  # it. Nothing to do at packaging time, which is the whole difference from MPL-2.0 above.
+  "MIT-0",
 ]
 confidence-threshold = 0.93
 exceptions = []

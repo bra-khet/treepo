@@ -46,11 +46,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let pin = pins
         .get(&name)
         .ok_or_else(|| {
-            let known: Vec<_> = pins
-                .repositories
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect();
+            let known: Vec<_> = pins.repositories.iter().map(|p| p.name.as_str()).collect();
             format!(
                 "unknown pin `{name}`. Known: {}. Run `cargo xtask budget --pins`.",
                 known.join(", ")
@@ -62,12 +58,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
 
     let path = root.join(&pin.name);
     println!("ac-mat-2 — significant mosaic presence on a real repository (AC-MAT-2)\n");
-    println!(
-        "  pin      {} ({})  {}",
-        pin.name,
-        pin.tier.name(),
-        pin.tag
-    );
+    println!("  pin      {} ({})  {}", pin.name, pin.tier.name(), pin.tag);
     println!("  commit   {}", pin.commit);
     println!("  path     {}", path.display());
     println!("  threads  {threads} (log_pass)\n");
@@ -99,10 +90,7 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     let report = audit_significant_presence(&manifest, &skeleton, &materials, &table);
 
     println!("  nodes               {}", skeleton.nodes().len());
-    println!(
-        "  significant_ppm     {}",
-        table.normalize.significant_ppm
-    );
+    println!("  significant_ppm     {}", table.normalize.significant_ppm);
     println!("  pairs checked       {}", report.pairs_checked);
     println!("  missing             {}", report.missing);
     println!("  saved by quota      {}", report.saved_by_quota);

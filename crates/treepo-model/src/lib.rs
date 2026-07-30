@@ -19,11 +19,12 @@
 //! * [`aggregate`] — [`AggregateNode`], `F-SKEL-7`'s proportional container.
 //! * [`material`] — [`Material`] and [`MaterialFamily`]: what Phase 4 makes a limb out of.
 //! * [`enrichment`] — [`Placement`] and [`EnrichmentMap`]: what Phase 4 builds *on* a limb.
+//! * [`snapshot`] — [`WorldSnapshot`], the immutable value Grow publishes and Thrive reads
+//!   (architecture D4).
 //!
-//! Snapshot types (`snapshot.rs` in the architecture's file tree) arrive with the phase that
-//! produces them. Defining them now would be guessing at their shape — which is what
-//! [`material`] and [`enrichment`] stopped being guesses about when Phase 4's slices landed,
-//! and each arrived carrying only the fields its slice computes.
+//! Each of those arrived with the phase that produces it, carrying only the fields its phase
+//! computes — [`WorldSnapshot`] has no heat weights and no ID map yet, because nothing
+//! computes either one.
 //!
 //! # Three properties this crate is built to hold
 //!
@@ -68,6 +69,7 @@ pub mod material;
 pub mod path;
 pub mod primitives;
 pub mod segment;
+pub mod snapshot;
 
 pub use aggregate::AggregateNode;
 pub use enrichment::{Enrichment, EnrichmentForm, EnrichmentKind, EnrichmentMap, Placement};
@@ -86,3 +88,4 @@ pub use primitives::{
     TemporalPrimitives,
 };
 pub use segment::{NodeId, NodeRole, Point, Segment, Skeleton, SkeletonNode};
+pub use snapshot::WorldSnapshot;

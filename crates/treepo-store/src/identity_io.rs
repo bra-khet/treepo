@@ -369,7 +369,13 @@ fn explain(identity: &RepoIdentity) -> String {
 // identifier; writing them here means renaming a variant is a Rust refactor and renaming a
 // stored value is a format decision.
 
-const fn tier_name(tier: IdentityTier) -> &'static str {
+/// The tier spelled for a person: `remote-url`, `root-commit`, `path-hash`.
+///
+/// Public because the shell shows it too (`F-MAN-3`: "a user can see why two checkouts did or
+/// did not share a store"), and two places spelling a tier is two places for the file and the
+/// window to disagree about what a repository was identified by.
+#[must_use]
+pub const fn tier_name(tier: IdentityTier) -> &'static str {
     match tier {
         IdentityTier::Remote => "remote-url",
         IdentityTier::RootCommit => "root-commit",

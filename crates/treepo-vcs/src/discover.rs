@@ -62,6 +62,23 @@ impl Target {
         }
     }
 
+    /// The commit structure would be extracted from — HEAD (`F-EXT-7`).
+    ///
+    /// `None` for a plain directory and for a repository with no commits, which are different
+    /// situations with the same answer: neither has a commit to build a tree from.
+    ///
+    /// Exists so a caller can compare it against a stored
+    /// [`Manifest::built_from_commit`](treepo_model::Manifest::built_from_commit) — the
+    /// cheapest possible test for "is what I have on disk still current" — without opening a
+    /// `gix::Repository` of its own.
+    #[must_use]
+    pub fn head(&self) -> Option<CommitId> {
+        match self {
+            Self::Repository(target) => target.head,
+            Self::PlainDirectory { .. } => None,
+        }
+    }
+
     /// Everything the user should be told about what was found (`F-ASSOC-2`).
     #[must_use]
     pub fn notices(&self) -> Vec<Notice> {
