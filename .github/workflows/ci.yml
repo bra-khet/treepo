@@ -68,6 +68,20 @@ jobs:
       - name: Assert extraction writes nothing (AC-MAN-2, AC-EXT-4)
         run: cargo xtask readonly-audit
 
+      # Two steps rather than one, and the self-test runs first: if the detector is broken,
+      # "zero unaccountable pixels" and "zero pixels examined" print the same thing. Same
+      # argument as `readonly-audit --self-test`, and the same running order.
+      #
+      # In this job because it needs a built corpus, which the test step above already made.
+      # On all three platforms because the rasterizer is float arithmetic and D6/E1 exempts
+      # *pixels* from cross-platform identity — so a plane that disagreed by platform would be
+      # allowed to, and a coverage hole that only appeared on one would not be.
+      - name: Prove the ID-coverage scan can fail (N7, P1)
+        run: cargo xtask id-coverage --self-test
+
+      - name: Assert no coloured texel lacks an element ID (N7, P1)
+        run: cargo xtask id-coverage
+
   lint:
     name: fmt & clippy
     runs-on: ubuntu-latest

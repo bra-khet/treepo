@@ -20,11 +20,32 @@ publish.workspace = true
 # grow real skeletons, because a harness that gated on its own copy of the L-system would be
 # gating on the copy. `treepo-id` joined in Phase 4 for `AC-ID-2`, which is the same claim
 # about pseudonyms and author colours.
+#
+# `treepo-render` joined in Phase 5 and is the one that costs something: it brings **bevy**,
+# which is a large external dependency in a binary whose first line says it has none. The rule
+# it is bent for is the rule above it — `id-coverage` scans the element-ID plane for a coloured
+# texel with no id, and a scan of a reimplemented rasterizer would prove nothing about the one
+# that draws the tree. The alternative considered and rejected was a fourth crate holding a
+# bevy-free rasterizer, which buys a lighter task runner at the price of splitting the bake in
+# two and giving `N7` two places to be true.
+#
+# What it costs, measured rather than assumed (Windows, dev profile, 2026-07-30):
+#
+#   first build of treepo-render + xtask     4m 10s   (one-off; CI pays it in `cargo build`)
+#   relink xtask after touching its own src     36s   (was seconds before bevy)
+#   rebuild after touching a workspace dep   1m 23s
+#   no-op                                      1.4s
+#
+# The 36 seconds is the number to watch: it is paid by every `cargo xtask determinism` run that
+# follows an edit, which is the tightest loop in the project. If it starts costing more than the
+# gate is worth, the fourth crate above is the way out — the rasterizer is pure arithmetic over
+# `Skeleton` and needs glam, not an engine.
 [dependencies]
 treepo-det = { workspace = true }
 treepo-gen = { workspace = true }
 treepo-id = { workspace = true }
 treepo-model = { workspace = true }
+treepo-render = { workspace = true }
 treepo-store = { workspace = true }
 treepo-vcs = { workspace = true }
 

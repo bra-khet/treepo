@@ -53,6 +53,7 @@ use treepo_det::Fx;
 use treepo_model::{NodeId, Point, Skeleton, WorldSnapshot};
 
 use crate::bake;
+use crate::id_buffer::IdPlane;
 use crate::lod::Band;
 
 /// `alloc::sync::Arc`, spelled once so the import reads as the handoff type it is (D4).
@@ -489,14 +490,18 @@ pub fn stream(
         }
 
         let chunk = &plan.chunks.chunks()[piece.chunk];
-        let pixels = bake::rasterize(
+        let layer = bake::rasterize(
             &snapshot.skeleton,
             &snapshot.materials,
             &chunk.segments,
             piece.region,
             piece.size,
         );
-        let image = images.add(bake::layer(piece.size, pixels));
+        // The two planes part company here and never meet again: the colour is uploaded and
+        // dropped from main memory, the ids ride on the entity so a click can read them. They
+        // are despawned together, which is what keeps the plane from outliving its picture.
+        let plane = IdPlane::new(layer.size, layer.ids);
+        let image = images.add(bake::texture(piece.size, layer.color));
         commands.spawn((
             ResidentChunk {
                 id: piece.id,
@@ -504,6 +509,7 @@ pub fn stream(
                 region: piece.region,
                 generation: plan.generation(),
             },
+            plane,
             Sprite {
                 image,
                 custom_size: Some(piece.region.size()),
@@ -534,8 +540,75 @@ pub fn stream(
     }
 }
 
-/// Every piece of every chunk that intersects the resident rectangle *and draws something*,
-/// nearest first.
+/// One bakeable piece of a chunk: what to rasterize, where, and at what resolution.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Piece {
+    /// Which piece of which limb.
+    pub id: ChunkId,
+    /// The world rectangle it covers.
+    pub region: Extent,
+    /// The texture size to bake it at.
+    pub size: UVec2,
+}
+
+/// Every piece of one chunk that intersects `within` **and draws something**.
+///
+/// The viewport-free half of what [`stream`] does, factored out because
+/// `cargo xtask id-coverage` needs exactly this and a gate that enumerated pieces its own way
+/// would be scanning something the renderer never bakes. `stream` passes the resident
+/// rectangle; the gate passes the chunk's own extent, which is "all of it".
+#[must_use]
+pub fn pieces(
+    skeleton: &Skeleton,
+    chunk: &Chunk,
+    texels_per_unit: f32,
+    within: &Extent,
+) -> Vec<Piece> {
+    let mut found = Vec::new();
+    if !chunk.extent.intersects(within) {
+        return found;
+    }
+    let grid = piece_grid(chunk.extent, texels_per_unit);
+    let cell = chunk.extent.size() / grid.as_vec2();
+
+    // Only the cells the rectangle actually reaches, computed rather than iterated: a chunk
+    // zoomed into at the near band can be a grid of thousands, and walking all of them to find
+    // the four on screen would put the cost back where D5 took it from.
+    let (cols, rows) = cell_span(chunk.extent, grid, cell, within);
+    let occupied = occupancy(skeleton, chunk, grid, cell, &cols, &rows);
+
+    for row in rows.clone() {
+        for col in cols.clone() {
+            // A chunk's texture covers its *bounding box*, and a limb is a line through one —
+            // so most of a subdivided chunk's grid holds nothing at all. Baking those is a
+            // megabyte of transparency each, and it is the accepted cost of D5.1's anchor
+            // identity turning into an unbounded one. This is what bounds it: a piece with no
+            // segment in it is not a piece.
+            let slot = (row - rows.start) as usize * (cols.end - cols.start) as usize
+                + (col - cols.start) as usize;
+            if !occupied.get(slot).copied().unwrap_or(true) {
+                continue;
+            }
+
+            let min = chunk.extent.min + Vec2::new(col as f32, row as f32) * cell;
+            let region = Extent {
+                min,
+                max: (min + cell).min(chunk.extent.max),
+            };
+            found.push(Piece {
+                id: ChunkId {
+                    anchor: chunk.anchor,
+                    piece: row * grid.x + col,
+                },
+                region,
+                size: texture_size(region, texels_per_unit),
+            });
+        }
+    }
+    found
+}
+
+/// Every piece of every chunk that intersects the resident rectangle, nearest first.
 fn select(
     skeleton: &Skeleton,
     chunks: &[Chunk],
@@ -545,48 +618,17 @@ fn select(
 ) -> Vec<Wanted> {
     let mut wanted = Vec::new();
     for (index, chunk) in chunks.iter().enumerate() {
-        if !chunk.extent.intersects(resident) {
-            continue;
-        }
-        let grid = piece_grid(chunk.extent, texels_per_unit);
-        let cell = chunk.extent.size() / grid.as_vec2();
-
-        // Only the pieces the rectangle actually reaches, computed rather than iterated: a
-        // chunk zoomed into at the near band can be a grid of thousands, and walking all of
-        // them to find the four on screen would put the cost back where D5 took it from.
-        let (cols, rows) = cell_span(chunk.extent, grid, cell, resident);
-        let occupied = occupancy(skeleton, chunk, grid, cell, &cols, &rows);
-
-        for row in rows.clone() {
-            for col in cols.clone() {
-                // A chunk's texture covers its *bounding box*, and a limb is a line through
-                // one — so most of a subdivided chunk's grid holds nothing at all. Baking
-                // those is a megabyte of transparency each, and it is the accepted cost of
-                // D5.1's anchor identity turning into an unbounded one. This is what bounds
-                // it: a piece with no segment in it is not a piece.
-                let slot = (row - rows.start) as usize * (cols.end - cols.start) as usize
-                    + (col - cols.start) as usize;
-                if !occupied.get(slot).copied().unwrap_or(true) {
-                    continue;
-                }
-
-                let min = chunk.extent.min + Vec2::new(col as f32, row as f32) * cell;
-                let region = Extent {
-                    min,
-                    max: (min + cell).min(chunk.extent.max),
-                };
-                wanted.push(Wanted {
-                    id: ChunkId {
-                        anchor: chunk.anchor,
-                        piece: row * grid.x + col,
-                    },
+        wanted.extend(
+            pieces(skeleton, chunk, texels_per_unit, resident)
+                .into_iter()
+                .map(|piece| Wanted {
+                    id: piece.id,
                     chunk: index,
-                    region,
-                    size: texture_size(region, texels_per_unit),
-                    distance: region.center().distance_squared(center),
-                });
-            }
-        }
+                    region: piece.region,
+                    size: piece.size,
+                    distance: piece.region.center().distance_squared(center),
+                }),
+        );
     }
     wanted.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     wanted

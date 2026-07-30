@@ -25,6 +25,8 @@ Phase 0 — workspace and determinism foundation — is built and green.
 | `N2` | `cargo deny check` | green — advisories, bans, licences, sources |
 | `AC-DET-1` | `cargo xtask determinism` | green — 5 probes × 3 runs |
 | `AC-DET-2` | determinism.yml compare job | **green — confirmed 2026-07-27** |
+| `N7`/`P1` | `cargo xtask id-coverage` | green — 17 fixtures, 90.7 M texels, 0 unaccountable (S21) |
+| `N7` detector | `cargo xtask id-coverage --self-test` | green — 3 of 3 mutations caught |
 
 **Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
 
@@ -2672,12 +2674,13 @@ A window that opens a repository, runs the existing pipeline off-thread, and dra
 
 | Deliverable | Status |
 |---|---|
-| `crates/treepo-render/{lib,camera,mesh,pick}.rs` | **done** — 15 tests |
+| `crates/treepo-render/{lib,camera,mesh,pick}.rs` | **done** — 15 tests · `mesh` and `pick` since **replaced**, see S20 and S21 |
 | `crates/treepo-app/src/{main,window,phase,load,snapshot_sync}.rs` | **done** |
 | `crates/treepo-app/src/{ui/mod,interact/{mod,pick}}.rs` | **done** — 6 tests |
 | `crates/treepo-app/src/debug/{mod,brp}.rs` (D10) | **done** — feature-gated, default off |
 | `crates/treepo-model/src/snapshot.rs` (`WorldSnapshot`, D4) | **done** — 2 tests |
-| `bake.rs`, `chunk.rs`, `lod.rs`, `id_buffer.rs`, `xtask id-coverage` | **not started** — see below |
+| `bake.rs`, `chunk.rs`, `lod.rs` | **not started at S19** — landed in S20 |
+| `id_buffer.rs`, `xtask id-coverage` | **not started at S19** — landed in S21 |
 | `assets/shaders/**`, `assets/textures/tiles/**`, `ui/{theme,onboarding,progress}.rs` | **not started** |
 
 **What is deliberately absent is the larger half of the phase.** Architecture D5 — chunked
@@ -2925,24 +2928,106 @@ drawn at all.
   64 Mi texels — 256 MiB of colour, 512 MiB once the ID plane joins it — and it is a *choice*
   until that measurement replaces it.
 
+### S21 — the element-ID plane, and a gate that can fail (2026-07-30)
+
+`treepo-render::pick` is **deleted**. Clicks are now answered by sampling the plane the bake
+wrote, so the click and the picture cannot disagree — the old geometric hit test was a *second*
+calculation of the same answer and was free to drift from the drawn one wherever two limbs
+overlapped. Both named a real element; they could simply name different real elements.
+
+Three pieces:
+
+| | |
+|---|---|
+| `id_buffer.rs` | `ElementId`, the `IdPlane` component, `pick`, and the `coverage`/`unresolved` scans |
+| `bake.rs` | `rasterize` now returns a `Layer` — colour **and** ids — written by one loop |
+| `xtask id-coverage` | bakes every corpus fixture at two LOD bands and scans both planes |
+
+**`N7` is a signature, not a rule.** `fill` takes the whole `Layer` and writes a colour and an
+`ElementId` at every texel it visits, from the same bounds check. There is no path that writes
+one without the other, because there is no function that can. The scan exists anyway: "cannot
+happen" is a claim, and one that costs a scan to check is worth checking.
+
+Two details that were decisions rather than defaults:
+
+- **The sentinel is `u32::MAX`, not zero.** `NodeId(0)` is the basal node — the trunk, present
+  in every tree — so a sentinel of zero would make the trunk unaccountable *and the gate that
+  checks for it would pass*. There is a test named after exactly that.
+- **The search radius is six texels, and needs no camera.** The old tolerance was six logical
+  pixels, converted per click by projecting a second point through the projection. Because an
+  LOD band is chosen at roughly one texel per screen pixel, **a radius in texels is a radius in
+  screen pixels** at every zoom — so the conversion disappeared rather than moving.
+
+Two planes, two homes: colour is uploaded and dropped from main memory (`RENDER_WORLD`), ids
+stay on the CPU and never reach the GPU. They are read by different things, and shipping the id
+plane to the GPU would pay for an upload nothing samples. A texel now costs eight bytes rather
+than four, which is what `RESIDENT_TEXEL_BUDGET`'s note already anticipated.
+
+**The gate proves its own detector.** `cargo xtask id-coverage --self-test` bakes a real layer,
+breaks it three ways — a colour with its id removed (`N7`), an id with its colour removed, an id
+naming a node past the end of the skeleton (`P1`) — and requires each to be reported. CI runs
+the self-test *before* the scan, because a broken detector prints the same thing as a clean
+tree. Same argument and same running order as `readonly-audit --self-test`.
+
+```
+  detector self-test: 3 of 3 mutations caught
+
+  17 fixture(s) scanned, 1 refused, 90688892 texel(s) painted and accounted for
+  0 unaccountable, 0 identified but unpainted
+```
+
+Every all-platform corpus fixture, baked at two bands, 34–163 pieces each — so the subdivided
+case is covered, which is where the interesting failure would live: a piece is a *sub*-rectangle
+of its chunk, and a clip that dropped an id while keeping a colour would show up nowhere else.
+
+**`AC-INSP-1` through the buffer, on a real repository.** Injected clicks against treepo's own
+tree resolved to `limb <repository root>` (the trunk), `limb
+.claude/skills/architecture-hardening/references` (a directory), and `limb
+tools/m0-silhouette/src/canvas.rs` (a file); a click on empty sky cleared the selection rather
+than leaving a stale one. Same criterion the geometric picker met in S19 — the difference is
+that these answers came *from the picture*.
+`bare` is refused rather than skipped-silently: it has no working directory, and the list of
+names allowed to refuse is explicit so that a fixture which quietly stopped extracting cannot
+drop out of the scan. **A coverage gate gets greener as it covers less**, which is the failure
+mode it is most prone to, and the two guards against it are that list and a hard error if the
+scan ever finishes with zero painted texels.
+
+**One cost, paid deliberately and measured rather than assumed.** `xtask` now depends on
+`treepo-render`, which means **bevy in the task runner** — in a binary whose Cargo.toml opens by
+saying it has no external dependencies. The rule it is bent for is the one above it in the same
+file: a gate that scanned a reimplemented rasterizer would be gating on the copy, which is the
+argument `readonly-audit` was built on. The rejected alternative was a fourth crate holding a
+bevy-free rasterizer — a lighter task runner at the price of splitting the bake in two and
+giving `N7` two places to be true.
+
+| | |
+|---|---|
+| first build of `treepo-render` + `xtask` | 4m 10s — one-off, and CI already pays it in `cargo build --workspace` |
+| **relink `xtask` after touching its own source** | **36s** — was seconds before bevy |
+| rebuild after touching a workspace dependency | 1m 23s |
+| no-op | 1.4s |
+
+The 36 seconds is the number to watch: it is paid by every `cargo xtask determinism` that
+follows an edit, which is the tightest loop in the project and the one the "local gate before
+push" habit depends on. Recorded in `xtask/Cargo.toml` beside the way out, so the trade can be
+re-made on evidence rather than re-argued.
+
 ## Next
 
-**Phase 4 is closed. Phase 5 has its shell and its bake; the phase does not close yet.**
+**Phase 4 is closed. Phase 5 has its shell, its bake and its ID plane.** What is left before
+M1 exit is two measurements and two surfaces:
 
-1. **The element-ID buffer (`id_buffer.rs`) and `xtask id-coverage`.** `P1`/`N7` are not
-   satisfiable without it, and `treepo-render::pick`'s geometric hit test is the thing it
-   retires. Do these two together: the command exists to scan the buffer, and shipping either
-   alone leaves a gate that cannot fail. `bake::fill` is where the second plane attaches.
-2. **The T3 measurement** — `AC-NAV-2` (30 fps far→near) and `NFR-3` (under 4 GB). This is
+1. **The T3 measurement** — `AC-NAV-2` (30 fps far→near) and `NFR-3` (under 4 GB). This is
    RISK-B's mitigation actually being run, and it is now a measurement rather than a build:
    pin a T3 repository, drive a far→near zoom over BRP, and read frame time and working set.
    Expect it to tune `RESIDENT_TEXEL_BUDGET`, `TARGET_CHUNKS` and `BAKES_PER_FRAME`, which are
-   the three constants written down as choices.
-3. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
+   the three constants written down as choices. The ID plane doubles the per-texel cost, so
+   this is now the measurement that decides whether the budget is the right number.
+2. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
    Everything under "recorded rather than resolved" below has been waiting on this since
    Phase 4, and so has `AC-NAV-1`'s user test, which cannot be run against six placeholder
    colours honestly.
-4. **`ui/{theme,onboarding,progress}.rs`** — D8's consumer surface, and `F-ASSOC-1`'s picker,
+3. **`ui/{theme,onboarding,progress}.rs`** — D8's consumer surface, and `F-ASSOC-1`'s picker,
    which is what makes the command-line argument stop being the only way in (`R1`).
 
 Two smaller things the slice noticed and did not fix:

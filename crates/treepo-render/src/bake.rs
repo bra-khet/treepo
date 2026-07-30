@@ -29,19 +29,22 @@
 //!
 //! [`BAKES_PER_FRAME`]: crate::chunk::BAKES_PER_FRAME
 //!
-//! # What is deliberately not here
+//! # One pass writes both planes, and that is the `N7` argument
 //!
-//! **The element-ID plane.** `N7`/`P1` want a parallel `u32` buffer so that every coloured
-//! pixel resolves to an element, and `xtask id-coverage` scans for one that does not. The
-//! rasterizer is already the right shape for it — [`fill`] visits each texel once and knows the
-//! segment it is filling for — but a second plane that nothing samples and no gate reads would
-//! be a green check that cannot fail. It lands with `id_buffer.rs`, together with the picking
-//! that reads it and the xtask that scans it, and it retires [`pick`](crate::pick) when it does.
+//! [`fill`] writes a colour **and** an [`ElementId`] at every texel it visits, from the same
+//! loop and the same bounds check. There is deliberately no path that writes one without the
+//! other: `N7`'s unaccountable pixel — colour with no id — is not prevented by a rule here, it
+//! is prevented by there being nowhere to write a colour from. `cargo xtask id-coverage` scans
+//! for it anyway, because "structurally impossible" is a claim, and a claim that costs one scan
+//! to check is worth checking.
 //!
-//! **Anti-aliasing.** Coverage is binary: a texel is inside a limb or it is not. What stands in
-//! for it is [`MIN_HALF_TEXELS`] — a limb thinner than a texel still marks a line of them, so
-//! zooming out thins the tree rather than deleting it, which is the failure `AC-NAV-1` would
-//! actually notice.
+//! # Anti-aliasing is what is deliberately not here
+//!
+//! Coverage is binary: a texel is inside a limb or it is not. What stands in for it is
+//! [`MIN_HALF_TEXELS`] — a limb thinner than a texel still marks a line of them, so zooming out
+//! thins the tree rather than deleting it, which is the failure `AC-NAV-1` would actually
+//! notice. Blending partial coverage would also make the ID plane ambiguous in a way it is not
+//! now: a half-covered texel is painted by two elements, and a `u32` holds one.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageSampler};
@@ -50,9 +53,47 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use treepo_model::{MaterialFamily, MaterialMap, NodeId, Skeleton};
 
 use crate::chunk::{Extent, LAYER_USAGE, half, world};
+use crate::id_buffer::{ElementId, IdPlane};
 
-/// How many bytes one texel of a baked layer costs.
+/// How many bytes one texel of a baked layer's **colour** costs.
+///
+/// The ID plane costs another four on the CPU; see [`id_buffer`](crate::id_buffer) for why the
+/// two live in different places.
 pub const BYTES_PER_TEXEL: usize = 4;
+
+/// One baked piece: a colour plane for the GPU and an ID plane for picking.
+///
+/// Returned as a pair rather than produced by two calls, because the pair is the invariant.
+/// Two functions could be called separately, in one order, or with different arguments — and
+/// `N7` is exactly the claim that they never are.
+#[derive(Debug, Clone)]
+pub struct Layer {
+    /// The resolution both planes share.
+    pub size: UVec2,
+    /// RGBA8, sRGB-encoded, row-major from the top-left.
+    pub color: Vec<u8>,
+    /// One element id per texel, in the same order.
+    pub ids: Vec<ElementId>,
+}
+
+impl Layer {
+    /// An empty layer of the given size — transparent everywhere, identified nowhere.
+    #[must_use]
+    fn blank(size: UVec2) -> Self {
+        let texels = size.x as usize * size.y as usize;
+        Self {
+            size,
+            color: vec![0u8; texels * BYTES_PER_TEXEL],
+            ids: vec![ElementId::NONE; texels],
+        }
+    }
+
+    /// The ID plane, ready to ride on the entity that draws the colour.
+    #[must_use]
+    pub fn id_plane(&self) -> IdPlane {
+        IdPlane::new(self.size, self.ids.clone())
+    }
+}
 
 /// The thinnest a limb may be rasterized, in texels.
 ///
@@ -84,11 +125,10 @@ pub fn rasterize(
     segments: &[u32],
     region: Extent,
     size: UVec2,
-) -> Vec<u8> {
-    let texels = size.x as usize * size.y as usize;
-    let mut pixels = vec![0u8; texels * BYTES_PER_TEXEL];
+) -> Layer {
+    let mut layer = Layer::blank(size);
     let Some(to_texel) = Projector::new(region, size) else {
-        return pixels;
+        return layer;
     };
 
     let all = skeleton.segments();
@@ -112,30 +152,39 @@ pub fn rasterize(
 
         let (base_color, tip_color) = segment_colors(materials, segment.node);
         let corners = [start + base, start - base, end - tip, end + tip];
+        // The segment's own node, carried into both triangles. `N7` is this argument passed
+        // down: a texel cannot be coloured without one, because `fill` has no signature that
+        // omits it.
+        let element = ElementId::of(segment.node);
         fill(
-            &mut pixels,
-            size,
+            &mut layer,
             [corners[0], corners[1], corners[2]],
             [base_color, base_color, tip_color],
+            element,
         );
         fill(
-            &mut pixels,
-            size,
+            &mut layer,
             [corners[0], corners[2], corners[3]],
             [base_color, tip_color, tip_color],
+            element,
         );
     }
-    pixels
+    layer
 }
 
-/// Wraps rasterized bytes as a texture ready to hand to [`Assets<Image>`].
+/// Wraps a layer's colour plane as a texture ready to hand to [`Assets<Image>`].
+///
+/// Consumes the colour and leaves the ids behind, which is the split
+/// [`id_buffer`](crate::id_buffer) exists to explain: this half goes to the GPU and is dropped
+/// from main memory, and the other half stays on the CPU because that is where clicks are
+/// answered.
 ///
 /// `Rgba8UnormSrgb` rather than `Rgba8Unorm`: the GPU then converts to linear on every sample,
 /// which is what the rest of the pipeline expects, and it is why [`shaded`] encodes on the way
 /// out. Storing linear bytes would band the dark end of the age gradient — exactly where
 /// `F-MAT-4` puts its oldest material.
 #[must_use]
-pub fn layer(size: UVec2, pixels: Vec<u8>) -> Image {
+pub fn texture(size: UVec2, pixels: Vec<u8>) -> Image {
     let mut image = Image::new(
         Extent3d {
             width: size.x.max(1),
@@ -269,12 +318,16 @@ impl Projector {
     }
 }
 
-/// Fills one triangle into an RGBA8 buffer, interpolating the corner colours.
+/// Fills one triangle into both planes, interpolating the corner colours.
 ///
 /// Scanline: for each row the triangle reaches, the two edges it crosses give the span, and
 /// only texels inside that span are visited. See the module header for why the bounding-box
 /// alternative is not merely slower but asymptotically worse.
-fn fill(pixels: &mut [u8], size: UVec2, corners: [Vec2; 3], colors: [[u8; 4]; 3]) {
+///
+/// Takes the whole [`Layer`] rather than the colour slice, so that "write a texel" is one place
+/// and writes both. That is `N7` expressed as a signature.
+fn fill(layer: &mut Layer, corners: [Vec2; 3], colors: [[u8; 4]; 3], element: ElementId) {
+    let size = layer.size;
     let area = edge(corners[0], corners[1], corners[2]);
     if area.abs() < f32::EPSILON || !area.is_finite() {
         return;
@@ -309,8 +362,9 @@ fn fill(pixels: &mut [u8], size: UVec2, corners: [Vec2; 3], colors: [[u8; 4]; 3]
                 continue;
             }
 
-            let offset = (row as usize * size.x as usize + column as usize) * BYTES_PER_TEXEL;
-            let Some(texel) = pixels.get_mut(offset..offset + BYTES_PER_TEXEL) else {
+            let index = row as usize * size.x as usize + column as usize;
+            let offset = index * BYTES_PER_TEXEL;
+            let Some(texel) = layer.color.get_mut(offset..offset + BYTES_PER_TEXEL) else {
                 continue;
             };
             let total = area.abs();
@@ -320,6 +374,14 @@ fn fill(pixels: &mut [u8], size: UVec2, corners: [Vec2; 3], colors: [[u8; 4]; 3]
                     .sum::<f32>()
                     / total;
                 texel[channel] = blended.clamp(0.0, 255.0) as u8;
+            }
+
+            // The same texel, the same iteration, no branch between them. Later triangles
+            // overwrite earlier ones in both planes together, so the id always names whichever
+            // element the *visible* colour came from — which is the whole property picking
+            // relies on.
+            if let Some(id) = layer.ids.get_mut(index) {
+                *id = element;
             }
         }
     }
@@ -422,17 +484,19 @@ mod tests {
     }
 
     /// The texel at `(column, row)`, with row zero at the top of the region.
-    fn texel(pixels: &[u8], size: UVec2, column: u32, row: u32) -> [u8; 4] {
+    fn texel(layer: &Layer, size: UVec2, column: u32, row: u32) -> [u8; 4] {
         let offset = (row as usize * size.x as usize + column as usize) * BYTES_PER_TEXEL;
-        pixels[offset..offset + BYTES_PER_TEXEL].try_into().unwrap()
+        layer.color[offset..offset + BYTES_PER_TEXEL]
+            .try_into()
+            .unwrap()
     }
 
     #[test]
     fn an_empty_chunk_bakes_to_transparency() {
         let (region, size) = square(16);
-        let pixels = rasterize(&skeleton_with([]), &MaterialMap::new(), &[], region, size);
-        assert_eq!(pixels.len(), 16 * 16 * BYTES_PER_TEXEL);
-        assert!(pixels.iter().all(|byte| *byte == 0));
+        let layer = rasterize(&skeleton_with([]), &MaterialMap::new(), &[], region, size);
+        assert_eq!(layer.color.len(), 16 * 16 * BYTES_PER_TEXEL);
+        assert!(layer.color.iter().all(|byte| *byte == 0));
     }
 
     /// A wide vertical limb up the middle: the centre column is opaque, the corners are not.
@@ -440,11 +504,11 @@ mod tests {
     fn a_limb_covers_the_texels_it_runs_through() {
         let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let pixels = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
 
-        assert_eq!(texel(&pixels, size, 16, 16)[3], 255, "centre is not drawn");
-        assert_eq!(texel(&pixels, size, 0, 0)[3], 0, "corner was drawn");
-        assert_eq!(texel(&pixels, size, 31, 31)[3], 0, "corner was drawn");
+        assert_eq!(texel(&layer, size, 16, 16)[3], 255, "centre is not drawn");
+        assert_eq!(texel(&layer, size, 0, 0)[3], 0, "corner was drawn");
+        assert_eq!(texel(&layer, size, 31, 31)[3], 0, "corner was drawn");
     }
 
     /// Row zero is the top. A limb in the upper half of the world region must land in the
@@ -454,15 +518,15 @@ mod tests {
     fn world_up_is_image_up() {
         let skeleton = skeleton_with([segment((16, 24), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let pixels = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
 
         assert_eq!(
-            texel(&pixels, size, 16, 4)[3],
+            texel(&layer, size, 16, 4)[3],
             255,
             "top of the image is empty"
         );
         assert_eq!(
-            texel(&pixels, size, 16, 28)[3],
+            texel(&layer, size, 16, 28)[3],
             0,
             "bottom of the image is drawn"
         );
@@ -478,9 +542,9 @@ mod tests {
         let skeleton = skeleton_with([thin]);
         let (region, size) = square(32);
 
-        let pixels = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
         let drawn = (0..32)
-            .filter(|row| texel(&pixels, size, 16, *row)[3] > 0)
+            .filter(|row| texel(&layer, size, 16, *row)[3] > 0)
             .count();
         assert!(drawn >= 24, "a hairline limb drew {drawn} of 28 rows");
     }
@@ -489,8 +553,8 @@ mod tests {
     fn a_segment_with_no_length_draws_nothing() {
         let skeleton = skeleton_with([segment((16, 16), (16, 16), 4, 4)]);
         let (region, size) = square(32);
-        let pixels = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
-        assert!(pixels.iter().all(|byte| *byte == 0));
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        assert!(layer.color.iter().all(|byte| *byte == 0));
     }
 
     /// A segment index the skeleton does not have is skipped, not panicked on.
@@ -498,8 +562,8 @@ mod tests {
     fn an_index_past_the_end_is_skipped() {
         let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let pixels = rasterize(&skeleton, &MaterialMap::new(), &[0, 99], region, size);
-        assert_eq!(texel(&pixels, size, 16, 16)[3], 255);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 99], region, size);
+        assert_eq!(texel(&layer, size, 16, 16)[3], 255);
     }
 
     /// A region with no area, or a texture with no texels, produces a buffer rather than a
@@ -511,14 +575,14 @@ mod tests {
             min: Vec2::ZERO,
             max: Vec2::new(0.0, 10.0),
         };
-        let pixels = rasterize(
+        let layer = rasterize(
             &skeleton,
             &MaterialMap::new(),
             &[0],
             flat,
             UVec2::new(1, 10),
         );
-        assert_eq!(pixels.len(), 10 * BYTES_PER_TEXEL);
+        assert_eq!(layer.color.len(), 10 * BYTES_PER_TEXEL);
     }
 
     #[test]
@@ -541,6 +605,84 @@ mod tests {
         let old = shaded(color, 1.0);
         assert!(old[0] < new[0] && old[1] < new[1] && old[2] < new[2]);
         assert_eq!(old[3], 255, "darkening must not touch alpha");
+    }
+
+    /// `N7`, as a property of the rasterizer rather than of one drawing: wherever this bake
+    /// put a colour it also put an element id, and wherever it put an id it put a colour.
+    /// `xtask id-coverage` asserts the same thing over real repositories; this asserts it over
+    /// the case that is easy to get wrong — a limb clipped by the edge of its own piece.
+    #[test]
+    fn every_coloured_texel_carries_an_element_id() {
+        let skeleton = skeleton_with([
+            segment((16, 2), (16, 30), 8, 8),
+            // Running off the right edge, so the fill's bounds check is exercised.
+            segment((16, 20), (60, 24), 6, 3),
+        ]);
+        let (region, size) = square(32);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+
+        let found = crate::id_buffer::coverage(&layer.color, &layer.ids);
+        assert!(found.accounted > 0, "the test drew nothing");
+        assert_eq!(found.unaccountable, 0, "a coloured texel carries no id");
+        assert_eq!(found.invisible, 0, "an id was written with no colour");
+        assert!(found.is_clean());
+    }
+
+    /// The id names the node that painted the texel, not merely *a* node — which is what makes
+    /// the click and the picture unable to disagree.
+    #[test]
+    fn the_id_names_the_element_that_painted_the_texel() {
+        let mut skeleton = skeleton_with([]);
+        skeleton.push_node(
+            None,
+            Point::ORIGIN,
+            Angle::ZERO,
+            Seed::root(b"bake-test"),
+            NodeRole::Limb {
+                path: RepoPath::root(),
+            },
+        );
+        let mut second = segment((26, 2), (26, 30), 6, 6);
+        second.node = NodeId::new(1);
+        skeleton.extend_segments([segment((6, 2), (6, 30), 6, 6), second]);
+
+        let (region, size) = square(32);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+        let plane = layer.id_plane();
+
+        assert_eq!(plane.at(6, 16).node(), Some(NodeId::new(0)));
+        assert_eq!(plane.at(26, 16).node(), Some(NodeId::new(1)));
+        assert!(
+            plane.at(16, 16).is_none(),
+            "the gap between them is painted"
+        );
+    }
+
+    /// Overwriting order is shared, so the id follows the *visible* colour. Two limbs crossing
+    /// is exactly where the old geometric picker could name the one that was not drawn.
+    #[test]
+    fn where_limbs_overlap_the_id_follows_the_visible_colour() {
+        let mut skeleton = skeleton_with([]);
+        skeleton.push_node(
+            None,
+            Point::ORIGIN,
+            Angle::ZERO,
+            Seed::root(b"bake-test"),
+            NodeRole::Limb {
+                path: RepoPath::root(),
+            },
+        );
+        let mut crossing = segment((2, 16), (30, 16), 8, 8);
+        crossing.node = NodeId::new(1);
+        skeleton.extend_segments([segment((16, 2), (16, 30), 8, 8), crossing]);
+
+        let (region, size) = square(32);
+        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+        let plane = layer.id_plane();
+
+        // The crossing limb is rasterized second, so at the intersection both planes hold it.
+        assert_eq!(plane.at(16, 16).node(), Some(NodeId::new(1)));
+        assert_eq!(texel(&layer, size, 16, 16)[3], 255);
     }
 
     /// The scanline's job, stated as arithmetic: a horizontal line through the middle of a

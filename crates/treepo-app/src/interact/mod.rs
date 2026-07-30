@@ -21,6 +21,12 @@ impl Plugin for InteractPlugin {
         // After the camera, because a click is defined as "a press that did not become a
         // drag", and the camera is what measures the drag. Running before it would read last
         // frame's travel and turn the end of every pan into a selection.
+        //
+        // Not ordered against `chunk::stream`, deliberately. Picking reads the ID planes that
+        // `stream` spawns, but a `Commands::spawn` is deferred to the next flush either way —
+        // so ordering after it would buy nothing and imply a guarantee it does not give. What
+        // picking sees is the residency of the frame before, which for a *click* is the right
+        // set: the camera did not move, or it would have been a drag.
         app.init_resource::<Selection>()
             .add_systems(Update, pick::on_click.after(CameraSystems));
     }

@@ -10,9 +10,10 @@
 //! cargo xtask readonly-audit  # AC-MAN-2, AC-EXT-4 — extraction writes nothing
 //! cargo xtask budget          # AC-EXT-1 — full extraction against the PRD §7 budgets
 //! cargo xtask ac-mat-2        # AC-MAT-2 — significant mosaic presence on a T2 pin
+//! cargo xtask id-coverage     # N7, P1 — every baked texel carries an element id
 //! ```
 //!
-//! Commands land with the phase that needs them: `id-coverage` in Phase 5. `budget` is listed
+//! Commands land with the phase that needs them. `budget` is listed
 //! against Phase 12 in the architecture's file tree, but `AC-EXT-1` is a Phase 1 end
 //! condition, so it lands here in its extraction-only form and grows Grow and frame budgets
 //! later — the same way `determinism` arrived in Phase 0 covering only the primitive layer.
@@ -24,6 +25,7 @@ mod ac_mat_2;
 mod budget;
 mod dep_guard;
 mod determinism;
+mod id_coverage;
 mod readonly_audit;
 
 fn main() -> ExitCode {
@@ -37,18 +39,7 @@ fn main() -> ExitCode {
         Some("readonly-audit") => readonly_audit::run(rest),
         Some("budget") => budget::run(rest),
         Some("ac-mat-2") => ac_mat_2::run(rest),
-
-        // Listed rather than left to fall through as "unknown command", because the
-        // campaign document tells a reader this exists before the phase that builds it.
-        //
-        // It scans the element-ID buffer for a coloured pixel with no id (`P1`, `N7`).
-        // `treepo-render::bake` now produces the colour plane; the parallel `u32` plane is the
-        // half still missing, and `treepo-render::pick` answers clicks geometrically until it
-        // lands. A command that reported "zero unaccountable pixels" by scanning nothing would
-        // be a green gate that cannot fail, which is worse than an absent one.
-        Some(pending @ "id-coverage") => Err(format!(
-            "`{pending}` lands with treepo-render's ID buffer (Phase 5, D5)"
-        )),
+        Some("id-coverage") => id_coverage::run(rest),
 
         Some("help" | "--help" | "-h") | None => {
             print_usage();
@@ -102,7 +93,12 @@ fn print_usage() {
          \x20   ac-mat-2         Prove significant contributors keep mosaic presence on a\n\
          \x20                    pinned T2 repository (AC-MAT-2). Local evidence, not CI.\n\
          \x20                      --pin <name>      default bevy; godot is the other T2\n\
-         \x20                      --threads <n>     log_pass threads (default 4)\n"
+         \x20                      --threads <n>     log_pass threads (default 4)\n\
+         \n\
+         \x20   id-coverage      Bake every corpus fixture at two LOD bands and prove no\n\
+         \x20                    texel is coloured without an element id (N7, P1).\n\
+         \x20                      --fixture <name>  scan one shape\n\
+         \x20                      --self-test       only prove the scan detects\n"
     );
 }
 

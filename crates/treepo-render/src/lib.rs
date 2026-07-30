@@ -16,17 +16,14 @@
 //! determinism boundary is drawn at the data this crate *receives*. Every conversion is one
 //! direction — fixed-point in, `f32` out — and no value computed here flows back.
 //!
-//! # The static bake, and the one piece of it still missing
+//! # The static bake
 //!
-//! Architecture D5 is here: [`chunk`] cuts the tree into subtree-anchored pieces and keeps the
-//! visible ones resident within a texel budget, [`bake`] rasterizes a piece into a layer
-//! texture, and [`lod`] quantizes the density it is baked at. That is what makes `NFR-2` a
-//! property rather than a hope — frame cost follows the viewport, not the repository.
-//!
-//! What is not here is the parallel element-ID buffer. `N7`/`P1` want every coloured pixel to
-//! carry the element it belongs to, and until `id_buffer.rs` lands [`pick`] answers
-//! geometrically instead — a different computation from the one that drew the picture, with a
-//! header saying where the two can disagree.
+//! Architecture D5 is here in full: [`chunk`] cuts the tree into subtree-anchored pieces and
+//! keeps the visible ones resident within a texel budget, [`bake`] rasterizes a piece into a
+//! layer texture *and* a parallel element-ID plane, [`lod`] quantizes the density it is baked
+//! at, and [`id_buffer`] answers "what did I click" by sampling that plane. Together they make
+//! `NFR-2` a property rather than a hope — frame cost follows the viewport, not the repository
+//! — and `N7`/`P1` a number rather than an argument.
 
 #![forbid(unsafe_code)]
 // The workspace turns on `rust_2018_idioms`, which includes `elided_lifetimes_in_paths`. Every
@@ -41,16 +38,16 @@
 pub mod bake;
 pub mod camera;
 pub mod chunk;
+pub mod id_buffer;
 pub mod lod;
-pub mod pick;
 
 use bevy::prelude::*;
 
-pub use bake::family_color;
+pub use bake::{Layer, family_color};
 pub use camera::{CameraSystems, FrameTarget, PointerDrag, TreeCamera};
-pub use chunk::{Chunk, ChunkId, ChunkSet, Extent, ResidentChunk, TreePlan};
+pub use chunk::{Chunk, ChunkId, ChunkSet, Extent, Piece, ResidentChunk, TreePlan, pieces};
+pub use id_buffer::{Coverage, ElementId, IdPlane, Painted, coverage, pick, unresolved};
 pub use lod::Band;
-pub use pick::pick_node;
 
 /// Spawns the camera, runs the navigation gestures, and keeps the baked layers resident.
 ///

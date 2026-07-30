@@ -3,11 +3,24 @@
 //! > Clicking any element resolves to a real path or an explicit aggregate.
 //!
 //! The criterion has two halves and they are enforced in different places. That a click lands
-//! on *something* is geometry, and lives in
-//! [`treepo_render::pick_node`](treepo_render::pick_node). That whatever it landed on names
-//! something real is a question about [`NodeRole`], and lives in [`describe`] — where the
-//! `match` is exhaustive, so a future node kind cannot be added without someone deciding what
-//! a user is told when they click it.
+//! on *something* is answered by sampling the element-ID plane the bake wrote
+//! ([`treepo_render::pick`]) — so the click resolves to whatever painted that texel, and the
+//! answer cannot disagree with the picture. That whatever it landed on names something real is
+//! a question about [`NodeRole`], and lives in [`describe`] — where the `match` is exhaustive,
+//! so a future node kind cannot be added without someone deciding what a user is told when
+//! they click it.
+//!
+//! # What changed when the ID buffer arrived
+//!
+//! This used to call a geometric hit test against the same segments the mesh was built from: a
+//! second calculation of the same answer, free to drift from the drawn one wherever two limbs
+//! overlapped. Both named a real element, so no click landed on nothing — they could simply
+//! name different real elements. Sampling the plane removes the second calculation rather than
+//! making it more careful.
+//!
+//! It also removes a conversion. The old tolerance was six *logical pixels*, derived each click
+//! by projecting a second point through the camera; the new one is six *texels*, and needs no
+//! projection because an LOD band is chosen at roughly one texel per screen pixel.
 //!
 //! # Nothing here can name a person
 //!
@@ -19,7 +32,7 @@
 
 use bevy::prelude::*;
 use treepo_model::{NodeId, NodeRole, Skeleton};
-use treepo_render::{PointerDrag, TreeCamera, pick_node};
+use treepo_render::{IdPlane, Painted, PointerDrag, ResidentChunk, TreeCamera};
 
 use crate::phase::CommittedWorld;
 
@@ -40,13 +53,6 @@ pub(crate) struct Selected {
     pub(crate) detail: String,
 }
 
-/// How near a click has to be, in logical pixels, to count as landing on a limb.
-///
-/// In pixels, so it stays a constant *on screen* rather than a constant in the tree. At far
-/// zoom a limb can be a fraction of a world unit wide; a tolerance in world units would make
-/// the tree unclickable at exactly the zoom level where the user can see the least of it.
-const CLICK_RADIUS_PIXELS: f32 = 6.0;
-
 /// Resolves a click that was not a drag.
 pub(crate) fn on_click(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -54,6 +60,7 @@ pub(crate) fn on_click(
     window: Option<Single<&Window>>,
     camera: Option<Single<(&Camera, &GlobalTransform), With<TreeCamera>>>,
     world: Res<CommittedWorld>,
+    resident: Query<(&ResidentChunk, &IdPlane)>,
     mut selection: ResMut<Selection>,
 ) {
     if !buttons.just_released(MouseButton::Left) || !drag.was_click() {
@@ -71,22 +78,19 @@ pub(crate) fn on_click(
         return;
     };
 
-    // The tolerance in world units, derived by projecting a second point one radius away rather
-    // than by reading the projection's `scale`. Asking the camera what a pixel is worth keeps
-    // this correct under any scaling mode, and it is the same mapping the click itself came
-    // through — so the two cannot disagree about how far six pixels is.
-    let Ok(offset) =
-        camera.viewport_to_world_2d(camera_transform, cursor + Vec2::X * CLICK_RADIUS_PIXELS)
-    else {
-        return;
-    };
-    let tolerance = offset.distance(at);
+    // Only the pieces that are actually on screen are consulted, because only those have a
+    // plane — which is the same statement as "the answer comes from the picture". A limb the
+    // renderer evicted is a limb the user cannot see, and cannot have clicked.
+    let painted = resident.iter().map(|(chunk, plane)| Painted {
+        region: chunk.region,
+        plane,
+    });
 
     // `None` is a deselection, not a miss to be ignored: clicking the background is how a user
     // puts the inspector away, and swallowing it would leave a stale selection on screen
     // looking like the thing they just clicked.
-    selection.0 = pick_node(&snapshot.skeleton, at, tolerance)
-        .and_then(|node| describe(&snapshot.skeleton, node));
+    selection.0 =
+        treepo_render::pick(painted, at).and_then(|node| describe(&snapshot.skeleton, node));
 }
 
 /// What to say about a node.

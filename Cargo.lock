@@ -7002,6 +7002,7 @@ dependencies = [
  "treepo-gen",
  "treepo-id",
  "treepo-model",
+ "treepo-render",
  "treepo-store",
  "treepo-vcs",
 ]
