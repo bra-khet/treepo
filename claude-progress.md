@@ -3,11 +3,12 @@
 > Read `.planning/campaign-treepo.md` for the phase list and `.planning/architecture-treepo.md`
 > for the file tree and decisions. This file records only where the build actually is.
 
-**Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
+**Last updated:** 2026-07-31 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
 (`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy shell
 (S19), D5's chunked static bake (S20), the element-ID plane (S21), the T3 measurement (S22),
-materials with an appearance (S23) and the off-thread bake (S24) are in. `NFR-3` is met and
+materials with an appearance (S23), the off-thread bake (S24) and the bark surface (S25) are
+in. `NFR-3` is met and
 RISK-B is closed. `AC-NAV-2` is **still `[!]` but largely recovered**: the bake now runs on
 `AsyncComputeTaskPool` and bands 0…−8 hold 8.5–18.4 ms with zero frames over budget, against
 30–53 ms before. The deep bands are unmeasured at a usable vsync floor — that is an instrument
@@ -33,7 +34,7 @@ Phase 0 — workspace and determinism foundation — is built and green.
 | `N7` detector | `cargo xtask id-coverage --self-test` | green — 3 of 3 mutations caught |
 | `NFR-3` | T3 pin, release, far→near traversal | green — 676 MB peak working set, 17% of 4 GB (S22) |
 | `AC-NAV-2` | T3 pin, release, far→near traversal | **`[!]`, largely recovered by S24** — bands 0…−8 worst 8.5–18.4 ms, 0 over budget (was 30–53 ms / ~30 over). Bands −9…−11 unmeasured at a usable floor |
-| bake cost | `rasterize`, isolated, release | 13.7 ns/texel flat → **71 ns/texel** shaded (S23) |
+| bake cost | `xtask id-coverage`, 90.9 M texels, release | 10.3 s pre-S25 → **18.7 s** with the bark surface (S25). Latency-bound: a second domain warp cost 8 s of it and was removed |
 | placement cost | one finished layer, main thread, T3 pin | **~1.9 ms per piece** — per texture, not per texel (S24) |
 
 **Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
@@ -3249,6 +3250,164 @@ issued it — the despawn is a deferred command and the GPU texture is freed lat
 release and the frame charged for it need not be the same frame. S22 chased the same shape once
 already and called it "the worst frame is one where the piece count *fell*".
 
+## S25 — the surface becomes bark, and the mosaic becomes grain in it (2026-07-31)
+
+The mosaic drew as **hard vertical cuts**, and the cause is one line rather than a shortage of
+polish: `run_at(accents, fraction)` is a step function of one scalar, so every texel in a column
+gets the same answer *by construction*. No amount of noise on top of that can soften a boundary
+the lookup has already decided. The surface underneath had the same shape of problem — an
+anisotropic noise sum is a pattern on a limb, not a structure in one, and a limb had nothing the
+eye reads as depth.
+
+Both are fixed in the same slice, because they are the same slice: ownership had to become
+something the surface *carries*, and there had to be a surface to carry it.
+
+### Four layers, and the reason they are in that order
+
+1. **The flow.** One two-channel value-noise sample bends the coordinate frame before anything
+   reads it. Anisotropic — slow along the limb, fast across it — and the across-frequency is the
+   whole feature: a warp that varies slowly across a limb displaces every groove by nearly the
+   same amount and they stay parallel, which is brushed hair. Bark forks, and a fork needs the
+   warp's *gradient across the limb* to be comparable to the groove spacing.
+2. **The whorls.** Nought to two knots per limb, placed from the node's own path hash, dragging
+   the flow lengthwise toward themselves, spreading it sideways and curling it. Closed form, no
+   hash, and the feature that makes the result read as *wood* rather than as noise with a good
+   aspect ratio.
+3. **The plates.** Longitudinal ridges out of a triangle wave of the warped across-coordinate,
+   cut into tiles by a second wave along it, varied groove-by-groove and along each groove's
+   length. Every wave is analytic, **so the surface's slope is known exactly** — which is what
+   lets a groove wall be *lit* as geometry, one side bright and the other in shadow, for a sign
+   and a multiply. That is where the depth in the picture comes from. A noise field cannot
+   supply it: nobody knows which way a noise field is facing.
+4. **The grain.** The family's `fbm`, sampled in the warped frame.
+
+The relief is deliberately **outside** the octave count — the flow, the whorls and the plates
+are single samples and closed forms, identical at every LOD band. A limb's bark is therefore
+nailed to the limb and only its grain resolves finer, which is the property the module's
+coordinate choice existed for and which a relief built on `fbm` would have quietly destroyed.
+Ownership is band-invariant for the same reason: a thread that moved when the camera crossed a
+band would be `AC-NAV-2`'s zoom gesture rewriting who wrote what.
+
+### Ownership is not laid out differently — it is *read* differently
+
+`Mosaic`'s runs are untouched, and so is `push_accents`. What changed is where the run table is
+sampled: the lookup fraction is displaced by the same field that bends the grain, so a boundary
+stops being a line and becomes a contour. Three terms — the broad flow for fingers, the fine
+channel for feathering, and a comb (a triangle wave of the same warped coordinate the plates are
+cut from) that makes the result *threads* rather than blotches, at a family-independent
+frequency so a contributor's legibility does not depend on which language they wrote in.
+
+The chronology is two constants. The displacement is **skewed**, `w · (1 + k·w)`, so a positive
+stray — which fetches a *later* run's colour — is amplified and a negative one damped: later
+material weaves down through earlier material in broad fingers while earlier material survives
+up the limb as thin filaments. And the reach **grows tip-ward**, so the sequence starts crisp at
+the base and every later boundary is more interpenetrated than the one before it.
+
+### Three findings that only a picture could produce
+
+**A weave excursion past 1.0 turns a wholly-owned limb into a partly-unowned one.** The run
+table's last bound is `claimed / cells`, so "past the end" normally means the unclaimed
+remainder showing bark — but a table where one contributor holds everything ends at exactly one,
+and an unclamped stray past it punches unowned patches into a limb that is wholly owned. That is
+not an artefact; it is the picture saying something false about the repository. Caught by
+`the_mosaic_accent_tints_rather_than_replaces`, which is the only test in the module that
+happened to use a single-holder table.
+
+**A linear mix of two hues cancels chroma, and that is why the veins would not show.** Heartwood
+is a red-dominant tan and the palette's green entry is nearly its complement, so a half-and-half
+mix of them measured out as **khaki** — less colourful than either input. Boosting the accent's
+chroma is the obvious fix and it does nothing, because the boost is exactly what is being
+cancelled; it was raised to 1.45 and then to 2.2 and the picture did not move. What fixed it was
+not mixing halfway *anywhere*: ownership is `ACCENT_THREAD` at 0.55 on a vein and `ACCENT_WASH`
+at 0.16 between veins, so on a thread the accent takes nearly all of the hue and there is
+nothing to cancel against. The chroma boost then went back to one.
+
+**Age had to move off brightness.** Brightness is spoken for by the relief, the rings, the
+fissures and the cylinder profile, so an old limb and a shaded one were the same picture.
+Saturation collides with nothing here, and it is what actually happens to weathered wood. It is
+squared, because `age_full_scale_days` is ten years on a log scale and a linear ramp takes half
+the colour out of the entire tree at once — every limb reads as old and none reads as older.
+
+The accent is then forced to the **exact luminance** of the texel it lands on. That is the
+invariant the whole treatment rests on and it is what makes `MOSAIC_ACCENT`'s old value of 0.55
+— rejected in S23 as candy stripes — safe to return to: what made it wrong was the palette's own
+lightness painting over the shading, not the weight. `the_accent_changes_hue_and_not_brightness`
+holds it to 2% across all six families.
+
+### Both seeds now come from the path, and that is a stability argument
+
+Coarse structure from the **parent** path so grain carries across a joint; fine detail from the
+node's own. Node ids are perfectly deterministic and completely unstable — ids are assigned in
+creation order, so adding one file near the root shifts every id after it, and an id-seeded tree
+re-rolls its entire appearance on a re-scan that changed one line. A path-seeded one does not.
+Two screenshots of the same repository a week apart are now comparable.
+
+A node's age reading is also softened a quarter toward its parent's. The parent already
+aggregates its children during extraction, so the value mixed in *is* a neighbourhood average of
+the age field — nothing is invented, and the seam where two sibling directories with different
+histories meet stops reading as a rendering artefact.
+
+### The cost, measured, and the finding inside it
+
+`xtask id-coverage` bakes 90.9 M texels and is the instrument. Against the surface this replaces
+(**10.3 s**):
+
+| change | cost |
+|---|---|
+| plates, tiers, breaks, whorls, keyed accent, threads, desaturation | **+2.7 s** |
+| a **second** `noise2` for the fine warp | **+8.0 s** |
+| raising `MAX_OCTAVES` from 2 to 3 — the same four hashes | **nothing measurable** |
+| branchless `wave` and knot falloff | **−3.5 s** |
+| shipped | **18.7 s**, 1.8× |
+
+**The bake is latency-bound, not throughput-bound, and that changes which economies matter.**
+`fbm`'s octaves are independent, so twelve hashes are in flight at once and a third octave rides
+along in issue slots that were idle. A domain warp sits on the critical path of everything after
+it, so a second one pays its full round trip — three times what every other addition in the
+slice came to, for the same four hashes. `[u32; 4]::map` not scalarizing was worth 1.5 s of it
+and was not the story.
+
+So the module is built around **one** lattice fetch, with every other scale of detail
+synthesized from closed forms of the coordinate it produces. `RIPPLE_LATTICE` is that written
+down: a periodic function of an *already warped* coordinate is not periodic, so a second scale
+of fissure — grooves that fade out and return along their length — costs six flops and no hash
+at all. It is what got the cracked-bark reading back after the second warp was removed.
+
+1.8× on a bake that is off the main thread and degrades to "the previous band, stretched" is the
+trade this slice makes. Nothing about main-thread frame cost moved: `PLACEMENTS_PER_FRAME` counts
+pieces and S24's ~1.9 ms per texture is a property of texture creation.
+
+### The instrument
+
+`crates/treepo-render/tests/bark_preview.rs`, ignored by default, four views plus one-to-one
+detail crops, writing PNGs to `target/tmp/bark-preview/` through a stored-DEFLATE encoder rather
+than a dependency (the argument `tools/m0-silhouette/src/png.rs` already makes at length).
+
+```text
+cargo test -p treepo-render --test bark_preview -- --ignored --nocapture
+```
+
+**This is the thing four material constants have been waiting on since S12**, and every number
+in this slice was set by looking at it. It also cost two of its own findings: the preview's first
+age gradient was 0.9 on a ten-year scale — a near-worst case that made the whole tree read as
+bleached — and its first family assignment put `Parchment`, the palest of the six, on half the
+limbs. Both looked like shader faults and neither was. A preview that is not representative is an
+instrument that lies.
+
+### What it did not fix, and one thing it found
+
+**Segment joints are not mitred.** `rasterize` builds one quad per segment from that segment's
+own perpendicular, so on the outside of every bend two quads leave a thin uncovered wedge —
+about `half_width · |Δθ|` at the edge, tapering to the centre line. It shows as a short black
+tick on the limb edge at every joint, and it is plainly visible in `tree-near.png`. Pre-existing,
+made obvious by the surface being worth looking at closely. Left alone deliberately: it is
+geometry rather than appearance, it changes coverage, and it wants its own `id-coverage` run.
+
+Gates: `cargo test --workspace` green, clippy `--all-targets` clean, `dep-guard` clean,
+`determinism` reproducible (`e01b1496…`), `id-coverage` **90,882,200 texels, 0 unaccountable, 0
+invisible**.
+
+
 ## Next
 
 **Phase 4 is closed. Phase 5 has its shell, its bake, its ID plane, its T3 numbers, materials
@@ -3283,7 +3442,19 @@ Two smaller things the slice noticed and did not fix:
   headlessly — BRP (D10) is the obvious lever, and it is now wired.
 
 Recorded rather than resolved. These were all waiting on materials having an appearance, which
-they now have — S23 is the sprint that unblocks them, not the one that answers them:
+they now have — S23 is the sprint that unblocks them, not the one that answers them.
+
+**S25 built the instrument they were waiting for**, and it is one command:
+
+```text
+cargo test -p treepo-render --test bark_preview -- --ignored --nocapture
+```
+
+Four views into `target/tmp/bark-preview/`, with one-to-one detail crops taken across the
+mosaic's run boundaries. Every constant in `surface.rs` was set against it. The list below is
+now *answerable* rather than merely recorded — and S25's own two false alarms are the warning
+that comes with it: a preview whose age gradient or family mix is not representative will make
+the shader look broken when it is not.
 
 - **The mosaic arrangement is contiguous runs in key order** (S12). A seeded per-node shuffle
   would make a bad colour pairing local instead of systemic across every limb two contributors

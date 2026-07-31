@@ -34,30 +34,48 @@
 //!
 //! # The four layers, and why they are in this order
 //!
-//! 1. **The flow** ([`noise2`]). One two-channel value-noise sample bends the limb's coordinate
-//!    frame before anything reads it. Everything downstream is therefore *warped*, which is
-//!    what separates wood from corduroy: straight parallel lines are a woven fabric, lines that
-//!    wander, converge and fork are grain.
+//! 1. **The flow** ([`noise2`]). One two-channel value-noise sample — anisotropic, slow along
+//!    the limb and fast across it — bends the coordinate frame before anything reads it.
+//!    Everything downstream is therefore *warped*, which is what separates wood from corduroy:
+//!    straight parallel lines are a woven fabric, lines that wander, converge and fork are
+//!    grain. The across-frequency is the part that forks, and [`FLOW_LATTICE`] says why.
 //! 2. **The whorls** ([`Knot`]). Nought to two per limb, placed from the node's own path hash.
 //!    A knot drags the flow lengthwise toward itself, spreads it sideways and curls it, so the
 //!    grain streams past a hard obstacle. This is the feature that makes the result read as
 //!    *wood* rather than as noise with a good aspect ratio, and it costs no hash at all.
-//! 3. **The plates** ([`Surface::relief`]). Longitudinal ridges separated by grooves, carved
-//!    out of a triangle wave of the *warped* across-coordinate. Because the wave is analytic,
-//!    its slope is known exactly — so the grooves can be lit as geometry, one wall bright and
-//!    the other in shadow, for the price of a sign and a multiply. That is where the depth in
-//!    the picture comes from; a noise field cannot supply it, because nobody knows which way a
-//!    noise field is facing.
+//! 3. **The plates** ([`Surface::relief`]). Longitudinal ridges separated by grooves, carved out
+//!    of a triangle wave of the *warped* across-coordinate, cut into tiles by a second wave
+//!    along it ([`Surface::breaks`]) and varied groove by groove ([`TIER_FLOOR`]) and along each
+//!    groove's length ([`RIPPLE_FLOOR`]). Because every one of those waves is analytic, the
+//!    surface's slope is known exactly — so the grooves can be lit as geometry, one wall bright
+//!    and the other in shadow, for the price of a sign and a multiply. That is where the depth
+//!    in the picture comes from; a noise field cannot supply it, because nobody knows which way
+//!    a noise field is facing.
 //! 4. **The grain** ([`fbm`]). The family's own character, sampled in the warped frame, which
 //!    is what makes six families six materials rather than one material six colours.
 //!
-//! # One noise field, read eight ways
+//! # Two lattice samples for the whole surface, and the reason it is two
 //!
-//! The cost discipline of this module. [`fbm`] is evaluated **once** per texel; grain,
-//! faceting, groove modulation, fissures, veining, weathering, ownership feathering and the
-//! ring reading are all derived from that one value, and [`noise2`] adds one more sample that
-//! is read three ways. Sampling a field per effect is the natural way to write it and would
-//! multiply the per-texel cost of the whole bake by the number of effects.
+//! The cost discipline of this module, and the one number that decides it. [`fbm`] is evaluated
+//! **once** per texel — grain, faceting, fissures, veining, weathering and the vein threshold
+//! all come off that one value — and [`noise2`] adds exactly one more, read four ways. Sampling
+//! a field per effect is the natural way to write it and would multiply the cost of the whole
+//! bake by the number of effects.
+//!
+//! **The bake is latency-bound, not throughput-bound, and that changes which economies matter.**
+//! `xtask id-coverage` bakes 90.9 M texels and is the instrument. Measured against the surface
+//! this replaces (10.3 s): the plates, tiers, breaks, whorls, luminance-keyed accent, threads
+//! and desaturation together cost **+2.7 s**, and a *second* [`noise2`] cost **+8 s** on its own
+//! — three times what all of the rest came to, for four hashes. Raising [`MAX_OCTAVES`] from two
+//! to three, also four hashes, cost nothing measurable at all.
+//!
+//! The difference is dependency. `fbm`'s octaves are independent, so twelve hashes are in flight
+//! at once and the third octave rides along in issue slots that were idle; a domain warp is on
+//! the critical path of everything after it, so a second one pays its full round trip. The
+//! module is built around that: **one** lattice fetch for the warp, and every other scale of
+//! detail synthesized from closed forms of the coordinate it produces —
+//! [`RIPPLE_LATTICE`] is that trick written down, and it is why the surface has two scales of
+//! fissure for the price of six flops. The whole treatment lands at 18.7 s.
 //!
 //! Anisotropy is what makes one field enough. Sampling it at `(along / p.x, across / p.y)` with
 //! `p.x` far larger than `p.y` gives streaks running along the limb — wood grain; sampling with
@@ -540,37 +558,58 @@ const VEIN_SPREAD: f32 = 0.82;
 
 // --- the flow field -------------------------------------------------------------------
 
-/// The coarse warp's lattice, in cells per half-width along and across the limb.
+/// The warp's lattice, in cells per half-width along and across the limb.
 ///
-/// Long along and moderate across: this is the bend that takes the whole limb's grain one way
-/// and then the other, over a period of four or five half-widths.
-const FLOW_COARSE: Vec2 = Vec2::new(0.22, 0.60);
+/// **Anisotropic, and the ratio is the whole feature.** Slow along, so the bend takes a limb's
+/// grain one way and then the other over three half-widths; fast *across*, and that is the axis
+/// that matters. A warp that varies slowly across a limb displaces every groove by nearly the
+/// same amount and they stay parallel — the surface wanders as a unit, which is what brushed
+/// hair does. Bark forks, and a fork needs the warp's **gradient across the limb** to be
+/// comparable to the groove spacing itself. Amplitude times across-frequency comes to about six
+/// tenths here: enough that grooves visibly converge and merge, not so much that the coordinate
+/// folds everywhere and the surface dissolves into an isotropic maze — cork, or lichen, but not
+/// wood.
+///
+/// **One sample, and it was two for a while.** Sampling the coarse bend and the fine fork
+/// separately is the natural way to write it and is what the first version did; it cost 8 s of
+/// a 27 s `xtask id-coverage` and bought nothing a single anisotropic sample does not. The
+/// measurement that says so is in the module header — the bake is *latency*-bound, so a second
+/// dependent lattice fetch costs its full round trip rather than sharing issue slots with the
+/// first.
+const FLOW_LATTICE: Vec2 = Vec2::new(0.30, 2.15);
 
-/// The fine warp's lattice, in cells per half-width.
+/// The direction and frequency the ripple runs at, in cycles per half-width.
 ///
-/// **Two samples rather than one, and this is the one that makes it wood.** A single coarse warp
-/// varies slowly across a limb, so it displaces every groove by nearly the same amount and they
-/// stay parallel — the surface wanders as a unit, which is what brushed hair does. Bark forks:
-/// grooves converge, merge and split, and that requires the warp to have a *gradient across the
-/// limb* comparable to the groove spacing itself. Nearly three cells per half-width against
-/// [`Surface::ridges`]'s five is exactly that, and where the displacement folds — where the warp
-/// is steep enough to run backwards — two grooves meet and become one.
+/// **A periodic function of a warped coordinate is not periodic, and that is the trick.** Bark
+/// needs detail at two scales — a broad bend and a fine breakup — and the obvious way to get the
+/// second is a second [`noise2`], which is what this module did until a measurement said it cost
+/// a third of the whole bake. This costs one [`wave`]: six flops, no hash, no lattice, and no
+/// dependent fetch to wait on.
 ///
-/// It could have come from [`fbm`], which is already sampled and would have been free. It does
-/// not, and the reason is the property in the module header: `fbm`'s octave count varies with
-/// the LOD band, so a relief built on it would *slide* as the camera crossed a band. A second
-/// [`noise2`] costs four hashes and keeps the bark nailed to the limb.
-const FLOW_FINE: Vec2 = Vec2::new(1.10, 2.40);
+/// It works because the argument is `warped`, not `here`. A plain diagonal wave over the raw
+/// limb coordinate is a regular corduroy and looks it; the same wave read at coordinates that
+/// have already been bent by the flow inherits every irregularity the flow has, at a frequency
+/// the flow does not carry. Free detail, out of arithmetic that was already on the books.
+///
+/// Diagonal rather than across, so it cuts the plates at an angle instead of adding a second set
+/// of grooves parallel to the first.
+const RIPPLE_LATTICE: Vec2 = Vec2::new(0.95, 1.35);
 
-/// How much of the total warp the fine octave contributes.
+/// How far the ripple shifts the plate wave, in plate periods.
 ///
-/// Small, and the bound on it is arithmetic rather than taste. The warp's *gradient across the
-/// limb* is its amplitude times its across-frequency, and where that exceeds one the coordinate
-/// folds and two grooves merge. A little folding is what a fork is; a lot of it turns the
-/// surface into an isotropic maze — cork, or lichen, but not wood. Coarse and fine together
-/// come to about six tenths here, which forks occasionally and never dissolves the longitudinal
-/// reading `F-MAT-2`'s mosaic is laid along.
-const FINE_SHARE: f32 = 0.22;
+/// Small, and the bound is the lighting rather than the look. The relief's directional term is
+/// lit from the plate wave's *analytic* slope, and a phase term steep enough to reverse that
+/// slope would light some walls from inside. At this depth the ripple perturbs the slope by
+/// under a fifth and its sign is never in doubt.
+const RIPPLE_PHASE: f32 = 0.13;
+
+/// How shallow a groove gets where the ripple is against it.
+///
+/// The other half of the same term, and the half that does the visible work: a groove that fades
+/// out and returns along its length reads as a fissure that opened in places, which is what bark
+/// is. Depth carries it rather than phase because scaling the relief cannot disturb the slope
+/// the walls are lit from — so this one is free to be strong.
+const RIPPLE_FLOOR: f32 = 0.45;
 
 /// How much further the flow drags the along-axis than the across-axis.
 ///
@@ -795,14 +834,12 @@ impl Knot {
             (at.x - self.at.x) / (self.reach * KNOT_STRETCH),
             (at.y - self.at.y) / self.reach,
         );
-        let square = delta.length_squared();
-        if square >= 1.0 {
-            return (Vec2::ZERO, 0.0);
-        }
         // Quadratic in the *squared* radius, so the influence and its first derivative both
         // vanish at the rim — a linear falloff leaves a visible circle where the knot's
-        // influence stops, which is the one thing worse than no knot.
-        let fall = 1.0 - square;
+        // influence stops, which is the one thing worse than no knot. Clamped rather than
+        // branched out: outside the reach the falloff is zero and the arithmetic below is
+        // multiplication by nothing, which costs less than a branch nobody can predict.
+        let fall = (1.0 - delta.length_squared()).max(0.0);
         let falloff = fall * fall;
         let bend = Vec2::new(
             (-delta.x * KNOT_DRAG - delta.y * KNOT_SWIRL) * falloff,
@@ -909,19 +946,12 @@ pub fn shade(
     let surface = &shading.surface;
     let here = Vec2::new(at.along, at.across);
 
-    // --- the flow. Two samples, four channels, and every one of them read more than once: the
-    // pair warps the frame everything below is measured in, the coarse `x` sets how deep the
-    // grooves are cut, and the two `y`s are the broad and fine halves of the ownership weave.
-    //
-    // Seeded differently on purpose. The coarse bend comes from the *lineage*, so a limb bends
-    // the way its parent does and the grain carries across a joint; the fine one comes from the
-    // node's own hash, so siblings are alike at arm's length and different up close.
-    let drift = noise2(here * FLOW_COARSE, shading.lineage);
-    let fine = noise2(here * FLOW_FINE, shading.seed);
-    let mut warped = here
-        + (Vec2::new(drift.x * FLOW_STRETCH, drift.y)
-            + Vec2::new(fine.x * FLOW_STRETCH, fine.y) * FINE_SHARE)
-            * surface.flow;
+    // --- the flow. One sample, two channels, four readings: it warps the frame everything below
+    // is measured in, its `x` sets how deep the grooves are cut, and both channels feed the
+    // ownership weave. Seeded from the lineage *and* the node, so a limb bends broadly the way
+    // its parent does while remaining its own.
+    let drift = noise2(here * FLOW_LATTICE, shading.lineage ^ shading.seed);
+    let mut warped = here + Vec2::new(drift.x * FLOW_STRETCH, drift.y) * surface.flow;
 
     // --- the whorls. Closed form, no hash, and unrolled over a fixed-size array so an empty
     // slot costs one compare.
@@ -948,10 +978,15 @@ pub fn shade(
     let plated = quantize(field, FACET_STEPS) * FACET_STEP;
     let texture = field + (plated - field) * surface.facet;
 
+    // A second scale of detail for free — see RIPPLE_LATTICE. A periodic function of an
+    // *already warped* coordinate is not periodic, so this buys a higher-frequency irregular
+    // field for six flops and no lattice fetch at all.
+    let (ripple, _) = wave(warped.dot(RIPPLE_LATTICE));
+
     // --- the plates. A triangle wave of the warped across-coordinate, carved into a broad flat
     // top and a narrow groove. `slope` is the wave's exact derivative sign, which is what lets
     // the groove walls be *lit* rather than merely shaded; see RELIEF_FACE.
-    let comb = warped.y * surface.ridges + phase_of(shading.lineage);
+    let comb = warped.y * surface.ridges + phase_of(shading.lineage) + ripple * RIPPLE_PHASE;
     let (crest, slope) = wave(comb);
     let (ridge, ramp) = shoulder(crest, PLATE_EDGE);
 
@@ -976,7 +1011,14 @@ pub fn shade(
     // plate on top of it, so the fissure network has primary splits and secondary ones instead
     // of one depth repeated.
     let tier = TIER_FLOOR + (1.0 - TIER_FLOOR) * fract(lane * TIER_STEP);
-    let depth = surface.relief * tier * (DEPTH_FLOOR + (1.0 - DEPTH_FLOOR) * (drift.x * 0.5 + 0.5));
+    // And modulated along its length by the ripple, so a groove fades out and returns rather
+    // than running at one depth from base to tip. Depth is the safe place to put a
+    // high-frequency term: it scales the relief without moving the wave, so the analytic slope
+    // the walls are lit from stays exactly right whatever this does.
+    let depth = surface.relief
+        * tier
+        * (DEPTH_FLOOR + (1.0 - DEPTH_FLOOR) * (drift.x * 0.5 + 0.5))
+        * (RIPPLE_FLOOR + (1.0 - RIPPLE_FLOOR) * (ripple * 0.5 + 0.5));
 
     // A fissure is a groove that failed, so it deepens one rather than drawing over it — and
     // only where the field says the material was already weak, which is what keeps `F-MAT-6`'s
@@ -1082,8 +1124,8 @@ pub fn shade(
     // *which* holder a texel belongs to, by displacing the lookup, and *how much* of one, by
     // being the thread itself. Those are the same line of wood, which is why they are the same
     // number.
-    let (comb, _) = wave(warped.y * WEAVE_RIDGES + fine.y * THREAD_WANDER);
-    if let Some(accent) = weave(accents, at.fraction, drift.y, fine.y, comb) {
+    let (comb, _) = wave(warped.y * WEAVE_RIDGES + drift.x * THREAD_WANDER);
+    if let Some(accent) = weave(accents, at.fraction, drift.y, drift.x, comb) {
         // A wash over the whole of a holder's run, and a thread on top of it. See ACCENT_THREAD
         // for why one number could not do both jobs.
         let ribbon = ((comb - THREAD_CUT) * THREAD_SHARPEN).clamp(0.0, 1.0);
@@ -1265,15 +1307,22 @@ fn noise2(at: Vec2, seed: u32) -> Vec2 {
     let (x, y) = (floor_i(at.x), floor_i(at.y));
     let weight = smooth(at, x, y);
 
-    let corners = [
-        bits(x, y, seed),
-        bits(x + 1, y, seed),
-        bits(x, y + 1, seed),
-        bits(x + 1, y + 1, seed),
-    ];
+    // Four scalars rather than an array. `[u32; 4]::map` is the obvious spelling and it does
+    // not reliably scalarize — it goes through `IntoIterator`, and what comes out the far side
+    // is stack traffic on the hottest path in the bake.
+    let low = bits(x, y, seed);
+    let right = bits(x + 1, y, seed);
+    let down = bits(x, y + 1, seed);
+    let far = bits(x + 1, y + 1, seed);
     Vec2::new(
-        blend(corners.map(|corner| corner & 0xffff), weight),
-        blend(corners.map(|corner| corner >> 16), weight),
+        blend(
+            low & 0xffff,
+            right & 0xffff,
+            down & 0xffff,
+            far & 0xffff,
+            weight,
+        ),
+        blend(low >> 16, right >> 16, down >> 16, far >> 16, weight),
     )
 }
 
@@ -1292,10 +1341,10 @@ fn smooth(at: Vec2, x: i32, y: i32) -> Vec2 {
 /// Bilinear interpolation of four 16-bit lattice values, into `-1..=1`.
 #[must_use]
 #[inline(always)]
-fn blend(corners: [u32; 4], weight: Vec2) -> f32 {
+fn blend(low: u32, right: u32, down: u32, far: u32, weight: Vec2) -> f32 {
     const SCALE: f32 = 2.0 / 65_535.0;
-    let top = lerp(corners[0] as f32, corners[1] as f32, weight.x);
-    let bottom = lerp(corners[2] as f32, corners[3] as f32, weight.x);
+    let top = lerp(low as f32, right as f32, weight.x);
+    let bottom = lerp(down as f32, far as f32, weight.x);
     lerp(top, bottom, weight.y) * SCALE - 1.0
 }
 
@@ -1361,12 +1410,15 @@ fn triangle(at: f32) -> f32 {
 #[must_use]
 #[inline]
 fn wave(at: f32) -> (f32, f32) {
-    let phase = fract(at);
-    if phase < 0.5 {
-        (4.0 * phase - 1.0, 1.0)
-    } else {
-        (3.0 - 4.0 * phase, -1.0)
-    }
+    // One expression and a select rather than two expressions and a branch. The argument is a
+    // *warped* coordinate, so which half of the period a texel lands in is unpredictable from
+    // the last texel — and three of these run on every texel of the bake. Written as two arms
+    // it is three mispredicted branches per texel.
+    let phase = fract(at) - 0.5;
+    (
+        1.0 - 4.0 * phase.abs(),
+        if phase < 0.0 { 1.0 } else { -1.0 },
+    )
 }
 
 /// How many plates [`Surface::facet`] quantizes the noise into, and its reciprocal.
