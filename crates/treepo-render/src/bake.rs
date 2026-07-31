@@ -24,10 +24,16 @@
 //! Filling each triangle by testing every texel of its bounding box is four lines shorter and
 //! quadratically worse: a limb running corner to corner of a piece has a bounding box the size
 //! of the piece and covers a few percent of it. Walking rows and computing the covered span
-//! makes the cost proportional to what is drawn — which is also what makes
-//! [`BAKE_TEXELS_PER_FRAME`] a budget a frame can be held to rather than a guess.
+//! makes the cost proportional to what is drawn, which is what keeps a piece a bounded unit of
+//! work — and a bounded unit of work is what could be handed to a thread pool.
 //!
-//! [`BAKE_TEXELS_PER_FRAME`]: crate::chunk::BAKE_TEXELS_PER_FRAME
+//! # Everything here is a pure function, and that is load-bearing
+//!
+//! [`rasterize`] takes a skeleton, a material map, a palette and a rectangle, and returns a
+//! [`Layer`]. It touches no `World`, no `Assets`, no resource and no clock. That is why
+//! [`chunk::stream`](crate::chunk::stream) can run it on `AsyncComputeTaskPool` without the
+//! rasterizer changing at all, and it is the same property that lets `cargo xtask id-coverage`
+//! call it with no Bevy app in existence. Keep it.
 //!
 //! # One pass writes both planes, and that is the `N7` argument
 //!
@@ -77,7 +83,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageSampler};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use treepo_id::Palette;
 use treepo_model::{
     Composition, Material, MaterialFamily, MaterialMap, NodeId, Skeleton, StressKind,
@@ -109,10 +115,10 @@ pub struct Layer {
     /// How many texels this bake wrote — what it cost, not what it covers.
     ///
     /// Counts *writes*, so a texel two limbs cross is counted twice. That is deliberate: the
-    /// number exists to charge [`BAKE_TEXELS_PER_FRAME`](crate::chunk::BAKE_TEXELS_PER_FRAME),
-    /// and what a frame pays for is the shading it performed rather than the area it ended up
-    /// covering. [`coverage`](crate::coverage) is the function that counts distinct texels, and
-    /// it answers a different question.
+    /// number measures the shading this bake performed rather than the area it ended up
+    /// covering, which is what makes it comparable between one piece and another and what
+    /// [`BakeLoad::texels`](crate::BakeLoad::texels) reports. [`coverage`](crate::coverage) is
+    /// the function that counts distinct texels, and it answers a different question.
     pub texels_drawn: u64,
 }
 
@@ -259,12 +265,17 @@ pub fn texture(size: UVec2, pixels: Vec<u8>) -> Image {
 ///
 /// The one thing it must not become is a *second* source of author colour. `treepo-id` owns
 /// what colour a contributor is; this owns which palette that question is asked of.
+///
+/// Shared rather than owned because every off-thread bake reads it — see
+/// [`chunk`](crate::chunk)'s header. An `Arc` is the honest spelling of "immutable once
+/// validated, read by whoever is drawing", and it makes handing a bake its palette an atomic
+/// increment rather than a copy of the entry table.
 #[derive(Resource, Debug, Clone)]
-pub struct AuthorPalette(pub Palette);
+pub struct AuthorPalette(pub Arc<Palette>);
 
 impl Default for AuthorPalette {
     fn default() -> Self {
-        Self(Palette::built_in())
+        Self(Arc::new(Palette::built_in()))
     }
 }
 

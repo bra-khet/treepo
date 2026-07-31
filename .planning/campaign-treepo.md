@@ -140,17 +140,23 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
 - **End Conditions**:
   - [ ] T2 legible at far, medium, near zoom; known top-level directory findable by eye within 30 s — **recorded user test, ≥3 participants** (`AC-NAV-1`)
   - [!] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`) — **regressed by the
-        materials pass, on purpose and with the numbers recorded.** It was green on the dev
-        machine before materials had an appearance: worst frame 14.5 ms over a full 12-band
-        traversal, zero over 33.3 ms. Shading each texel rather than interpolating between two
-        of them costs **13.7 → 71 ns per texel**, measured, and the same traversal now spends
-        ~30 of roughly 2,500 frames over budget, worst 30–53 ms on frames that bake. The bake
-        budget was re-cut against that measurement (`BAKE_TEXELS_PER_FRAME` replacing
-        `BAKES_PER_FRAME`, `MAX_PIECE_SIDE` halved), which took it from 268 ms to 53 ms, and
-        further tuning is the wrong lever: the bake is CPU rasterization **on the main thread**,
-        and moving it to the async pool is what removes the trade. That is Phase 7's
-        `grow_task`, where a producer already publishes while Thrive reads. Minimum spec remains
-        unmeasured on top of this
+        materials pass and largely recovered by moving the bake off the main thread (D5.3); not
+        yet closed, and the reason is the instrument rather than the code.**
+        History, all on the dev machine at a 144 Hz vsync floor of 6.9 ms:
+        green before materials (worst 14.5 ms, zero over 33.3 ms) → regressed by materials, which
+        cost **13.7 → 71 ns per texel** (worst 30–53 ms, ~30 of ~2,500 frames over) → the bake
+        moved to `AsyncComputeTaskPool`, and a `PLACEMENTS_PER_FRAME` cap added once the
+        measurement showed the worst frame tracking placements at ~1.9 ms each. On bands 0…−8
+        that traversal now reads **worst frame 8.5–18.4 ms, zero over budget**, and the worst
+        frame that *places* a layer is at or below the worst frame that merely holds the picture
+        — placement is no longer the most expensive thing a frame does.
+        **What is not measured:** bands −9…−11 with the cap, at a 144 Hz floor. This machine
+        drops to a 60 Hz present rate partway through every long run — panel still at 144, window
+        focused, on AC — which triples the instrument's quantum exactly where the criterion has
+        least headroom. The two readings that exist for those bands disagree (35.9–36.5 ms at
+        144 Hz *without* the cap; 49–61 ms at 60 Hz *with* it, against a 20–21 ms idle worst on
+        the same steps), so the deep bands are open. Minimum spec remains unmeasured on top of
+        all of this
   - [ ] `cargo xtask id-coverage` reports zero colored pixels without an element ID (`P1`, `N7`, `AC-INSP-1`)
   - [ ] Clicking any element resolves to a real path or an explicit aggregate (`AC-INSP-1`)
   - [x] T3 resident memory under 4 GB (`NFR-3`) — peak working set **676 MB** over a full

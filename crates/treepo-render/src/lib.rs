@@ -47,7 +47,7 @@ use bevy::prelude::*;
 pub use bake::{AuthorPalette, Layer};
 pub use camera::{CameraSystems, FrameTarget, PointerDrag, TreeCamera};
 pub use chunk::{
-    BakeLoad, Chunk, ChunkId, ChunkSet, Extent, Piece, ResidentChunk, TreePlan, pieces,
+    BakeLoad, BakeQueue, Chunk, ChunkId, ChunkSet, Extent, Piece, ResidentChunk, TreePlan, pieces,
 };
 pub use id_buffer::{Coverage, ElementId, IdPlane, Painted, coverage, pick, unresolved};
 pub use lod::Band;
@@ -70,6 +70,7 @@ impl Plugin for TreepoRenderPlugin {
             .init_resource::<TreePlan>()
             .init_resource::<AuthorPalette>()
             .init_resource::<BakeLoad>()
+            .init_resource::<BakeQueue>()
             .add_systems(Startup, camera::spawn)
             .add_systems(
                 Update,

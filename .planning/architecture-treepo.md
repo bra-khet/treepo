@@ -581,10 +581,48 @@ herringbone tile atlas under `assets/textures/tiles/**`. Neither is built, and t
   `treepo-gen`, which cannot name bevy (`N6`, D1). An atlas also has one texel size against
   twelve bands. It refines a surface that has to exist first; this is that surface.
 - **Accepted cost, measured**: shading each texel rather than interpolating between two of them
-  costs **13.7 → 71 ns per texel** on the reference machine. The bake is on the main thread, so
-  that regressed `AC-NAV-2` on the T3 pin and no amount of budget tuning closes it — see the
-  campaign's Phase 5 entry, and D5's own note that the bake belongs on the async pool.
+  costs **13.7 → 71 ns per texel** on the reference machine. The bake was on the main thread, so
+  that regressed `AC-NAV-2` on the T3 pin and no amount of budget tuning closed it. **D5.3 is
+  what removed the trade rather than tuning it.**
 - **Files**: `crates/treepo-render/src/{surface,bake,chunk}.rs`.
+
+#### D5.3 — The bake runs on the async pool; the main thread only places what it produced
+*(Adopted 2026-07-30, Phase 5. D5 and D5.2 both note that the bake belongs off the main thread.
+This is that, and what it changed about the budgets around it.)*
+- **Chosen**: `chunk::stream` hands each missing piece to Bevy's `AsyncComputeTaskPool` and, on a
+  later frame, takes the finished `Layer` and does the two things that need the main thread —
+  writing the colour plane into `Assets<Image>` and spawning the entity that draws it.
+  `bake::rasterize` is unchanged. It was already a pure function of a snapshot, a palette and a
+  `Piece`, which is why the *call* moved and the rasterizer did not, and it is the same property
+  that lets `cargo xtask id-coverage` run it with no Bevy app in existence.
+- **What it replaces**, because the constants only make sense read together:
+  - `BAKE_TEXELS_PER_FRAME` → **`BAKES_IN_FLIGHT`**. A per-frame texel budget was right while a
+    frame paid for every texel it drew. No frame does now, so what is left to bound is
+    outstanding work: memory held by finished-but-unplaced layers, and effort spent on pieces
+    the camera may leave first.
+  - A new **`PLACEMENTS_PER_FRAME`**, and its unit is the finding. `BAKE_TEXELS_PER_FRAME`
+    counted texels precisely because two pieces of one size differ fifty-fold in how much they
+    *draw*; placement is the opposite — an empty piece and a full one are the same texture, the
+    same upload and the same entity. Measured on the T3 pin, the worst frame tracked the number
+    of layers placed on it almost exactly: 4 → 14.4 ms, 10 → 22.8 ms, 16 → 35.9 ms against a
+    6.9 ms vsync floor. **~1.9 ms of main thread per placed piece**, and 256 KiB in 1.9 ms is
+    134 MB/s — far too slow to be the copy, so it is the per-texture cost, which is a count.
+  - `MAX_PIECE_SIDE`'s justification. It was halved because a piece was atomic *on the main
+    thread*; that argument is gone, and the number is now open rather than settled. What still
+    rests on it is the granularity at which a bake can be cancelled and the size of one upload.
+- **A bake can now be abandoned**, which a main-thread loop could not do: dropping a `Task`
+  cancels it, so a bake whose band the camera has already left costs what it had done and no
+  more. Staleness is `(band, generation)`, checked before finished bakes are collected.
+- **`N7` is untouched.** One loop inside `rasterize` still writes a colour and an element ID
+  together, and both planes cross back to the main thread as one `Layer`. There is no frame on
+  which one has been placed and the other has not.
+- **Rejected**: *a second system to place layers, ordered after `stream`* — the entities it
+  spawns are deferred until a sync point, so `stream` would not see them and would bake each
+  piece twice. One system, with the frame's placements recorded in `BakeQueue::applied`, makes
+  that gap one frame wide and closes it explicitly.
+- **Rejected**: *`std::thread` per bake* — the pool already exists, is sized by Bevy against the
+  machine, and gives cancellation on drop.
+- **Files**: `crates/treepo-render/src/chunk.rs`.
 
 ### D6 — Grow determinism boundary: the timeline is deterministic, pixels are not
 - **Chosen**: `treepo-grow` produces a `GrowTimeline` — every frame's element positions,

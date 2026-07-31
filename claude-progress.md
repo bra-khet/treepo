@@ -6,10 +6,12 @@
 **Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
 (`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy shell
-(S19), D5's chunked static bake (S20), the element-ID plane (S21), the T3 measurement (S22) and
-materials with an appearance (S23) are in. `NFR-3` is met and RISK-B is closed. `AC-NAV-2` is
-**regressed**: shading each texel costs five times what interpolating two colours did, the bake
-is on the main thread, and moving it off is the next sprint. The consumer UI is not started.**
+(S19), D5's chunked static bake (S20), the element-ID plane (S21), the T3 measurement (S22),
+materials with an appearance (S23) and the off-thread bake (S24) are in. `NFR-3` is met and
+RISK-B is closed. `AC-NAV-2` is **still `[!]` but largely recovered**: the bake now runs on
+`AsyncComputeTaskPool` and bands 0…−8 hold 8.5–18.4 ms with zero frames over budget, against
+30–53 ms before. The deep bands are unmeasured at a usable vsync floor — that is an instrument
+problem, and it is the top item. The consumer UI is not started.**
 
 ---
 
@@ -27,11 +29,12 @@ Phase 0 — workspace and determinism foundation — is built and green.
 | `N2` | `cargo deny check` | green — advisories, bans, licences, sources |
 | `AC-DET-1` | `cargo xtask determinism` | green — 5 probes × 3 runs |
 | `AC-DET-2` | determinism.yml compare job | **green — confirmed 2026-07-27** |
-| `N7`/`P1` | `cargo xtask id-coverage` | green — 17 fixtures, 90.7 M texels, 0 unaccountable (S21) |
+| `N7`/`P1` | `cargo xtask id-coverage` | green — 17 fixtures, 90.9 M texels, 0 unaccountable |
 | `N7` detector | `cargo xtask id-coverage --self-test` | green — 3 of 3 mutations caught |
 | `NFR-3` | T3 pin, release, far→near traversal | green — 676 MB peak working set, 17% of 4 GB (S22) |
-| `AC-NAV-2` | T3 pin, release, far→near traversal | **regressed by S23** — worst frame 30–53 ms, ~30 of ~2,500 frames over budget; was 14.5 ms / 0 before materials |
+| `AC-NAV-2` | T3 pin, release, far→near traversal | **`[!]`, largely recovered by S24** — bands 0…−8 worst 8.5–18.4 ms, 0 over budget (was 30–53 ms / ~30 over). Bands −9…−11 unmeasured at a usable floor |
 | bake cost | `rasterize`, isolated, release | 13.7 ns/texel flat → **71 ns/texel** shaded (S23) |
+| placement cost | one finished layer, main thread, T3 pin | **~1.9 ms per piece** — per texture, not per texel (S24) |
 
 **Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
 
@@ -3168,24 +3171,106 @@ thin, few-grained material" — reads as an instruction to punch holes, and a tr
 under an element id is the `invisible` case `Coverage::is_clean` refuses. It is drawn as coarser,
 higher-contrast grain instead, which is both the safe rendering and the more literal one.
 
+## S24 — the bake moves to the async pool (2026-07-30)
+
+`chunk::stream` no longer rasterizes. It hands each missing piece to Bevy's
+`AsyncComputeTaskPool` and, on a later frame, does the two things that need the main thread:
+writing the finished colour plane into `Assets<Image>` and spawning the entity that draws it.
+Recorded in the architecture as **D5.3**.
+
+**`bake::rasterize` did not change by one line.** It was already a pure function of a snapshot, a
+palette and a `Piece` — which is also why `xtask id-coverage` can call it with no Bevy app in
+existence. The call moved; the rasterizer did not. That was the whole bet of the sprint and it
+paid: the diff is `chunk.rs`, plus an `Arc` on two shared inputs.
+
+### What it bought, measured on the T3 pin
+
+Release, `--features brp`, `rust` 1.83.0 @ `90b35a62`, i7-12650H / RTX 4050, 1280×800, stepped
+12-band far→near traversal, **144 Hz vsync floor of 6.9 ms**:
+
+| bands 0…−8 | S23, main thread | S24, no placement cap | S24, shipped |
+|---|---|---|---|
+| worst frame | 30–53 ms | 13.4–28.2 ms | **8.5–18.4 ms** |
+| frames over 33.3 ms | ~30 of ~2,500 | 5 across 12 steps | **0** |
+| worst *placing* frame vs worst *idle* frame | — | +14 to +26 ms | **at or below it** |
+
+That last row is the one that does not depend on the vsync floor, and it is the result:
+**placing a baked layer is no longer the most expensive thing a frame does.** Holding the picture
+is.
+
+### The measurement found the next constant, and its unit is the finding
+
+The first run after the move still had five frames over budget, and `peak_bake_texels` sat at
+exactly **1,048,576** — 16 × 256², the entire in-flight set landing on one frame. Sixteen bakes
+start together and four pool threads work them in lockstep, so completions **convoy**.
+
+The worst frame tracked the number of layers placed on it almost exactly: 4 → 14.4 ms,
+10 → 22.8 ms, 16 → 35.9 ms, against a 6.9 ms floor. That is **~1.9 ms of main thread per placed
+piece** — and 256 KiB in 1.9 ms is 134 MB/s, far too slow to be the copy. It is the per-texture
+cost of creating one.
+
+So `PLACEMENTS_PER_FRAME` counts **pieces**, which is the exact opposite of the unit
+`BAKE_TEXELS_PER_FRAME` needed. Drawing is per-texel — two pieces of one size differ fifty-fold
+in how much they draw. Placing is per-piece — an empty piece and a full one are the same texture,
+the same upload and the same entity. Four a frame is 7.6 ms on top of the floor, and it is still
+**nearly three times faster** than the budget it replaces (~575 pieces a second against ~210).
+
+### What is not measured, and why
+
+**Bands −9…−11 with the cap, at a 144 Hz floor.** This machine drops to a 60 Hz present rate
+partway through every long run. Not dynamic refresh rate and not power: the panel reports 144 Hz,
+the window is focused, the laptop is on AC at 100%, and `present_mode` cannot be changed over BRP
+because the surface is not reconfigured by a component mutation. The vsync floor *is* the
+instrument's resolution — at 60 Hz every hitch reads as a multiple of 16.67 ms instead of 6.94,
+which is three times coarser exactly where `AC-NAV-2` has least headroom.
+
+The two readings that exist for those bands disagree, and neither is the one needed:
+35.9–36.5 ms at 144 Hz **without** the cap, and 49–61 ms at 60 Hz **with** it (against a
+20–21 ms idle worst on the same steps). The second is not what a four-placement cap at 1.9 ms a
+piece predicts, so something at the deep bands is expensive and the cap does not touch it. The
+prime suspect is the *release* path rather than the bake — see below.
+
+Four runs were discarded rather than reported, and each failure is now a column in the script:
+a **minimized window** reports 0×0 and then `stream` wants two pieces and every number in the
+row is about nothing (`win_px`); a step at a different refresh rate is a different measurement
+wearing the same hat (`frames`, `mean_ms`); and a **cursor-anchored zoom** run in a tight loop
+walks the camera off the tree (the pointer is re-centred before every step now).
+
+### One instrument bug fixed, and it points at the next sprint
+
+`load.released` was charged at two of the three despawn sites. The third — a piece the camera has
+panned or zoomed away from — was uncounted, so a frame whose only work was dropping pieces was
+filed as idle. It showed as a **44.7 ms frame with zero placements, zero releases and the
+resident count falling 150 → 77**: a number with no cause anywhere in the log. Every despawn is
+charged now.
+
+That is also the lead on the deep bands. An eviction's real cost lands *after* the frame that
+issued it — the despawn is a deferred command and the GPU texture is freed later still — so a
+release and the frame charged for it need not be the same frame. S22 chased the same shape once
+already and called it "the worst frame is one where the piece count *fell*".
+
 ## Next
 
-**Phase 4 is closed. Phase 5 has its shell, its bake, its ID plane and its T3 numbers.** What
-is left before M1 exit:
+**Phase 4 is closed. Phase 5 has its shell, its bake, its ID plane, its T3 numbers, materials
+with an appearance, and a bake that is no longer on the main thread.** What is left before M1
+exit:
 
-1. **Move the bake off the main thread.** This is now the top item and `AC-NAV-2` is why: the
-   materials pass costs 71 ns a texel against 13.7, the budget has been re-cut around that as
-   far as it goes, and ~30 frames of a T3 traversal are still over 33.3 ms. The architecture
-   already says where it belongs — Phase 7's `grow_task`, where a producer publishes while
-   Thrive reads. Everything the bake needs is already a pure function of an `Arc<WorldSnapshot>`
-   and a `Piece`, so what has to move is the `Assets<Image>` write and the spawn, not the
-   rasterizer.
-2. **`AC-NAV-2` at minimum spec**, once (1) has made the dev machine green again. The cheapest
-   honest version is a throttled run rather than another machine.
+1. **Close `AC-NAV-2` at the deep bands, which needs the instrument before it needs code.** Two
+   things, in this order. First a frame timer that does not go through vsync: the present rate is
+   the resolution of every number above, and this machine will not hold 144 Hz for a five-minute
+   run. Second, attribution for the *release* path — the 44.7 ms frame that S24's instrument fix
+   made visible is not the bake, and the deep-band readings are the shape of an eviction cost
+   rather than a placement one. `MAX_PIECE_SIDE` is the code lever waiting behind that: it was
+   halved for a main-thread reason that no longer exists, and the ~1.9 ms *per texture* finding
+   says raising it back to 512 would quarter the placement count. That is a measurement, not an
+   opinion, and it should not be made until the instrument can tell placement from release.
+2. **`AC-NAV-2` at minimum spec.** Still the cheapest honest version is a throttled run rather
+   than another machine. Note that the async pool is 25% of cores capped at four, so minimum spec
+   gets **one** bake thread against this machine's four — that is the axis a throttled run has to
+   reproduce, and it is not the same axis as clock speed.
 3. **`ui/{theme,onboarding,progress}.rs`** — D8's consumer surface, and `F-ASSOC-1`'s picker,
    which is what makes the command-line argument stop being the only way in (`R1`). `AC-NAV-1`'s
-   user test is now unblocked: it could not be run honestly against six placeholder colours,
-   and it can be run against this.
+   user test is unblocked and has been since S23.
 
 Two smaller things the slice noticed and did not fix:
 

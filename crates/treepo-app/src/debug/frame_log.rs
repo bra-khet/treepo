@@ -16,10 +16,9 @@
 //!
 //! # Attributing the cost without instrumenting the renderer
 //!
-//! A slow frame during a zoom is either the **bake** ([`treepo_render::chunk::stream`]
-//! rasterizing up to `BAKE_TEXELS_PER_FRAME` texels on the main thread) or the **draw** (one sprite
-//! per resident piece, on the GPU). Telling them apart normally means a timer inside the render
-//! crate, which is instrumentation that would then exist in every build.
+//! A slow frame during a zoom is the **bake**, the **draw** (one sprite per resident piece, on
+//! the GPU), or the **release** of a superseded band. Telling them apart normally means a timer
+//! inside the render crate, which is instrumentation that would then exist in every build.
 //!
 //! The first version of this module inferred it: a frame that baked is a frame whose resident
 //! piece count *grew*, and this system can see the count. That was free and it was wrong in the
@@ -30,9 +29,23 @@
 //! cost nothing.
 //!
 //! It now reads [`BakeLoad`] instead, which the renderer sets from what it actually did.
-//! [`FrameLog::worst_idle_ms`] is the worst frame that drew no texels — steady-state draw cost —
-//! and [`FrameLog::worst_bake_ms`] is the worst frame that did. Two numbers that cannot be
-//! confused with each other, at the cost of two integers a frame in the render layer.
+//!
+//! # What the same fields mean now the bake is off-thread
+//!
+//! The rasterizing moved to `AsyncComputeTaskPool`, so no frame *draws* texels any more — a frame
+//! **places** layers the pool drew earlier. The field names are deliberately unchanged so that a
+//! measurement taken either side of the move compares directly, and what they measure shifted
+//! underneath them in exactly the way the move was meant to shift it:
+//!
+//! * [`FrameLog::worst_bake_ms`] was "the worst frame that rasterized" and is now "the worst
+//!   frame that placed a finished layer" — an image write and a spawn, not 71 ns a texel.
+//! * [`FrameLog::peak_bake_texels`] was what one frame's main thread shaded, and is now what one
+//!   frame's placements had cost the pool. The two are comparable on purpose: the difference
+//!   between them and `worst_bake_ms` is the whole of what this sprint bought.
+//! * [`FrameLog::peak_in_flight`] and [`FrameLog::total_cancelled`] are new, and they are the two
+//!   things that can now go wrong instead. A peak stuck at `BAKES_IN_FLIGHT` means the pool is
+//!   the bottleneck; a large cancelled count means the camera is outrunning it and the work is
+//!   being thrown away.
 
 use bevy::prelude::*;
 use treepo_render::{BakeLoad, IdPlane, ResidentChunk};
@@ -56,15 +69,21 @@ pub(crate) struct FrameLog {
     pub(crate) over_budget: u32,
     /// The slowest frame, in milliseconds.
     pub(crate) worst_ms: f32,
-    /// The slowest frame that drew no texels — what the picture costs to *hold*.
+    /// The slowest frame that placed no layer — what the picture costs to *hold*.
     pub(crate) worst_idle_ms: f32,
-    /// The slowest frame that drew any — what the picture costs to *build*.
+    /// The slowest frame that placed one — what the picture costs to *build*.
     pub(crate) worst_bake_ms: f32,
-    /// The most texels any one frame drew.
+    /// The most texels any one frame's placements had cost the pool.
     pub(crate) peak_bake_texels: u64,
-    /// Every texel drawn since the reset, which with [`FrameLog::baking_frames`] gives the
-    /// average a frame's bake was charged.
+    /// Every texel placed since the reset, which with [`FrameLog::baking_frames`] gives the
+    /// average a frame's placements were worth.
     pub(crate) total_bake_texels: u64,
+    /// The most bakes running on the pool at once. Stuck at `BAKES_IN_FLIGHT` means the pool is
+    /// the bottleneck rather than the main thread.
+    pub(crate) peak_in_flight: u32,
+    /// Bakes abandoned since the reset because the camera left their band. Work the pool did and
+    /// nobody saw — the price of a moving camera, and zero when it is still.
+    pub(crate) total_cancelled: u32,
     /// The most pieces the view wanted and did not have — how far behind the bake fell.
     pub(crate) peak_missing: u32,
     /// The most pieces released in one frame.
@@ -80,7 +99,7 @@ pub(crate) struct FrameLog {
     /// Every frame added together, which is what [`FrameLog::mean_ms`] is divided from. Kept
     /// rather than derived so the mean cannot drift with an incremental update.
     pub(crate) total_ms: f32,
-    /// Frames on which the renderer drew any texels.
+    /// Frames on which the renderer placed a finished layer.
     pub(crate) baking_frames: u32,
     /// Resident pieces right now — D5's claim is that frame cost scales with this, not with
     /// the repository's path count.
@@ -143,6 +162,8 @@ fn sample(
         log.total_bake_texels += load.texels;
         log.peak_bake_texels = log.peak_bake_texels.max(load.texels);
     }
+    log.peak_in_flight = log.peak_in_flight.max(load.in_flight);
+    log.total_cancelled += load.cancelled;
     log.peak_missing = log.peak_missing.max(load.missing);
     log.peak_released = log.peak_released.max(load.released);
     if load.released > 0 {

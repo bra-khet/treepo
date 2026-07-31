@@ -45,14 +45,45 @@
 //! resident. [`stream`] bakes only pieces that intersect the viewport plus a margin, sorts what
 //! it wants by distance from the camera, and stops at [`RESIDENT_TEXEL_BUDGET`]. Everything
 //! else is despawned, which drops the last strong handle to its image and frees the texture.
+//!
+//! # The bake runs off the main thread
+//!
+//! **Adopted 2026-07-30, Phase 5; recorded in the architecture as D5.3.** [`stream`] does not
+//! rasterize. It hands each missing piece to Bevy's `AsyncComputeTaskPool` and, on some later
+//! frame, takes the finished [`Layer`] and does the two things that genuinely need the main
+//! thread: writing the colour into [`Assets<Image>`] and spawning the entity that draws it.
+//!
+//! What makes that a small change rather than a rewrite is that [`bake::rasterize`] was already a
+//! pure function of a snapshot, a palette and a [`Piece`] — no `World`, no `Assets`, no resource,
+//! and it is the same function `cargo xtask id-coverage` calls with no Bevy app at all. **The
+//! rasterizer did not move. The call did.**
+//!
+//! Three things that used to be true are replaced, and each is worth naming because the
+//! constants around them were set by the old version:
+//!
+//! * **A budget on drawing became a bound on concurrency.** `BAKE_TEXELS_PER_FRAME` existed
+//!   because every texel was charged to the frame that drew it. None are now, so what is left to
+//!   bound is how much work may be outstanding at once — [`BAKES_IN_FLIGHT`].
+//! * **A bake can be abandoned.** Dropping a `Task` cancels it, so a bake whose band the camera
+//!   has already left costs what it had done and nothing more. On the main thread the loop had to
+//!   finish what it started, which is the argument that halved [`MAX_PIECE_SIDE`].
+//! * **A piece is late rather than expensive.** It arrives a frame or two after it was asked for,
+//!   and the held-over previous band covers the gap — the same mechanism that already covered a
+//!   band crossing, doing the same job for a slightly longer moment.
+//!
+//! `N7` is untouched by all of this: one loop inside [`bake::rasterize`] still writes a colour and
+//! an element ID together, and both halves of a [`Layer`] cross back to the main thread as one
+//! value.
 
 use alloc_arc::Arc;
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
 use treepo_det::Fx;
 use treepo_model::{NodeId, Point, Skeleton, WorldSnapshot};
 
 use crate::bake;
+use crate::bake::Layer;
 use crate::id_buffer::IdPlane;
 use crate::lod::Band;
 
@@ -323,26 +354,28 @@ fn push_chunk(chunks: &mut Vec<Chunk>, skeleton: &Skeleton, anchor: NodeId, segm
 /// The largest texture side one piece may be baked at.
 ///
 /// 256 texels — a piece is at most 256 KiB of RGBA8 plus 256 KiB of element-ID plane. Large
-/// enough that the common chunk is still one piece and the grid never appears; small enough
-/// that no single bake can spend a frame.
+/// enough that the common chunk is still one piece and the grid never appears; small enough that
+/// no single bake is a large unit of anything.
 ///
-/// # This is the constant that bounds the worst frame, not the bake budget
+/// # It was halved for a reason that has since been removed
 ///
-/// [`BAKE_TEXELS_PER_FRAME`] bounds what a frame *plans* to draw, but a piece is atomic — half
-/// a baked piece is a hole, so the loop always finishes the one it started and the real worst
-/// frame is the budget **plus one whole piece**. This constant is what bounds that second term.
+/// It was 512 until the materials pass. A piece is atomic — half a baked piece is a hole — so
+/// while the bake ran on the main thread the worst frame was the budget **plus one whole piece**,
+/// and a 512 piece was observed writing **436 Ki** texels rather than the 262 Ki it covers,
+/// because limbs cross and [`Layer::texels_drawn`](crate::Layer::texels_drawn) charges each
+/// crossing. At the measured 71 ns a texel that is 31 ms in one indivisible unit, with the budget
+/// powerless because it is only consulted between pieces. Quartering the area quartered it.
 ///
-/// It was 512 until the materials pass, and the measurement is why it moved. At 512 a fully
-/// covered piece writes 262 Ki texels before overlap and was observed writing **436 Ki** with
-/// it — limbs cross, and [`Layer::texels_drawn`](crate::Layer::texels_drawn) charges each
-/// crossing because each is shaded. At the measured 71 ns a texel that is 31 ms in one
-/// indivisible unit: the whole frame, spent on one piece, with the budget powerless because it
-/// is only consulted between pieces. Quartering the area quarters that to about 8 ms.
+/// The bake is no longer on the main thread, so that argument is gone and this number is open
+/// again rather than settled. What still rests on it is smaller and real: a piece is the unit at
+/// which a bake can be **cancelled**, so a larger one is more work thrown away when the camera
+/// leaves a band, and it is the unit of one texture upload. What raising it would buy is fewer
+/// sprites and fewer per-piece setups, and neither measured as the expensive axis — memory is
+/// unchanged either way because [`RESIDENT_TEXEL_BUDGET`] counts texels rather than pieces, and
+/// the per-piece setup is one pass over a chunk's segment list, two dozen segments at T3.
 ///
-/// The cost is four times as many pieces, which is four times as many sprites and four times as
-/// many per-piece setups. Neither is the expensive axis: memory is unchanged because
-/// [`RESIDENT_TEXEL_BUDGET`] is counted in texels rather than pieces, and the per-piece setup is
-/// one pass over a chunk's segment list, which is two dozen segments at T3.
+/// Left at 256 because the sprint that moved the bake did not also want to move its granularity.
+/// Raising it is now a measurement rather than an opinion.
 pub const MAX_PIECE_SIDE: u32 = 256;
 
 /// How many texels may be resident at once, across every chunk and band.
@@ -371,65 +404,191 @@ pub const RESIDENT_TEXEL_BUDGET: u64 = 64 * 1024 * 1024;
 /// user is moving away from.
 pub const RESIDENCY_MARGIN: f32 = 0.5;
 
-/// How much drawing one frame may do, in texels written.
+/// How many bakes may be running on the async pool at once.
 ///
-/// Baking is CPU rasterization on the main thread, so this is the direct lever on the hitch a
-/// zoom costs. Moving the bake onto the async pool is what removes the trade rather than tuning
-/// it, and it belongs with `grow_task` in Phase 7, where a producer already publishes while
-/// Thrive is reading.
+/// This replaced `BAKE_TEXELS_PER_FRAME` when the bake moved off the main thread, and the change
+/// of unit is the point. A per-frame texel budget was the right shape while a frame paid for
+/// every texel it drew; a frame pays for none of them now, so what is left to bound is how much
+/// work may be **outstanding** — memory held by finished-but-unplaced layers, and effort spent on
+/// pieces the camera may leave before they land.
 ///
-/// # It counts texels because pieces are not comparable
+/// # Where sixteen comes from
 ///
-/// This was `BAKES_PER_FRAME = 4` — a *piece* count — until the materials pass made the
-/// per-texel cost large enough for the difference to matter. Two pieces of identical size can
-/// differ by fifty times in how much of themselves they draw: a piece at the sharpest band is
-/// half-covered by one thick limb, and a piece at a far band holds a few hairlines crossing
-/// mostly-empty space. A budget in pieces therefore charges the same for both, which means it
-/// is set for the expensive one and starves the cheap one — the far bands, where a fresh
-/// viewport needs the most pieces, refill slowest.
+/// Four times the pool it runs on, and four frames of [`PLACEMENTS_PER_FRAME`]. Bevy gives
+/// `AsyncComputeTaskPool` a quarter of the machine's threads, at least one and **at most four** —
+/// so the pool is four threads here and on any machine with eight cores, and one thread on §7's
+/// four-core minimum spec. Sixteen keeps a placement slot always filled and a pool thread never
+/// waiting for the next frame to hand it something, and stays far short of queueing a second's
+/// worth of work that a moving camera would throw away.
 ///
-/// Charged per texel the whole trade inverts the right way. A frame bakes as many cheap pieces
-/// as fit and one expensive one, and a far band now fills *faster* than four-per-frame did
-/// while a near band costs less.
+/// A bake that has finished and not yet been placed still holds its slot, so this is a bound on
+/// *outstanding* work rather than on running threads. That is the intended reading: what it is
+/// protecting against is a backlog, and a finished layer nobody has placed is a backlog.
 ///
-/// # Where the number comes from
+/// The memory it bounds is small, and worth stating because it is the term RISK-B is about.
+/// Sixteen pieces at [`MAX_PIECE_SIDE`] is 1 Mi texels — 8 MiB across both planes, against
+/// [`RESIDENT_TEXEL_BUDGET`]'s 64 Mi. In-flight bakes are under 2% of residency, which is why the
+/// residency budget did not have to learn about them.
 ///
-/// Measured on this machine (release, 2026-07-30): [`bake::rasterize`] costs **13.7 ns per
-/// texel with the shading bypassed and 71 ns with it**, so the materials pass is a little over
-/// five times the drawing cost it replaced. 128 Ki texels is about 9 ms of that, which leaves
-/// most of `AC-NAV-2`'s 33.3 ms for the frame the bake is sharing.
+/// A piece over the bound is deferred, never refused. [`stream`] rebuilds `wanted` nearest-first
+/// from the camera every frame, so a slot that frees goes to the nearest piece that still needs
+/// one rather than to whichever was asked for first.
+pub const BAKES_IN_FLIGHT: usize = 16;
+
+/// How many finished layers one frame may place on screen.
 ///
-/// The overshoot is bounded by one piece, because a piece's cost is not known until it is drawn
-/// and stopping half way through one would leave a hole rather than a blur. [`MAX_PIECE_SIDE`]
-/// is what bounds that term, and it was lowered in the same measurement that set this one — see
-/// there for why the two constants have to be read together.
+/// Moving the rasterizing off the main thread did not leave the main thread with nothing to do:
+/// it still has to write each finished colour plane into [`Assets<Image>`] and spawn the sprite,
+/// and Bevy still has to create and fill a GPU texture for it. This bounds that.
 ///
-/// A frame always bakes at least one piece. Without that a piece larger than the budget would
-/// never be drawn at all, and the budget would express itself as a permanent hole instead of a
-/// slower fill.
-pub const BAKE_TEXELS_PER_FRAME: u64 = 96 * 1024;
+/// # It counts pieces, and that is the opposite of what the drawing budget counted
+///
+/// `BAKE_TEXELS_PER_FRAME` was denominated in texels precisely because two pieces of one size
+/// differ by fifty times in how much of themselves they *draw*. Placement is not like that at
+/// all — an empty piece and a full one are the same texture, the same upload and the same
+/// entity, so a piece is the honest unit here and a texel is not.
+///
+/// The measurement says the same thing more sharply. On the first T3 run after the move, the
+/// worst frame tracked the number of layers placed on it almost exactly: 4 pieces → 14.4 ms,
+/// 10 → 22.8 ms, 16 → 35.9 ms, against a vsync floor of 6.9 ms. That is **about 1.9 ms of main
+/// thread per placed piece** — and 256 KiB in 1.9 ms is 134 MB/s, far too slow to be the copy.
+/// It is the per-texture cost of creating one, which is a count and not a size.
+///
+/// # Where four comes from, and what it is being kept away from
+///
+/// Sixteen bakes finish in a convoy, because they start together and the pool works them in
+/// lockstep — so without a cap the whole of [`BAKES_IN_FLIGHT`] lands on one frame, which is the
+/// 35.9 ms reading above. Four is 7.6 ms of placement on top of the floor, which leaves
+/// `AC-NAV-2`'s 33.3 ms most of its room on a machine slower than this one.
+///
+/// It is also faster than the budget it replaces, which is worth stating because a smaller-looking
+/// number invites the opposite conclusion. Four placements a frame at 144 Hz is ~575 pieces a
+/// second; `BAKE_TEXELS_PER_FRAME`'s 96 Ki texels a frame was ~210 fully covered pieces a second.
+/// The fill is nearly three times quicker *and* off the main thread.
+///
+/// A deferred layer is not lost — it stays finished in [`BakeQueue`] and is placed on a later
+/// frame. What it costs is latency, and the held-over previous band is what covers that.
+pub const PLACEMENTS_PER_FRAME: usize = 4;
 
 /// What the last frame's bake actually did.
 ///
-/// Two integers written once per frame by [`stream`]. It exists because the render layer is the
-/// only thing that knows the difference between a frame that baked and a frame that merely drew,
-/// and because "how many texels did that cost" is the question every performance decision about
-/// the bake turns on — [`BAKE_TEXELS_PER_FRAME`] was set from it.
+/// Written once per frame by [`stream`]. It exists because the render layer is the only thing
+/// that knows the difference between a frame that put new picture on screen and a frame that
+/// merely held it, and because "what did that cost" is the question every performance decision
+/// about the bake turns on.
 ///
-/// Maintained in every build rather than behind a feature. It is two stores a frame, `F-THR-8`'s
-/// debug overlay will want it, and a measurement surface that only exists in measurement builds
-/// is one that can quietly stop matching the build that ships.
+/// Since the bake moved off the main thread these are two measurements rather than one, and
+/// keeping them apart is most of the value: [`BakeLoad::texels`] is what the **pool** drew and the
+/// main thread only placed, while [`BakeLoad::pieces`] and [`BakeLoad::released`] are what the
+/// main thread itself did.
+///
+/// Maintained in every build rather than behind a feature. It is a handful of stores a frame,
+/// `F-THR-8`'s debug overlay will want it, and a measurement surface that only exists in
+/// measurement builds is one that can quietly stop matching the build that ships.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BakeLoad {
-    /// Texels written by the bake, as [`Layer::texels_drawn`](crate::Layer::texels_drawn)
-    /// counts them.
+    /// Texels in the layers placed this frame, as [`Layer::texels_drawn`] counts them.
+    ///
+    /// Drawn on the pool, on some earlier frame. Deliberately the same name and the same meaning
+    /// as before the move, so a measurement taken either side of it compares — what changed is
+    /// which thread paid for it, and that is exactly the thing being measured.
     pub texels: u64,
-    /// How many pieces were baked.
+    /// How many finished bakes were placed on screen.
     pub pieces: u32,
-    /// How many pieces the view wanted that were not resident — what is still owed.
+    /// How many bakes were handed to the pool.
+    pub started: u32,
+    /// How many bakes were still held at the end of the frame — running, or finished and waiting
+    /// for a placement slot. [`BAKES_IN_FLIGHT`] bounds this.
+    pub in_flight: u32,
+    /// How many were cancelled — the camera left their band, or a new plan was committed.
+    pub cancelled: u32,
+    /// How many pieces the view wanted and did not have — what is still owed, including what is
+    /// already baking.
     pub missing: u32,
     /// How many resident pieces were released.
     pub released: u32,
+}
+
+/// A bake handed to the pool, and everything the main thread needs to place its result.
+///
+/// Generic over the handle for the same reason [`affordable`] is: the bookkeeping around a task
+/// is worth testing, and a real `Task` needs a running pool where `()` does not.
+#[derive(Debug)]
+struct Pending<T> {
+    /// The residency key the finished layer will take.
+    id: ChunkId,
+    /// The band it is being baked at. A bake at any other band is stale.
+    band: Band,
+    /// The plan it was cut from. A bake from any other plan is stale.
+    generation: u64,
+    /// The world rectangle it covers.
+    region: Extent,
+    /// Index into [`ChunkSet::chunks`], which is what [`depth_of`] reads.
+    chunk: usize,
+    /// The running bake. **Dropping this cancels it** — that is the whole of the cancellation
+    /// mechanism, and the reason nothing here calls `detach`.
+    task: T,
+}
+
+/// Bakes in flight, and what landed this frame.
+///
+/// Not a backlog of work to do. [`stream`] recomputes what it wants from the camera every frame
+/// and never queues an intention; what this holds is work already handed out, so that the same
+/// piece is not asked for twice.
+#[derive(Resource, Debug, Default)]
+pub struct BakeQueue {
+    /// Bakes running on the pool, unordered.
+    running: Vec<Pending<Task<Layer>>>,
+    /// Keys placed on screen this frame.
+    ///
+    /// The entity a placed layer becomes is spawned through [`Commands`], so it is not in the
+    /// resident query until the next frame — and without this the same piece would be handed to
+    /// the pool a second time inside that gap. Cleared at the top of every frame, which is
+    /// exactly as long as the gap lasts.
+    applied: Vec<(ChunkId, Band)>,
+}
+
+impl BakeQueue {
+    /// How many bakes are running.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.running.len()
+    }
+}
+
+/// Drops in-flight bakes the view has moved past, and returns how many were cancelled.
+///
+/// A bake at a superseded band would land as a layer the residency rule immediately supersedes,
+/// so it is work the picture has already decided against. Dropping the [`Pending`] drops its
+/// `Task`, and dropping a `Task` cancels it: one that has not started never runs, and one part
+/// way through stops at its next yield. That is the half of the move that a main-thread loop
+/// could not have — it had to finish what it started.
+fn retain_current<T>(running: &mut Vec<Pending<T>>, band: Band, generation: u64) -> u32 {
+    let before = running.len();
+    running.retain(|pending| pending.band == band && pending.generation == generation);
+    (before - running.len()) as u32
+}
+
+/// Whether a piece is on screen, counting the ones spawned this frame.
+///
+/// `present` is sorted and comes from the resident query; `applied` is this frame's placements,
+/// which that query cannot see yet. Both are needed and neither is sufficient.
+fn on_screen(
+    present: &[(ChunkId, Band)],
+    applied: &[(ChunkId, Band)],
+    key: (ChunkId, Band),
+) -> bool {
+    present.binary_search(&key).is_ok() || applied.contains(&key)
+}
+
+/// Whether a piece is already being baked.
+///
+/// A linear scan, because the list is bounded by [`BAKES_IN_FLIGHT`]: sorting sixteen entries in
+/// order to binary-search them is more code doing more work.
+fn baking<T>(running: &[Pending<T>], key: (ChunkId, Band)) -> bool {
+    running
+        .iter()
+        .any(|pending| (pending.id, pending.band) == key)
 }
 
 /// The committed tree, cut into chunks and ready to bake from.
@@ -442,7 +601,11 @@ pub struct TreePlan {
     /// The snapshot the chunks were cut from, kept so the bake can read materials.
     snapshot: Option<Arc<WorldSnapshot>>,
     /// The cut.
-    chunks: ChunkSet,
+    ///
+    /// Shared rather than owned because an off-thread bake holds one while it runs, and a plan
+    /// committed underneath it must not invalidate the segment list it is reading. The `Arc` also
+    /// makes handing a bake its inputs an atomic increment rather than a copy of a segment list.
+    chunks: Arc<ChunkSet>,
     /// Bumped on every replacement, so chunks baked from an older snapshot can be found.
     generation: u64,
 }
@@ -450,7 +613,7 @@ pub struct TreePlan {
 impl TreePlan {
     /// Replaces the plan with one cut from a newly committed snapshot.
     pub fn commit(&mut self, snapshot: Arc<WorldSnapshot>) {
-        self.chunks = ChunkSet::build(&snapshot.skeleton);
+        self.chunks = Arc::new(ChunkSet::build(&snapshot.skeleton));
         self.snapshot = Some(snapshot);
         self.generation = self.generation.wrapping_add(1);
     }
@@ -512,12 +675,17 @@ pub fn stream(
     plan: Res<TreePlan>,
     mut images: ResMut<Assets<Image>>,
     mut load: ResMut<BakeLoad>,
+    queue: ResMut<BakeQueue>,
     palette: Res<crate::bake::AuthorPalette>,
     window: Option<Single<&Window>>,
     camera: Option<Single<(&Transform, &Projection, &crate::camera::TreeCamera)>>,
     resident: Query<(Entity, &ResidentChunk, &IdPlane)>,
 ) {
     *load = BakeLoad::default();
+    let queue = queue.into_inner();
+    queue.applied.clear();
+    load.in_flight = queue.running.len() as u32;
+
     let (Some(window), Some(camera), Some(snapshot)) = (window, camera, plan.snapshot.as_ref())
     else {
         return;
@@ -545,6 +713,64 @@ pub fn stream(
     let band = Band::for_scale(ortho.scale, reference);
     let texels_per_unit = band.texels_per_unit(reference);
 
+    // Anything still running for another band, or cut from a plan that has been replaced, is work
+    // the picture has already decided against. Done before the finished ones are collected, so a
+    // bake that completed on a band the camera has since left is dropped rather than placed.
+    load.cancelled = retain_current(&mut queue.running, band, plan.generation());
+
+    // Placing a finished bake: an image write and a spawn, which are the two things that actually
+    // need this thread. The rasterizing happened on the pool, on an earlier frame.
+    let mut index = 0;
+    while index < queue.running.len() && (load.pieces as usize) < PLACEMENTS_PER_FRAME {
+        if !queue.running[index].task.is_finished() {
+            index += 1;
+            continue;
+        }
+        // `swap_remove` rather than `remove`: `running` is a set, not a sequence — nothing reads
+        // it in order, and the alternative is a memmove per placement.
+        let Pending {
+            id,
+            band,
+            generation: _,
+            region,
+            chunk,
+            task,
+        } = queue.running.swap_remove(index);
+        // Finished, so this returns the layer without ever parking the thread.
+        let Layer {
+            size,
+            color,
+            ids,
+            texels_drawn,
+        } = block_on(task);
+
+        // The two planes part company here and never meet again: the colour is uploaded and
+        // dropped from main memory, the ids ride on the entity so a click can read them. They are
+        // despawned together, which is what keeps the plane from outliving its picture.
+        commands.spawn((
+            ResidentChunk {
+                id,
+                band,
+                region,
+                generation: plan.generation(),
+            },
+            IdPlane::new(size, ids),
+            Sprite {
+                image: images.add(bake::texture(size, color)),
+                custom_size: Some(region.size()),
+                ..Sprite::default()
+            },
+            // Root-first chunk order becomes back-to-front depth, so a branch drawn over the
+            // trunk stays over it however the sprite queue is built. `RenderAssetUsages` and
+            // depth are the two places a correct picture can come out invisible, and both are
+            // cheaper to get right than to debug.
+            Transform::from_xyz(region.center().x, region.center().y, depth_of(chunk)),
+        ));
+        queue.applied.push((id, band));
+        load.pieces += 1;
+        load.texels += texels_drawn;
+    }
+
     let wanted = within_budget(select(
         &snapshot.skeleton,
         plan.chunks.chunks(),
@@ -571,7 +797,14 @@ pub fn stream(
     for (entity, chunk, plane) in &resident {
         let cost = u64::from(plane.size().x) * u64::from(plane.size().y);
         if chunk.generation != plan.generation() || !chunk.region.intersects(&resident_rect) {
+            // BUG FIX: the frame log could not see a piece leaving the view
+            // Fix: this despawn site did not charge `released`, so a frame whose only work was
+            // dropping pieces the camera had panned or zoomed away from was filed as idle. It
+            // showed on the T3 pin as a 44.7 ms frame with zero placements, zero releases and
+            // the resident count falling 150 → 77 — a number with no cause anywhere in the log.
+            // Every despawn is charged now, so `worst_release_ms` covers all three fates.
             commands.entity(entity).despawn();
+            load.released += 1;
         } else if chunk.band == band && keys.binary_search(&(chunk.id, band)).is_ok() {
             present.push((chunk.id, band));
             held += cost;
@@ -592,8 +825,14 @@ pub fn stream(
     // The eviction order falls out rather than being a second rule. Early in a band change
     // `present` is nearly empty, so the budget has room for the whole previous band and the
     // screen stays filled; as bakes land, `present` grows and the softest layers are dropped
-    // to pay for them. Residency is bounded by the budget plus one frame of bakes, which is at
-    // most one frame's bake budget plus the piece that overshot it.
+    // to pay for them.
+    //
+    // `held` is short by whatever was placed this frame, because those entities are spawned
+    // through `Commands` and the query above cannot see them yet. That undercount is the slack
+    // the bound has always had, and moving the bake off-thread narrowed it: it is now at most
+    // `BAKES_IN_FLIGHT` pieces — 1 Mi texels, under 2% of `RESIDENT_TEXEL_BUDGET` — where the
+    // main-thread version could place a whole frame's texel budget plus the piece that overshot
+    // it. So residency is the budget plus one frame of placements, and that term shrank.
     let affordable = affordable(&mut superseded, held);
     let mut keep: Vec<Entity> = Vec::with_capacity(affordable);
     for (index, (entity, _, _)) in superseded.into_iter().enumerate() {
@@ -605,74 +844,60 @@ pub fn stream(
         }
     }
 
-    let (mut missing, mut baked) = (0, 0);
-    let mut drawn: u64 = 0;
+    let pool = AsyncComputeTaskPool::get();
     for piece in &wanted {
-        if present.binary_search(&(piece.id, band)).is_ok() {
+        let key = (piece.id, band);
+        if on_screen(&present, &queue.applied, key) {
             continue;
         }
-        missing += 1;
-        // `baked > 0` rather than an unconditional check, so the first piece of a frame is
-        // always drawn — see `BAKE_TEXELS_PER_FRAME` for why a budget that can refuse every
-        // piece is a hole rather than a slower fill.
-        if baked > 0 && drawn >= BAKE_TEXELS_PER_FRAME {
+        // Counted before the two skips below, so this stays "what the picture is short of"
+        // rather than "what this frame declined to start". A piece already baking is missing
+        // from the screen, and that is the number `AC-NAV-2` wants.
+        load.missing += 1;
+        if baking(&queue.running, key) || queue.running.len() >= BAKES_IN_FLIGHT {
             continue;
         }
 
-        let chunk = &plan.chunks.chunks()[piece.chunk];
-        let layer = bake::rasterize(
-            &snapshot.skeleton,
-            &snapshot.materials,
-            &palette.0,
-            &chunk.segments,
-            piece.region,
-            piece.size,
-        );
-        // The two planes part company here and never meet again: the colour is uploaded and
-        // dropped from main memory, the ids ride on the entity so a click can read them. They
-        // are despawned together, which is what keeps the plane from outliving its picture.
-        let layer_texels = layer.texels_drawn;
-        let plane = IdPlane::new(layer.size, layer.ids);
-        let image = images.add(bake::texture(piece.size, layer.color));
-        commands.spawn((
-            ResidentChunk {
-                id: piece.id,
-                band,
-                region: piece.region,
-                generation: plan.generation(),
-            },
-            plane,
-            Sprite {
-                image,
-                custom_size: Some(piece.region.size()),
-                ..Sprite::default()
-            },
-            // Root-first chunk order becomes back-to-front depth, so a branch drawn over the
-            // trunk stays over it however the sprite queue is built. `RenderAssetUsages` and
-            // depth are the two places a correct picture can come out invisible, and both are
-            // cheaper to get right than to debug.
-            Transform::from_xyz(
-                piece.region.center().x,
-                piece.region.center().y,
-                depth_of(piece.chunk),
-            ),
-        ));
-        baked += 1;
-        drawn += layer_texels;
+        // Everything the rasterizer reads, owned by the task: three atomic increments and a
+        // handful of scalars. The snapshot is already D4's shared handoff type, the cut is shared
+        // for as long as the plan it belongs to, and the palette is immutable once validated —
+        // so there is nothing here to lock and nothing to copy.
+        let snapshot = Arc::clone(snapshot);
+        let chunks = Arc::clone(&plan.chunks);
+        let palette = Arc::clone(&palette.0);
+        let (chunk, region, size) = (piece.chunk, piece.region, piece.size);
+        let task = pool.spawn(async move {
+            bake::rasterize(
+                &snapshot.skeleton,
+                &snapshot.materials,
+                &palette,
+                &chunks.chunks()[chunk].segments,
+                region,
+                size,
+            )
+        });
+        queue.running.push(Pending {
+            id: piece.id,
+            band,
+            generation: plan.generation(),
+            region,
+            chunk,
+            task,
+        });
+        load.started += 1;
     }
-    load.texels = drawn;
-    load.pieces = baked;
-    load.missing = missing - baked;
+    load.in_flight = queue.running.len() as u32;
 
-    // A layer from the previous band is the wrong *resolution*, not the wrong picture. Held
-    // until the new band is complete, a zoom across a boundary costs a moment of softness;
-    // dropped on the frame the band changes, it costs a blank window for as many frames as
-    // the bake budget needs to refill one — which is the difference between a zoom that feels
-    // continuous and one that flickers. `missing == baked` is "nothing is still owed".
+    // A layer from the previous band is the wrong *resolution*, not the wrong picture. Held until
+    // the new band is complete, a zoom across a boundary costs a moment of softness; dropped on
+    // the frame the band changes, it costs a blank window for as long as a refill takes — which
+    // is the difference between a zoom that feels continuous and one that flickers. Off-thread
+    // that wait is longer, since a piece is now late rather than expensive, so this matters more
+    // than it did and not less.
     //
-    // `keep` rather than every superseded piece: the ones the budget could not afford are
-    // already gone, and a piece the budget refused is one the picture is better off without.
-    if missing == baked {
+    // `keep` rather than every superseded piece: the ones the budget could not afford are already
+    // gone, and a piece the budget refused is one the picture is better off without.
+    if load.missing == 0 {
         for entity in keep {
             commands.entity(entity).despawn();
             load.released += 1;
@@ -1210,6 +1435,93 @@ mod tests {
     fn an_empty_budget_holds_the_whole_previous_layer() {
         let mut superseded: Vec<(u32, i32, u64)> = (0..8).map(|i| (i, 1, 1_024)).collect();
         assert_eq!(affordable(&mut superseded, 0), 8);
+    }
+
+    /// A [`Pending`] with no task in it, so the bookkeeping can be tested without a task pool.
+    fn pending(anchor: u32, band: Band, generation: u64) -> Pending<()> {
+        Pending {
+            id: ChunkId {
+                anchor: NodeId::new(anchor),
+                piece: 0,
+            },
+            band,
+            generation,
+            region: Extent {
+                min: Vec2::ZERO,
+                max: Vec2::splat(1.0),
+            },
+            chunk: 0,
+            task: (),
+        }
+    }
+
+    /// The half of the off-thread move a main-thread loop could not have. A bake for a band the
+    /// camera has left would land as a layer the residency rule supersedes on the same frame, so
+    /// it is work the picture has already decided against — and dropping the handle cancels it.
+    #[test]
+    fn a_bake_the_camera_has_moved_past_is_cancelled() {
+        let here = Band::for_scale(1.0, 1.0);
+        let elsewhere = Band::for_scale(0.1, 1.0);
+        assert_ne!(here, elsewhere, "the two bands must actually differ");
+
+        let mut running = vec![pending(0, here, 7), pending(1, elsewhere, 7)];
+        assert_eq!(retain_current(&mut running, here, 7), 1);
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].band, here);
+    }
+
+    /// The same rule for the other axis. A Grow commit replaces the cut, so a bake still running
+    /// against the old one is drawing a limb that may no longer be there — and its `chunk` index
+    /// no longer means what it meant when the bake was started.
+    #[test]
+    fn a_bake_from_a_superseded_plan_is_cancelled() {
+        let band = Band::for_scale(1.0, 1.0);
+        let mut running = vec![pending(0, band, 7), pending(1, band, 8)];
+        assert_eq!(retain_current(&mut running, band, 8), 1);
+        assert_eq!(running[0].generation, 8);
+    }
+
+    /// `stream` runs every frame and a bake takes several, so without this the same piece would
+    /// be handed to the pool once per frame until it landed — the pool saturated with duplicates
+    /// of the nearest piece while everything behind it waited for a slot.
+    #[test]
+    fn a_piece_already_baking_is_not_started_again() {
+        let band = Band::for_scale(1.0, 1.0);
+        let running = vec![pending(3, band, 0)];
+        let key = |anchor| {
+            (
+                ChunkId {
+                    anchor: NodeId::new(anchor),
+                    piece: 0,
+                },
+                band,
+            )
+        };
+        assert!(baking(&running, key(3)));
+        assert!(!baking(&running, key(4)));
+    }
+
+    /// The gap the `applied` list exists to close. A placed layer is spawned through `Commands`,
+    /// so it is not in the resident query until the next frame; counting only `present` would
+    /// bake it a second time in between, and the duplicate would then be evicted as a spare.
+    #[test]
+    fn a_piece_placed_this_frame_counts_as_on_screen() {
+        let band = Band::for_scale(1.0, 1.0);
+        let key = |anchor| {
+            (
+                ChunkId {
+                    anchor: NodeId::new(anchor),
+                    piece: 0,
+                },
+                band,
+            )
+        };
+        let present = vec![key(1)];
+        let applied = vec![key(2)];
+
+        assert!(on_screen(&present, &applied, key(1)));
+        assert!(on_screen(&present, &applied, key(2)));
+        assert!(!on_screen(&present, &applied, key(3)));
     }
 
     #[test]
