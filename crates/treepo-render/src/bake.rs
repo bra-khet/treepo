@@ -86,12 +86,13 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::sync::{Arc, LazyLock};
 use treepo_id::Palette;
 use treepo_model::{
-    Composition, Material, MaterialFamily, MaterialMap, NodeId, Skeleton, StressKind,
+    AgeGradient, Composition, Material, MaterialFamily, MaterialMap, NodeId, NodeRole, RepoPath,
+    Skeleton, StressKind,
 };
 
 use crate::chunk::{Extent, LAYER_USAGE, half, world};
 use crate::id_buffer::{ElementId, IdPlane};
-use crate::surface::{LimbPoint, Shading, Surface, author_color};
+use crate::surface::{Knot, LimbPoint, MAX_KNOTS, Shading, Surface, author_color, run_at};
 
 /// How many bytes one texel of a baked layer's **colour** costs.
 ///
@@ -320,6 +321,25 @@ struct NodeRecord {
     bands: (u32, u32),
 }
 
+/// One node's measured limb, plus what the tree around it contributes to its appearance.
+///
+/// A structure rather than six arguments, because five of the six are only ever read together
+/// and the sixth would have pushed [`Appearances::push_node`] past the point where a reader can
+/// tell which is which at a call site.
+#[derive(Debug, Clone, Copy)]
+struct Measured<'a> {
+    node: NodeId,
+    /// The node's total limb length, in world units.
+    total: f32,
+    /// Its base half-width, in world units.
+    unit: f32,
+    material: Option<&'a Material>,
+    /// What the node stands for, which is where its surface's seeds come from.
+    role: Option<&'a NodeRole>,
+    /// The parent's age gradient, if it has one — see [`PARENT_AGE_SHARE`].
+    inherited: Option<AgeGradient>,
+}
+
 /// One node's appearance, ready to draw one of its segments with.
 #[derive(Debug, Clone, Copy)]
 struct Brush<'a> {
@@ -388,27 +408,55 @@ impl Appearances {
             ..Self::default()
         };
         for (node, total, unit) in measures {
-            resolved.push_node(node, total, unit, materials.get(node), palette, to_texel);
+            let entry = skeleton.node(node);
+            resolved.push_node(
+                Measured {
+                    node,
+                    total,
+                    unit,
+                    material: materials.get(node),
+                    role: entry.map(|entry| &entry.role),
+                    // `F-MAT-4` measures one path's own commit span, so two siblings with very
+                    // different histories meet at a joint where the picture jumps from grey to
+                    // saturated in a single texel. Averaging a node's reading with the limb it
+                    // hangs off smooths that without moving where the reading comes from — the
+                    // neighbourhood is the one the tree already has, and the node still
+                    // dominates it. See `PARENT_AGE_SHARE`.
+                    inherited: entry
+                        .and_then(|entry| entry.parent)
+                        .and_then(|parent| materials.get(parent))
+                        .and_then(|material| material.gradient),
+                },
+                palette,
+                to_texel,
+            );
         }
         resolved
     }
 
     /// Resolves one node's material into a record, appending its run tables.
-    fn push_node(
-        &mut self,
-        node: NodeId,
-        total: f32,
-        unit: f32,
-        material: Option<&Material>,
-        palette: &Palette,
-        to_texel: &Projector,
-    ) {
+    fn push_node(&mut self, measured: Measured<'_>, palette: &Palette, to_texel: &Projector) {
+        let Measured {
+            node,
+            total,
+            unit,
+            material,
+            role,
+            inherited,
+        } = measured;
         // A limb with no measurable width still has to be drawn — `MIN_HALF_TEXELS` guarantees
         // it a line of texels — and dividing its coordinates by zero would put a NaN into every
         // one of them. The floor is a world unit rather than an epsilon: below it the whole
         // limb is inside one noise cell anyway, so the exact value cannot be seen.
         let unit = if unit > 1e-4 { unit } else { 1.0 };
         let total = if total > 1e-4 { total } else { unit };
+
+        // The hierarchical half of the surface: coarse structure from the parent path, fine
+        // detail from this one, and the whorls placed from the fine half. All three are
+        // properties of *where in the repository this is*, which is what makes a limb keep its
+        // face across a re-scan — see `Shading::lineage`.
+        let (lineage, seed) = grain_of(role, node);
+        let knots = knots_of(seed, total / unit);
 
         let Some(material) = material else {
             // Stone's surface over the unmaterialized colour: "treepo could not name this" is
@@ -423,7 +471,9 @@ impl Appearances {
                     cracked: 0.0,
                     restless: 0.0,
                     octaves: 1,
-                    seed: seed_of(node),
+                    seed,
+                    lineage,
+                    knots,
                 },
                 base: UNMATERIALIZED,
                 per_unit: 1.0 / unit,
@@ -457,15 +507,12 @@ impl Appearances {
             Composition::Pure | Composition::Subordinate(_) => None,
         };
         // `None` is unknown age rather than new age (see `Material::gradient`), so an unaged
-        // node draws at full brightness — the same as a brand-new one, which is the honest
+        // node draws at full saturation — the same as a brand-new one, which is the honest
         // reading: nothing here can distinguish them, and pretending otherwise would invent a
         // measurement.
-        let age = material.gradient.map_or((0.0, 0.0), |gradient| {
-            (
-                gradient.base().to_f64() as f32,
-                gradient.tip().to_f64() as f32,
-            )
-        });
+        let age = material
+            .gradient
+            .map_or((0.0, 0.0), |gradient| blended_age(gradient, inherited));
 
         let accents = self.push_accents(material, palette);
         let bands = self.push_bands(material);
@@ -478,7 +525,9 @@ impl Appearances {
                 cracked: intensity(StressKind::Cracked),
                 restless: intensity(StressKind::Restless),
                 octaves: crate::surface::octaves_for(surface.period().max_element(), texels),
-                seed: seed_of(node),
+                seed,
+                lineage,
+                knots,
             },
             base: surface.base,
             per_unit: 1.0 / unit,
@@ -577,30 +626,149 @@ fn slice(table: &[(f32, LinearRgba)], range: (u32, u32)) -> &[(f32, LinearRgba)]
         .unwrap_or_default()
 }
 
-/// The colour a run table gives at a fraction along the limb.
+/// How much of a node's age reading comes from the limb it hangs off — `F-MAT-4`.
 ///
-/// A linear scan, because a run table has one entry per contributor drawn on the node or per
-/// family a container holds — single digits in both cases, and a binary search over five
-/// entries is slower than looking at them.
-fn run_at(table: &[(f32, LinearRgba)], fraction: f32) -> Option<LinearRgba> {
-    table
-        .iter()
-        .find(|(bound, _)| fraction <= *bound)
-        .map(|(_, color)| *color)
+/// A quarter. The gradient is a property of one path's own commit span, so two sibling
+/// directories with very different histories meet at a joint where the picture jumps from grey
+/// to saturated in a single texel — an edge the eye reads as a seam in the rendering rather
+/// than as a fact about the repository.
+///
+/// Averaging over the tree's own neighbourhood is the fix that invents nothing: the parent
+/// already aggregates its children (`TemporalPrimitives` rolls up during extraction), so the
+/// value being mixed in is a summary of this node *and its siblings*, which is exactly what a
+/// neighbourhood average of the age field would be. A quarter, so the node still says what it
+/// is and only its edges soften.
+const PARENT_AGE_SHARE: f32 = 0.25;
+
+/// One node's age gradient, softened toward the limb it hangs off.
+///
+/// Both ends move together, so the gradient's *direction* — `F-MAT-4`'s whole content — cannot
+/// be reversed by the blend: `AgeGradient` guarantees `base >= tip` for both operands, and a
+/// convex combination of two ordered pairs is ordered.
+fn blended_age(own: AgeGradient, parent: Option<AgeGradient>) -> (f32, f32) {
+    let ends = |gradient: AgeGradient| {
+        (
+            gradient.base().to_f64() as f32,
+            gradient.tip().to_f64() as f32,
+        )
+    };
+    let (base, tip) = ends(own);
+    // `None` is unknown rather than new, so there is nothing to average with — a node whose
+    // parent has no history keeps its own reading rather than being pulled toward zero.
+    let Some((from, to)) = parent.map(ends) else {
+        return (base, tip);
+    };
+    let keep = 1.0 - PARENT_AGE_SHARE;
+    (
+        base * keep + from * PARENT_AGE_SHARE,
+        tip * keep + to * PARENT_AGE_SHARE,
+    )
 }
 
-/// Decorrelates one node's surface from its neighbours'.
+/// The two hashes one node's surface is drawn from — coarse from the parent path, fine from
+/// this one.
 ///
-/// The node id rather than the skeleton's own [`Seed`](treepo_det::Seed): this is a rendering
-/// value, and architecture D6/E1 puts the determinism boundary at the data this crate
-/// *receives* rather than at its pixels. What it has to be is stable within a run and identical
-/// across LOD bands, and a pure function of the id is both. Mixed rather than used raw, because
-/// adjacent node ids are adjacent limbs and a raw id would make neighbouring branches sample
-/// neighbouring — visibly similar — regions of the noise field.
-fn seed_of(node: NodeId) -> u32 {
-    let mut value = (node.index() as u32).wrapping_mul(0x9e37_79b9);
-    value ^= value >> 16;
-    value.wrapping_mul(0x85eb_ca6b)
+/// **The path rather than the node id, and that is a stability argument rather than a
+/// determinism one.** Node ids are perfectly deterministic; what they are not is *stable*. Ids
+/// are assigned in creation order, so adding one file near the root shifts every id after it —
+/// and an id-seeded surface would therefore re-roll the appearance of the entire tree on a
+/// re-scan that changed one line. A path-seeded one does not: the limbs that did not change
+/// look exactly as they did, which is what makes two screenshots of the same repository a week
+/// apart comparable at all.
+///
+/// The hierarchy falls out of hashing component by component and keeping the value from *before*
+/// the last one. Siblings share it, a child's parent-hash is its parent's own hash, and the
+/// grain therefore carries across a joint instead of restarting at it (`Shading::lineage`).
+///
+/// Nodes with no path fall back to the id, mixed. That is the `id-coverage` probe and this
+/// module's own geometry tests; a real snapshot is
+/// [`covered`](treepo_model::WorldSnapshot::is_covered).
+fn grain_of(role: Option<&NodeRole>, node: NodeId) -> (u32, u32) {
+    let Some(role) = role else {
+        let stirred = avalanche((node.index() as u32).wrapping_mul(0x9e37_79b9));
+        return (avalanche(stirred), stirred);
+    };
+    let (lineage, own) = hash_path(role.anchor());
+    match role {
+        // One path, several nodes: the root cluster is `AC-SKEL-2`'s answer to an empty
+        // repository and every boulder in it anchors to the repository root. The cluster index
+        // is what tells them apart, and it is as stable as the path is.
+        NodeRole::RootMass { index, .. } => (
+            lineage,
+            avalanche(own ^ u32::from(*index).wrapping_mul(0x9e37_79b9)),
+        ),
+        _ => (lineage, own),
+    }
+}
+
+/// A path hashed component by component: the value before the last component, and after it.
+fn hash_path(path: &RepoPath) -> (u32, u32) {
+    let mut running = 0x811c_9dc5u32;
+    let mut parent = running;
+    for component in path.components() {
+        parent = running;
+        for byte in component {
+            running ^= u32::from(*byte);
+            running = running.wrapping_mul(0x0100_0193);
+        }
+        // Separated, so `ab/c` and `a/bc` are different limbs. FNV alone would give them the
+        // same running value at the point the components are concatenated.
+        running = running.wrapping_add(0x9e37_79b9);
+    }
+    (avalanche(parent), avalanche(running))
+}
+
+/// Spreads a hash's low-order structure across all thirty-two bits.
+///
+/// FNV mixes well upward and poorly downward, and the surface reads several disjoint bit fields
+/// out of these words — a knot's position, its size, the plate phase. An unavalanched FNV would
+/// put every limb's knots in nearly the same place.
+fn avalanche(value: u32) -> u32 {
+    let mut mixed = value ^ (value >> 16);
+    mixed = mixed.wrapping_mul(0x85eb_ca6b);
+    mixed ^= mixed >> 13;
+    mixed = mixed.wrapping_mul(0xc2b2_ae35);
+    mixed ^ (mixed >> 16)
+}
+
+/// How long a limb has to be, in half-widths, to earn each of its knots.
+///
+/// Four. A knot disturbs about a half-width across and twice that along, so a limb shorter than
+/// this would be mostly knot — a blemish rather than grain. It also means knots appear on
+/// boughs and not on twigs, which is both what wood does and what the picture wants: a twig is
+/// a dozen texels and has nothing to spare.
+const KNOT_INTERVAL: f32 = 4.0;
+
+/// Places a limb's whorls from its own hash.
+///
+/// One knot per [`KNOT_INTERVAL`] of limb, each placed inside its own stretch so two cannot
+/// land on top of each other, and each sized and positioned from a disjoint bit field of the
+/// same word. Three fields out of one hash rather than three hashes: the bits are independent
+/// after [`avalanche`], and this runs once per node rather than once per texel, so the saving
+/// is not the point — having one obvious source for "everything about this limb's knots" is.
+fn knots_of(seed: u32, half_widths: f32) -> [Knot; MAX_KNOTS] {
+    let mut knots = [Knot::default(); MAX_KNOTS];
+    if !half_widths.is_finite() {
+        return knots;
+    }
+    let count = ((half_widths / KNOT_INTERVAL) as usize).min(MAX_KNOTS);
+    let stretch = half_widths / count.max(1) as f32;
+    let mut bits = seed;
+    for (index, knot) in knots.iter_mut().take(count).enumerate() {
+        bits = avalanche(bits ^ 0x9e37_79b9);
+        let field = |shift: u32| ((bits >> shift) & 0x3ff) as f32 * (1.0 / 1024.0);
+        *knot = Knot {
+            // Inside its own stretch, with a margin at each end so a knot never straddles the
+            // base or the tip — where the limb is either joined to something or a point.
+            at: Vec2::new(
+                (index as f32 + 0.2 + 0.6 * field(0)) * stretch,
+                field(10) * 1.3 - 0.65,
+            ),
+            reach: 0.42 + 0.38 * field(20),
+            depth: 0.40 + 0.45 * field(0).max(field(20)),
+        };
+    }
+    knots
 }
 
 /// World coordinates to texel coordinates, for one baked region.
@@ -744,11 +912,15 @@ fn fill(layer: &mut Layer, corners: [Corner; 3], brush: &Brush<'_>) {
                 fraction: (distance * brush.per_total).clamp(0.0, 1.0),
             };
 
+            // A container's inventory is read here and its ownership is not, and the asymmetry
+            // is the point. An inventory band is a *report* — `F-INSP-3` asks the container to
+            // say what it holds — so it wants a crisp boundary at the share it names. Ownership
+            // is a surface, so where its table is read is a per-texel decision the shader makes
+            // from the same flow field that bends the grain; see `surface::weave`.
             let base = run_at(brush.bands, point.fraction).unwrap_or(brush.base);
-            let accent = run_at(brush.accents, point.fraction);
             texel.copy_from_slice(&encode(
                 srgb,
-                crate::surface::shade(brush.shading, base, point, accent),
+                crate::surface::shade(brush.shading, base, point, brush.accents),
             ));
 
             layer.texels_drawn += 1;
@@ -1299,14 +1471,39 @@ mod tests {
         );
 
         // The bands run base to tip in family order, so ore — dark and blue-grey — is the basal
-        // half and parchment — pale and warm — is the distal half. Row 26 is near the base of
-        // the limb and row 6 near its tip.
-        let (base, tip) = (texel(&layer, size, 16, 26), texel(&layer, size, 16, 6));
-        assert_ne!(base, tip, "the container drew one material");
+        // half and parchment — pale and warm — is the distal half.
+        //
+        // Averaged over a band rather than read off one texel of it. The surface varies from
+        // texel to texel by design — plates, grooves, whorls and grain all move the value — so a
+        // single sample is a coin flip on which part of the relief it landed in, and a test that
+        // is a coin flip fails for a reason that is not the one it is named after. The claim is
+        // about a *band*, so it is measured over one.
+        let (base, tip) = (warmth(&layer, size, 22..30), warmth(&layer, size, 2..10));
         assert!(
-            u32::from(tip[0]) + u32::from(tip[1]) > u32::from(base[0]) + u32::from(base[1]),
-            "the inventory bands are the wrong way round: {base:?} then {tip:?}"
+            tip > base + 0.02,
+            "the inventory bands are the wrong way round: {base} then {tip}"
         );
+    }
+
+    /// How warm and bright a horizontal band of the limb is, averaged across its rows.
+    fn warmth(layer: &Layer, size: UVec2, rows: std::ops::Range<u32>) -> f32 {
+        let mut sum = 0.0;
+        let mut seen = 0;
+        for row in rows {
+            for column in 8..24 {
+                let found = texel(layer, size, column, row);
+                if found[3] == 0 {
+                    continue;
+                }
+                sum += f32::from(found[0]) + f32::from(found[1]);
+                seen += 1;
+            }
+        }
+        if seen == 0 {
+            0.0
+        } else {
+            sum / (seen as f32 * 510.0)
+        }
     }
 
     /// `N7` over a node carrying every reading at once. The existing coverage test draws
