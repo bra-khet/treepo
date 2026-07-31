@@ -139,11 +139,18 @@ Parallel-safe: **2 ∥ 3**, **5 ∥ 6**, **10 ∥ 11**. Flag these for Fleet.
   15702. Do **not** enable `brp` by default. Sketch in architecture D10.
 - **End Conditions**:
   - [ ] T2 legible at far, medium, near zoom; known top-level directory findable by eye within 30 s — **recorded user test, ≥3 participants** (`AC-NAV-1`)
-  - [~] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`) — **measured on the dev
-        machine, not on minimum spec.** Full 12-band traversal of the T3 pin: worst frame
-        14.5 ms, zero frames over 33.3 ms. Across 16 continuous 44-notch gestures, one frame
-        exceeded the budget (33.6 ms, first traversal after launch). Mean 6.94 ms, vsync-bound.
-        Still open because the machine is an i7-12650H / RTX 4050, well above §7's minimum spec
+  - [!] Zoom far→near on T3 holds 30 fps at minimum spec (`AC-NAV-2`) — **regressed by the
+        materials pass, on purpose and with the numbers recorded.** It was green on the dev
+        machine before materials had an appearance: worst frame 14.5 ms over a full 12-band
+        traversal, zero over 33.3 ms. Shading each texel rather than interpolating between two
+        of them costs **13.7 → 71 ns per texel**, measured, and the same traversal now spends
+        ~30 of roughly 2,500 frames over budget, worst 30–53 ms on frames that bake. The bake
+        budget was re-cut against that measurement (`BAKE_TEXELS_PER_FRAME` replacing
+        `BAKES_PER_FRAME`, `MAX_PIECE_SIDE` halved), which took it from 268 ms to 53 ms, and
+        further tuning is the wrong lever: the bake is CPU rasterization **on the main thread**,
+        and moving it to the async pool is what removes the trade. That is Phase 7's
+        `grow_task`, where a producer already publishes while Thrive reads. Minimum spec remains
+        unmeasured on top of this
   - [ ] `cargo xtask id-coverage` reports zero colored pixels without an element ID (`P1`, `N7`, `AC-INSP-1`)
   - [ ] Clicking any element resolves to a real path or an explicit aggregate (`AC-INSP-1`)
   - [x] T3 resident memory under 4 GB (`NFR-3`) — peak working set **676 MB** over a full

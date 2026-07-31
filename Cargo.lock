@@ -6088,6 +6088,7 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "treepo-det",
+ "treepo-id",
  "treepo-model",
 ]
 

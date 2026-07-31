@@ -24,10 +24,10 @@
 //! Filling each triangle by testing every texel of its bounding box is four lines shorter and
 //! quadratically worse: a limb running corner to corner of a piece has a bounding box the size
 //! of the piece and covers a few percent of it. Walking rows and computing the covered span
-//! makes the cost proportional to what is drawn, which is what lets [`BAKES_PER_FRAME`] be a
-//! small number instead of a guess.
+//! makes the cost proportional to what is drawn — which is also what makes
+//! [`BAKE_TEXELS_PER_FRAME`] a budget a frame can be held to rather than a guess.
 //!
-//! [`BAKES_PER_FRAME`]: crate::chunk::BAKES_PER_FRAME
+//! [`BAKE_TEXELS_PER_FRAME`]: crate::chunk::BAKE_TEXELS_PER_FRAME
 //!
 //! # One pass writes both planes, and that is the `N7` argument
 //!
@@ -45,15 +45,47 @@
 //! thins the tree rather than deleting it, which is the failure `AC-NAV-1` would actually
 //! notice. Blending partial coverage would also make the ID plane ambiguous in a way it is not
 //! now: a half-covered texel is painted by two elements, and a `u32` holds one.
+//!
+//! # Per node, then per texel — the split this module is organized around
+//!
+//! [`surface`](crate::surface) decides what a material looks like; this module decides what is
+//! true of a *node*, so that the per-texel function does not have to work it out again for
+//! every texel of a limb. [`Appearances`] is that pass: it walks the chunk's segments once,
+//! measures each node's limb, resolves its [`Material`](treepo_model::Material) into a
+//! [`Shading`](crate::surface::Shading), and lays its ownership mosaic and — for a container —
+//! its inventory out as run tables indexed by fraction along the limb.
+//!
+//! The rule that keeps the bake affordable is that anything constant over a limb belongs in
+//! that pass. `F-MAT-6`'s [`Sparse`](treepo_model::StressKind::Sparse) is the clearest case: it
+//! coarsens the noise's *period*, so it costs nothing per texel at all — where the obvious
+//! implementation, thinning coverage, would cost a branch on every one and break `N7` besides.
+//!
+//! # A limb's coordinates come from its corners
+//!
+//! [`fill`] interpolates *position on the limb* rather than colour. Each corner of a segment's
+//! quad carries how far along the node it is and which side of the centre line it is on, and
+//! the same barycentric weights that used to blend two colours now produce a
+//! [`LimbPoint`](crate::surface::LimbPoint). Colour is computed at the texel instead of between
+//! two of them, which is what lets a surface have any detail finer than a segment.
+//!
+//! A tapered quad is a bilinear map and two triangles are affine, so a limb that narrows
+//! sharply has a hairline discontinuity in its texture along the split diagonal. That is the
+//! classic cost of drawing a quad as two triangles, it is invisible at the tapers an L-system
+//! produces, and the alternative is a divide per texel to fix something nobody can see.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageSampler};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use treepo_model::{MaterialFamily, MaterialMap, NodeId, Skeleton};
+use std::sync::LazyLock;
+use treepo_id::Palette;
+use treepo_model::{
+    Composition, Material, MaterialFamily, MaterialMap, NodeId, Skeleton, StressKind,
+};
 
 use crate::chunk::{Extent, LAYER_USAGE, half, world};
 use crate::id_buffer::{ElementId, IdPlane};
+use crate::surface::{LimbPoint, Shading, Surface, author_color};
 
 /// How many bytes one texel of a baked layer's **colour** costs.
 ///
@@ -74,6 +106,14 @@ pub struct Layer {
     pub color: Vec<u8>,
     /// One element id per texel, in the same order.
     pub ids: Vec<ElementId>,
+    /// How many texels this bake wrote — what it cost, not what it covers.
+    ///
+    /// Counts *writes*, so a texel two limbs cross is counted twice. That is deliberate: the
+    /// number exists to charge [`BAKE_TEXELS_PER_FRAME`](crate::chunk::BAKE_TEXELS_PER_FRAME),
+    /// and what a frame pays for is the shading it performed rather than the area it ended up
+    /// covering. [`coverage`](crate::coverage) is the function that counts distinct texels, and
+    /// it answers a different question.
+    pub texels_drawn: u64,
 }
 
 impl Layer {
@@ -85,6 +125,7 @@ impl Layer {
             size,
             color: vec![0u8; texels * BYTES_PER_TEXEL],
             ids: vec![ElementId::NONE; texels],
+            texels_drawn: 0,
         }
     }
 
@@ -122,6 +163,7 @@ pub const MIN_HALF_TEXELS: f32 = 0.6;
 pub fn rasterize(
     skeleton: &Skeleton,
     materials: &MaterialMap,
+    palette: &Palette,
     segments: &[u32],
     region: Extent,
     size: UVec2,
@@ -130,6 +172,12 @@ pub fn rasterize(
     let Some(to_texel) = Projector::new(region, size) else {
         return layer;
     };
+
+    // The one pass that turns Phase 4's materials into something a texel loop can read. Note
+    // that it takes the projection: how many texels a band puts across a limb decides how many
+    // octaves of surface detail are worth sampling, and that is a per-node question because a
+    // trunk and a twig are resolved very differently by the same band.
+    let appearances = Appearances::of(skeleton, materials, palette, segments, &to_texel);
 
     let all = skeleton.segments();
     for index in segments {
@@ -150,24 +198,22 @@ pub fn rasterize(
         let base = to_texel.offset(across * half(segment.base_width), end - start);
         let tip = to_texel.offset(across * half(segment.tip_width), end - start);
 
-        let (base_color, tip_color) = segment_colors(materials, segment.node);
-        let corners = [start + base, start - base, end - tip, end + tip];
-        // The segment's own node, carried into both triangles. `N7` is this argument passed
-        // down: a texel cannot be coloured without one, because `fill` has no signature that
-        // omits it.
-        let element = ElementId::of(segment.node);
-        fill(
-            &mut layer,
-            [corners[0], corners[1], corners[2]],
-            [base_color, base_color, tip_color],
-            element,
-        );
-        fill(
-            &mut layer,
-            [corners[0], corners[2], corners[3]],
-            [base_color, tip_color, tip_color],
-            element,
-        );
+        let Some(brush) = appearances.brush(segment.node, *index) else {
+            continue;
+        };
+        // Where this segment starts and ends on its node's limb. Both ends of the quad share a
+        // position along, so the four corners carry two distinct ones — which is exactly what
+        // makes the mosaic and the age gradient run along the *node* rather than repeat once
+        // per segment, the approximation this replaces.
+        let (from, to) = brush.span;
+        let corners = [
+            Corner::new(start + base, from, 1.0),
+            Corner::new(start - base, from, -1.0),
+            Corner::new(end - tip, to, -1.0),
+            Corner::new(end + tip, to, 1.0),
+        ];
+        fill(&mut layer, [corners[0], corners[1], corners[2]], &brush);
+        fill(&mut layer, [corners[0], corners[2], corners[3]], &brush);
     }
     layer
 }
@@ -203,69 +249,347 @@ pub fn texture(size: UVec2, pixels: Vec<u8>) -> Image {
     image
 }
 
-/// The placeholder colour of one material family.
+/// The colours contributors are drawn in — `F-ID-4`, `AC-MAT-4`.
 ///
-/// **A placeholder, and a labelled one.** `F-MAT-1`'s six families are surfaces —
-/// "wood-like, crystalline, metallic, leafy, dusty" — and a surface is a shader and a tile
-/// atlas, not a hex value. What these six do is make the families *distinguishable* so that the
-/// wiring from `materialize` to a pixel can be seen to work. They are not tuned, they have not
-/// been through the perceptual-separation check `AC-MAT-4` applies to the author palette, and
-/// they are not in `assets/palettes/` for exactly that reason: a file there would look like a
-/// decision.
-#[must_use]
-pub fn family_color(family: MaterialFamily) -> LinearRgba {
-    match family {
-        MaterialFamily::Heartwood => LinearRgba::rgb(0.42, 0.26, 0.13),
-        MaterialFamily::Ore => LinearRgba::rgb(0.36, 0.38, 0.44),
-        MaterialFamily::Machined => LinearRgba::rgb(0.52, 0.54, 0.50),
-        MaterialFamily::Parchment => LinearRgba::rgb(0.72, 0.66, 0.48),
-        MaterialFamily::Resin => LinearRgba::rgb(0.62, 0.42, 0.14),
-        MaterialFamily::Stone => LinearRgba::rgb(0.38, 0.38, 0.40),
+/// A resource rather than a constant because `F-SET-*` and `F-MAN-9` will eventually let a user
+/// point at a palette file, and because the bake needs it every frame it bakes. It holds the
+/// compiled-in palette until something loads one: `Palette::from_ron` validates perceptual
+/// separation, so a palette that reached here has already been checked, and there is no state
+/// in which the mosaic is drawn from unvalidated colours.
+///
+/// The one thing it must not become is a *second* source of author colour. `treepo-id` owns
+/// what colour a contributor is; this owns which palette that question is asked of.
+#[derive(Resource, Debug, Clone)]
+pub struct AuthorPalette(pub Palette);
+
+impl Default for AuthorPalette {
+    fn default() -> Self {
+        Self(Palette::built_in())
     }
 }
 
 /// The colour used where a node has no material.
+///
+/// Reached by [`Skeleton`]s built without a [`MaterialMap`] — the `id-coverage` probe, and unit
+/// tests about geometry. A real snapshot is
+/// [`covered`](treepo_model::WorldSnapshot::is_covered).
 const UNMATERIALIZED: LinearRgba = LinearRgba::rgb(0.30, 0.30, 0.32);
 
-/// How much of its brightness the oldest material loses.
+/// Everything one node's texels share — resolved once per bake, read once per texel.
 ///
-/// `F-MAT-4` is a gradient from older-basal to newer-distal, and darkening with age is the
-/// cheapest rendering of it that is still the right *direction*. Like [`family_color`] it is a
-/// placeholder: §8.3's reading is growth rings and tip vitality, which is a surface treatment.
-const AGE_DARKENING: f32 = 0.45;
-
-/// One segment's base and tip colours: its family, shaded by its age gradient, sRGB-encoded.
-fn segment_colors(materials: &MaterialMap, node: NodeId) -> ([u8; 4], [u8; 4]) {
-    let Some(material) = materials.get(node) else {
-        let flat = shaded(UNMATERIALIZED, 0.0);
-        return (flat, flat);
-    };
-
-    let color = family_color(material.family);
-    // `None` is unknown age rather than new age (see `Material::gradient`), so an unaged node
-    // draws at full brightness — the same as a brand-new one, which is the honest reading:
-    // nothing here can distinguish them, and pretending otherwise would invent a measurement.
-    let (base_age, tip_age) = match material.gradient {
-        None => (0.0, 0.0),
-        Some(gradient) => (
-            gradient.base().to_f64() as f32,
-            gradient.tip().to_f64() as f32,
-        ),
-    };
-
-    (shaded(color, base_age), shaded(color, tip_age))
+/// Three parallel tables rather than one structure per node, because the per-node records are
+/// fixed-size and the mosaic runs and inventory bands are not: a `Vec` inside each record would
+/// be one allocation per node per bake, at every band, for a handful of entries.
+#[derive(Debug, Default)]
+struct Appearances {
+    /// One record per node the chunk draws, ordered by node so it can be searched.
+    nodes: Vec<NodeRecord>,
+    /// `(upper fraction bound, colour)` — the ownership mosaic's runs, `F-MAT-2`.
+    accents: Vec<(f32, LinearRgba)>,
+    /// `(upper fraction bound, colour)` — a container's inventory, `F-SKEL-7`.
+    bands: Vec<(f32, LinearRgba)>,
+    /// How far along its node each of the chunk's segments begins and ends, in world units.
+    ///
+    /// Parallel to the `segments` slice `rasterize` was given, so a segment's span is a lookup
+    /// rather than a second walk.
+    spans: Vec<(u32, f32, f32)>,
 }
 
-/// A colour darkened by a normalized age in `0..=1`, as sRGB bytes.
-fn shaded(color: LinearRgba, age: f32) -> [u8; 4] {
-    let factor = 1.0 - AGE_DARKENING * age.clamp(0.0, 1.0);
-    Srgba::from(LinearRgba::new(
-        color.red * factor,
-        color.green * factor,
-        color.blue * factor,
-        color.alpha,
-    ))
-    .to_u8_array()
+/// One node's shared appearance.
+#[derive(Debug, Clone, Copy)]
+struct NodeRecord {
+    node: NodeId,
+    shading: Shading,
+    base: LinearRgba,
+    /// The reciprocal of the node's base half-width — limb coordinates are in those units.
+    per_unit: f32,
+    /// The reciprocal of the node's total limb length — the mosaic and gradient axis.
+    per_total: f32,
+    accents: (u32, u32),
+    bands: (u32, u32),
+}
+
+/// One node's appearance, ready to draw one of its segments with.
+#[derive(Debug, Clone, Copy)]
+struct Brush<'a> {
+    shading: &'a Shading,
+    base: LinearRgba,
+    accents: &'a [(f32, LinearRgba)],
+    bands: &'a [(f32, LinearRgba)],
+    per_unit: f32,
+    per_total: f32,
+    /// Where this segment starts and ends along its node, in world units.
+    span: (f32, f32),
+    element: ElementId,
+}
+
+impl Appearances {
+    /// Resolves every node the chunk's segments belong to.
+    ///
+    /// Two passes over the segment list. The first measures each node — total limb length, base
+    /// half-width, and where each segment sits along it — because a node's mosaic and age
+    /// gradient are properties of the whole limb and a chunk holds the whole limb: chunk
+    /// identity is subtree-anchored (architecture D5.1), so a node's segments do not straddle
+    /// two of them. The second resolves each node's material into something a texel can read.
+    ///
+    /// The measuring pass walks the segment indices **in skeleton order**, because that is the
+    /// order the L-system emitted them and therefore the order base to tip. The slice
+    /// `rasterize` is handed makes no such promise, and a chunk whose segments arrived
+    /// shuffled would otherwise draw a limb whose gradient ran backwards in places — a defect
+    /// that would look like a rendering artefact rather than like a sort that was missing.
+    fn of(
+        skeleton: &Skeleton,
+        materials: &MaterialMap,
+        palette: &Palette,
+        segments: &[u32],
+        to_texel: &Projector,
+    ) -> Self {
+        let all = skeleton.segments();
+        let mut ordered: Vec<u32> = segments
+            .iter()
+            .copied()
+            .filter(|index| (*index as usize) < all.len())
+            .collect();
+        ordered.sort_unstable();
+
+        let mut measures: Vec<(NodeId, f32, f32)> = Vec::new();
+        let mut spans: Vec<(u32, f32, f32)> = Vec::with_capacity(ordered.len());
+        for index in ordered {
+            let segment = &all[index as usize];
+            let length = (world(segment.end) - world(segment.start)).length();
+            let widest = half(segment.base_width).max(half(segment.tip_width));
+
+            let slot = match measures.binary_search_by_key(&segment.node, |(node, _, _)| *node) {
+                Ok(slot) => slot,
+                Err(slot) => {
+                    measures.insert(slot, (segment.node, 0.0, 0.0));
+                    slot
+                }
+            };
+            let (_, total, unit) = &mut measures[slot];
+            spans.push((index, *total, *total + length));
+            *total += length;
+            *unit = unit.max(widest);
+        }
+
+        let mut resolved = Self {
+            spans,
+            ..Self::default()
+        };
+        for (node, total, unit) in measures {
+            resolved.push_node(node, total, unit, materials.get(node), palette, to_texel);
+        }
+        resolved
+    }
+
+    /// Resolves one node's material into a record, appending its run tables.
+    fn push_node(
+        &mut self,
+        node: NodeId,
+        total: f32,
+        unit: f32,
+        material: Option<&Material>,
+        palette: &Palette,
+        to_texel: &Projector,
+    ) {
+        // A limb with no measurable width still has to be drawn — `MIN_HALF_TEXELS` guarantees
+        // it a line of texels — and dividing its coordinates by zero would put a NaN into every
+        // one of them. The floor is a world unit rather than an epsilon: below it the whole
+        // limb is inside one noise cell anyway, so the exact value cannot be seen.
+        let unit = if unit > 1e-4 { unit } else { 1.0 };
+        let total = if total > 1e-4 { total } else { unit };
+
+        let Some(material) = material else {
+            // Stone's surface over the unmaterialized colour: "treepo could not name this" is
+            // the same thing being said, and a flat patch in a textured tree would read as a
+            // hole rather than as an absence.
+            self.nodes.push(NodeRecord {
+                node,
+                shading: Shading {
+                    surface: Surface::of(MaterialFamily::Stone),
+                    vein: None,
+                    age: (0.0, 0.0),
+                    cracked: 0.0,
+                    restless: 0.0,
+                    octaves: 1,
+                    seed: seed_of(node),
+                },
+                base: UNMATERIALIZED,
+                per_unit: 1.0 / unit,
+                per_total: 1.0 / total,
+                accents: (0, 0),
+                bands: (0, 0),
+            });
+            return;
+        };
+
+        // `F-MAT-6`: stress coexists with the primary material, so it modifies the surface and
+        // never replaces it. `Sparse` is folded into the surface here and therefore costs
+        // nothing per texel; the other two carry an intensity into `shade`.
+        let intensity = |kind: StressKind| {
+            material
+                .stress
+                .and_then(|stress| stress.intensity_of(kind))
+                .map_or(0.0, |value| value.to_f64() as f32)
+        };
+        let surface = Surface::of(material.family).coarsened(intensity(StressKind::Sparse));
+
+        // How many texels this band puts across half of this limb, which is what decides how
+        // much surface detail is resolvable. `min_element` because a piece clamped on one axis
+        // resolves no better than its coarser one.
+        let texels = unit * to_texel.scale.min_element();
+
+        let vein = match material.composition {
+            Composition::Blended { secondary, weight } => {
+                Some((Surface::of(secondary).base, weight.to_f64() as f32))
+            }
+            Composition::Pure | Composition::Subordinate(_) => None,
+        };
+        // `None` is unknown age rather than new age (see `Material::gradient`), so an unaged
+        // node draws at full brightness — the same as a brand-new one, which is the honest
+        // reading: nothing here can distinguish them, and pretending otherwise would invent a
+        // measurement.
+        let age = material.gradient.map_or((0.0, 0.0), |gradient| {
+            (
+                gradient.base().to_f64() as f32,
+                gradient.tip().to_f64() as f32,
+            )
+        });
+
+        let accents = self.push_accents(material, palette);
+        let bands = self.push_bands(material);
+        self.nodes.push(NodeRecord {
+            node,
+            shading: Shading {
+                surface,
+                vein,
+                age,
+                cracked: intensity(StressKind::Cracked),
+                restless: intensity(StressKind::Restless),
+                octaves: crate::surface::octaves_for(surface.period().max_element(), texels),
+                seed: seed_of(node),
+            },
+            base: surface.base,
+            per_unit: 1.0 / unit,
+            per_total: 1.0 / total,
+            accents,
+            bands,
+        });
+    }
+
+    /// Lays this node's ownership mosaic out as runs along its limb — `F-MAT-2`.
+    ///
+    /// [`Mosaic`](treepo_model::Mosaic) states that a holder occupies a contiguous run and that
+    /// the runs follow key order, so "the arrangement is not stored, it *is* holders read in
+    /// sequence". This is that sentence as a table, and it makes one choice the model
+    /// deliberately leaves open: the held runs are laid from the **base**, so the unclaimed
+    /// remainder — which `F-MAT-2` says shows the primary material — is the tip. A limb
+    /// therefore reads as owned where it is thick and as its own material where it thins out,
+    /// which is the reading that survives being zoomed away from.
+    fn push_accents(&mut self, material: &Material, palette: &Palette) -> (u32, u32) {
+        let cells = material.mosaic.cells();
+        if cells == 0 || material.mosaic.is_empty() {
+            return (0, 0);
+        }
+        let from = self.accents.len() as u32;
+        let mut laid = 0u32;
+        for (author, held) in material.mosaic.holders() {
+            laid = laid.saturating_add(*held);
+            let bound = f32::from(u16::try_from(laid).unwrap_or(u16::MAX))
+                / f32::from(u16::try_from(cells).unwrap_or(u16::MAX)).max(1.0);
+            self.accents
+                .push((bound, author_color(&palette.color_of(author))));
+        }
+        (from, self.accents.len() as u32)
+    }
+
+    /// Lays a container's inventory out as bands along its limb — `F-SKEL-7`, `F-INSP-3`.
+    ///
+    /// A [`Subordinate`](treepo_model::Composition::Subordinate) node "holds materials it is not
+    /// made of", and `F-INSP-3` requires it to report what it represents. Banding the mix along
+    /// the limb is that report drawn rather than written: a container of mostly documentation is
+    /// mostly pale, and the minority families are visible stripes rather than a rounding error.
+    ///
+    /// Ordered by [`MaterialFamily::ALL`], which is declaration order and carries no ranking —
+    /// the same reason the mosaic's runs follow key order.
+    fn push_bands(&mut self, material: &Material) -> (u32, u32) {
+        let Some(mix) = material.composition.contents() else {
+            return (0, 0);
+        };
+        let from = self.bands.len() as u32;
+        let mut laid = 0.0f32;
+        for (family, share) in mix.present() {
+            laid += share.to_f64() as f32;
+            self.bands.push((laid, Surface::of(family).base));
+        }
+        // The shares are rounded independently and sum to approximately one (`FamilyMix`), so
+        // the last band is stretched to the tip rather than leaving a sliver of whatever was
+        // underneath. Rounding is not information.
+        if let Some(last) = self.bands.last_mut() {
+            last.0 = 1.0;
+        }
+        (from, self.bands.len() as u32)
+    }
+
+    /// The brush for one segment, or `None` if its node was not measured.
+    fn brush(&self, node: NodeId, index: u32) -> Option<Brush<'_>> {
+        let record = self
+            .nodes
+            .binary_search_by_key(&node, |record| record.node)
+            .ok()
+            .map(|slot| &self.nodes[slot])?;
+        let span = self
+            .spans
+            .binary_search_by_key(&index, |(at, _, _)| *at)
+            .ok()
+            .map(|slot| {
+                let (_, from, to) = self.spans[slot];
+                (from, to)
+            })?;
+        Some(Brush {
+            shading: &record.shading,
+            base: record.base,
+            accents: slice(&self.accents, record.accents),
+            bands: slice(&self.bands, record.bands),
+            per_unit: record.per_unit,
+            per_total: record.per_total,
+            span,
+            element: ElementId::of(node),
+        })
+    }
+}
+
+/// A half-open `(from, to)` range of a run table.
+fn slice(table: &[(f32, LinearRgba)], range: (u32, u32)) -> &[(f32, LinearRgba)] {
+    table
+        .get(range.0 as usize..range.1 as usize)
+        .unwrap_or_default()
+}
+
+/// The colour a run table gives at a fraction along the limb.
+///
+/// A linear scan, because a run table has one entry per contributor drawn on the node or per
+/// family a container holds — single digits in both cases, and a binary search over five
+/// entries is slower than looking at them.
+fn run_at(table: &[(f32, LinearRgba)], fraction: f32) -> Option<LinearRgba> {
+    table
+        .iter()
+        .find(|(bound, _)| fraction <= *bound)
+        .map(|(_, color)| *color)
+}
+
+/// Decorrelates one node's surface from its neighbours'.
+///
+/// The node id rather than the skeleton's own [`Seed`](treepo_det::Seed): this is a rendering
+/// value, and architecture D6/E1 puts the determinism boundary at the data this crate
+/// *receives* rather than at its pixels. What it has to be is stable within a run and identical
+/// across LOD bands, and a pure function of the id is both. Mixed rather than used raw, because
+/// adjacent node ids are adjacent limbs and a raw id would make neighbouring branches sample
+/// neighbouring — visibly similar — regions of the noise field.
+fn seed_of(node: NodeId) -> u32 {
+    let mut value = (node.index() as u32).wrapping_mul(0x9e37_79b9);
+    value ^= value >> 16;
+    value.wrapping_mul(0x85eb_ca6b)
 }
 
 /// World coordinates to texel coordinates, for one baked region.
@@ -318,7 +642,28 @@ impl Projector {
     }
 }
 
-/// Fills one triangle into both planes, interpolating the corner colours.
+/// One corner of a segment's quad: where it is, and where that is on the limb.
+#[derive(Debug, Clone, Copy)]
+struct Corner {
+    /// Texel-space position.
+    at: Vec2,
+    /// Distance from the node's base, in world units.
+    distance: f32,
+    /// Which side of the centre line — `-1` and `+1` are the limb's edges.
+    across: f32,
+}
+
+impl Corner {
+    fn new(at: Vec2, distance: f32, across: f32) -> Self {
+        Self {
+            at,
+            distance,
+            across,
+        }
+    }
+}
+
+/// Fills one triangle into both planes, shading each texel from its position on the limb.
 ///
 /// Scanline: for each row the triangle reaches, the two edges it crosses give the span, and
 /// only texels inside that span are visited. See the module header for why the bounding-box
@@ -326,24 +671,28 @@ impl Projector {
 ///
 /// Takes the whole [`Layer`] rather than the colour slice, so that "write a texel" is one place
 /// and writes both. That is `N7` expressed as a signature.
-fn fill(layer: &mut Layer, corners: [Vec2; 3], colors: [[u8; 4]; 3], element: ElementId) {
+fn fill(layer: &mut Layer, corners: [Corner; 3], brush: &Brush<'_>) {
     let size = layer.size;
-    let area = edge(corners[0], corners[1], corners[2]);
+    let points = [corners[0].at, corners[1].at, corners[2].at];
+    let area = edge(points[0], points[1], points[2]);
     if area.abs() < f32::EPSILON || !area.is_finite() {
         return;
     }
     let sign = area.signum();
+    let total = area.abs();
+    let per_area = 1.0 / total;
+    // Resolved once for the triangle rather than three times per texel. `LazyLock` derefs
+    // through an atomic load and a branch, which is cheap on its own and is not cheap when the
+    // encoder asks for it on every channel of every texel.
+    let srgb: &[u8; SRGB_TABLE_LEN] = &SRGB_TABLE;
 
-    let top = corners.iter().map(|c| c.y).fold(f32::INFINITY, f32::min);
-    let bottom = corners
-        .iter()
-        .map(|c| c.y)
-        .fold(f32::NEG_INFINITY, f32::max);
+    let top = points.iter().map(|c| c.y).fold(f32::INFINITY, f32::min);
+    let bottom = points.iter().map(|c| c.y).fold(f32::NEG_INFINITY, f32::max);
     let (first, last) = (first_texel(top, size.y), last_texel(bottom, size.y));
 
     for row in first..last {
         let y = row as f32 + 0.5;
-        let Some((left, right)) = span(corners, y) else {
+        let Some((left, right)) = span(points, y) else {
             continue;
         };
         let (from, to) = (first_texel(left, size.x), last_texel(right, size.x));
@@ -354,9 +703,9 @@ fn fill(layer: &mut Layer, corners: [Vec2; 3], colors: [[u8; 4]; 3], element: El
             // functions are the classic optimization and they accumulate error across a long
             // span; the span is already short because the scanline bounded it.
             let weights = [
-                edge(corners[1], corners[2], at) * sign,
-                edge(corners[2], corners[0], at) * sign,
-                edge(corners[0], corners[1], at) * sign,
+                edge(points[1], points[2], at) * sign,
+                edge(points[2], points[0], at) * sign,
+                edge(points[0], points[1], at) * sign,
             ];
             if weights.iter().any(|w| *w < 0.0) {
                 continue;
@@ -367,24 +716,88 @@ fn fill(layer: &mut Layer, corners: [Vec2; 3], colors: [[u8; 4]; 3], element: El
             let Some(texel) = layer.color.get_mut(offset..offset + BYTES_PER_TEXEL) else {
                 continue;
             };
-            let total = area.abs();
-            for channel in 0..BYTES_PER_TEXEL {
-                let blended = (0..3)
-                    .map(|corner| weights[corner] * f32::from(colors[corner][channel]))
-                    .sum::<f32>()
-                    / total;
-                texel[channel] = blended.clamp(0.0, 255.0) as u8;
-            }
+
+            // Two attributes rather than four colour channels, and the conversion to limb
+            // coordinates is two multiplies against reciprocals the brush already holds.
+            let distance = (0..3)
+                .map(|corner| weights[corner] * corners[corner].distance)
+                .sum::<f32>()
+                * per_area;
+            let across = (0..3)
+                .map(|corner| weights[corner] * corners[corner].across)
+                .sum::<f32>()
+                * per_area;
+            let point = LimbPoint {
+                along: distance * brush.per_unit,
+                across,
+                fraction: (distance * brush.per_total).clamp(0.0, 1.0),
+            };
+
+            let base = run_at(brush.bands, point.fraction).unwrap_or(brush.base);
+            let accent = run_at(brush.accents, point.fraction);
+            texel.copy_from_slice(&encode(
+                srgb,
+                crate::surface::shade(brush.shading, base, point, accent),
+            ));
+
+            layer.texels_drawn += 1;
 
             // The same texel, the same iteration, no branch between them. Later triangles
             // overwrite earlier ones in both planes together, so the id always names whichever
             // element the *visible* colour came from — which is the whole property picking
             // relies on.
             if let Some(id) = layer.ids.get_mut(index) {
-                *id = element;
+                *id = brush.element;
             }
         }
     }
+}
+
+/// How many entries the sRGB encoding table holds.
+///
+/// Indexed by the *square root* of the linear value, which is what makes a thousand entries
+/// enough. sRGB is steep near black — a linearly-indexed table would give the darkest forty
+/// output codes a single entry between them, and `F-MAT-4` puts its oldest material exactly
+/// there. Taking a square root first spreads the table's resolution into the darks, at the cost
+/// of one hardware instruction.
+const SRGB_TABLE_LEN: usize = 1024;
+
+/// Linear light to sRGB bytes, precomputed.
+///
+/// [`Srgba::from`] is one `powf` per channel, which at three channels and a million texels a
+/// frame is more than the whole of the rest of the bake. The old rasterizer never paid it —
+/// it interpolated already-encoded corner colours — and shading per texel is what makes the
+/// conversion per texel too.
+static SRGB_TABLE: LazyLock<[u8; SRGB_TABLE_LEN]> = LazyLock::new(|| {
+    let mut table = [0u8; SRGB_TABLE_LEN];
+    for (index, entry) in table.iter_mut().enumerate() {
+        let root = index as f32 / (SRGB_TABLE_LEN - 1) as f32;
+        // Bevy's own conversion, so the table cannot drift from what the rest of the engine
+        // means by sRGB — `the_srgb_table_agrees_with_the_exact_conversion` holds it to that.
+        let encoded = Srgba::from(LinearRgba::new(root * root, 0.0, 0.0, 1.0)).red;
+        *entry = (encoded * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    table
+});
+
+/// One linear channel as an sRGB byte.
+fn srgb_byte(table: &[u8; SRGB_TABLE_LEN], value: f32) -> u8 {
+    let index = (value.clamp(0.0, 1.0).sqrt() * (SRGB_TABLE_LEN - 1) as f32) as usize;
+    table[index.min(SRGB_TABLE_LEN - 1)]
+}
+
+/// A shaded colour as the four bytes a texel holds.
+///
+/// Alpha is always opaque, and that is `N7` rather than a simplification: [`fill`] writes an
+/// element id beside every one of these, so a texel this function could make transparent would
+/// be an id with no visible colour — which `Coverage::is_clean` counts and refuses.
+fn encode(table: &[u8; SRGB_TABLE_LEN], color: LinearRgba) -> [u8; BYTES_PER_TEXEL] {
+    [
+        srgb_byte(table, color.red),
+        srgb_byte(table, color.green),
+        srgb_byte(table, color.blue),
+        u8::MAX,
+    ]
 }
 
 /// Where a horizontal line at `y` enters and leaves a triangle.
@@ -444,8 +857,10 @@ const _: RenderAssetUsages = LAYER_USAGE;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use treepo_det::{Angle, Fx, Seed};
-    use treepo_model::{NodeRole, Point, RepoPath, Segment};
+    use treepo_det::{Angle, Fx, OrderedMap, Seed};
+    use treepo_model::{
+        AgeGradient, AuthorKey, FamilyMix, Mosaic, NodeRole, Point, RepoPath, Segment, Stress,
+    };
 
     fn skeleton_with(segments: impl IntoIterator<Item = Segment>) -> Skeleton {
         let mut skeleton = Skeleton::new();
@@ -473,6 +888,10 @@ mod tests {
         }
     }
 
+    fn palette() -> Palette {
+        Palette::built_in()
+    }
+
     fn square(size: u32) -> (Extent, UVec2) {
         (
             Extent {
@@ -494,7 +913,14 @@ mod tests {
     #[test]
     fn an_empty_chunk_bakes_to_transparency() {
         let (region, size) = square(16);
-        let layer = rasterize(&skeleton_with([]), &MaterialMap::new(), &[], region, size);
+        let layer = rasterize(
+            &skeleton_with([]),
+            &MaterialMap::new(),
+            &palette(),
+            &[],
+            region,
+            size,
+        );
         assert_eq!(layer.color.len(), 16 * 16 * BYTES_PER_TEXEL);
         assert!(layer.color.iter().all(|byte| *byte == 0));
     }
@@ -504,7 +930,14 @@ mod tests {
     fn a_limb_covers_the_texels_it_runs_through() {
         let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
 
         assert_eq!(texel(&layer, size, 16, 16)[3], 255, "centre is not drawn");
         assert_eq!(texel(&layer, size, 0, 0)[3], 0, "corner was drawn");
@@ -518,7 +951,14 @@ mod tests {
     fn world_up_is_image_up() {
         let skeleton = skeleton_with([segment((16, 24), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
 
         assert_eq!(
             texel(&layer, size, 16, 4)[3],
@@ -542,7 +982,14 @@ mod tests {
         let skeleton = skeleton_with([thin]);
         let (region, size) = square(32);
 
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
         let drawn = (0..32)
             .filter(|row| texel(&layer, size, 16, *row)[3] > 0)
             .count();
@@ -553,7 +1000,14 @@ mod tests {
     fn a_segment_with_no_length_draws_nothing() {
         let skeleton = skeleton_with([segment((16, 16), (16, 16), 4, 4)]);
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
         assert!(layer.color.iter().all(|byte| *byte == 0));
     }
 
@@ -562,7 +1016,14 @@ mod tests {
     fn an_index_past_the_end_is_skipped() {
         let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 99], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0, 99],
+            region,
+            size,
+        );
         assert_eq!(texel(&layer, size, 16, 16)[3], 255);
     }
 
@@ -578,33 +1039,12 @@ mod tests {
         let layer = rasterize(
             &skeleton,
             &MaterialMap::new(),
+            &palette(),
             &[0],
             flat,
             UVec2::new(1, 10),
         );
         assert_eq!(layer.color.len(), 10 * BYTES_PER_TEXEL);
-    }
-
-    #[test]
-    fn every_family_has_a_distinct_placeholder_colour() {
-        let mut seen: Vec<[f32; 4]> = Vec::new();
-        for family in MaterialFamily::ALL {
-            let color = family_color(family).to_f32_array();
-            assert!(
-                !seen.contains(&color),
-                "{family:?} duplicates another family"
-            );
-            seen.push(color);
-        }
-    }
-
-    #[test]
-    fn older_material_draws_darker_than_newer() {
-        let color = family_color(MaterialFamily::Heartwood);
-        let new = shaded(color, 0.0);
-        let old = shaded(color, 1.0);
-        assert!(old[0] < new[0] && old[1] < new[1] && old[2] < new[2]);
-        assert_eq!(old[3], 255, "darkening must not touch alpha");
     }
 
     /// `N7`, as a property of the rasterizer rather than of one drawing: wherever this bake
@@ -619,7 +1059,14 @@ mod tests {
             segment((16, 20), (60, 24), 6, 3),
         ]);
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0, 1],
+            region,
+            size,
+        );
 
         let found = crate::id_buffer::coverage(&layer.color, &layer.ids);
         assert!(found.accounted > 0, "the test drew nothing");
@@ -647,7 +1094,14 @@ mod tests {
         skeleton.extend_segments([segment((6, 2), (6, 30), 6, 6), second]);
 
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0, 1],
+            region,
+            size,
+        );
         let plane = layer.id_plane();
 
         assert_eq!(plane.at(6, 16).node(), Some(NodeId::new(0)));
@@ -677,12 +1131,239 @@ mod tests {
         skeleton.extend_segments([segment((16, 2), (16, 30), 8, 8), crossing]);
 
         let (region, size) = square(32);
-        let layer = rasterize(&skeleton, &MaterialMap::new(), &[0, 1], region, size);
+        let layer = rasterize(
+            &skeleton,
+            &MaterialMap::new(),
+            &palette(),
+            &[0, 1],
+            region,
+            size,
+        );
         let plane = layer.id_plane();
 
         // The crossing limb is rasterized second, so at the intersection both planes hold it.
         assert_eq!(plane.at(16, 16).node(), Some(NodeId::new(1)));
         assert_eq!(texel(&layer, size, 16, 16)[3], 255);
+    }
+
+    /// A material for the one node `skeleton_with` creates.
+    fn materials(build: impl FnOnce(&mut Material)) -> MaterialMap {
+        let mut material = Material {
+            family: MaterialFamily::Heartwood,
+            composition: Composition::Pure,
+            budget: Fx::from_ratio(1, 2),
+            mosaic: Mosaic::new(OrderedMap::new(), 0),
+            gradient: None,
+            stress: None,
+        };
+        build(&mut material);
+        let mut map = MaterialMap::new();
+        map.push(material);
+        map
+    }
+
+    /// How many distinct colours a column of the picture holds.
+    fn distinct_down(layer: &Layer, size: UVec2, column: u32) -> usize {
+        let mut seen: Vec<[u8; 4]> = Vec::new();
+        for row in 0..size.y {
+            let found = texel(layer, size, column, row);
+            if found[3] > 0 && !seen.contains(&found) {
+                seen.push(found);
+            }
+        }
+        seen.len()
+    }
+
+    /// The whole point of the slice, as a property of the bake rather than of the shader: a
+    /// limb of one material is no longer one colour. Before this, every texel of a segment
+    /// interpolated between two values and a long straight limb was a flat stripe.
+    #[test]
+    fn a_limb_of_one_material_is_not_one_colour() {
+        let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
+        let (region, size) = square(32);
+        let layer = rasterize(
+            &skeleton,
+            &materials(|_| {}),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
+        let drawn = distinct_down(&layer, size, 16);
+        assert!(drawn > 8, "a whole limb drew {drawn} colours");
+    }
+
+    /// The mosaic and the age gradient run along the **node**, not along each segment. A limb
+    /// built from several segments used to restart both at every one of them, so a five-segment
+    /// limb showed five gradients and five copies of the mosaic — which reads as banding
+    /// nobody asked for and is the defect the span table exists to remove.
+    #[test]
+    fn the_gradient_runs_along_the_node_not_along_each_segment() {
+        let skeleton = skeleton_with([
+            segment((16, 2), (16, 10), 8, 8),
+            segment((16, 10), (16, 18), 8, 8),
+            segment((16, 18), (16, 26), 8, 8),
+        ]);
+        let (region, size) = square(32);
+        let layer = rasterize(
+            &skeleton,
+            &materials(|material| {
+                material.gradient = Some(AgeGradient::new(Fx::ONE, Fx::ZERO));
+                material.family = MaterialFamily::Machined;
+            }),
+            &palette(),
+            &[0, 1, 2],
+            region,
+            size,
+        );
+
+        // The same offset within each segment, base first. A per-segment gradient makes the
+        // three equal; a per-node one makes them a monotone run from old to new.
+        let brightness = |row: u32| u32::from(texel(&layer, size, 16, row)[0]);
+        let (first, second, third) = (brightness(26), brightness(18), brightness(10));
+        assert!(
+            first < second && second < third,
+            "the gradient restarted per segment: {first}, {second}, {third}"
+        );
+    }
+
+    /// `F-MAT-2` reaching a pixel. The mosaic is laid in runs along the limb, so a node two
+    /// contributors are drawn on has two visibly different regions — and the material's own
+    /// texture is still varying inside each of them, which is what "accent over" means.
+    #[test]
+    fn an_owned_limb_shows_its_contributors_as_runs() {
+        let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
+        let (region, size) = square(32);
+        let mut held = OrderedMap::new();
+        held.insert(AuthorKey::from_email(b"one@example.invalid"), 5);
+        held.insert(AuthorKey::from_email(b"two@example.invalid"), 5);
+        let owned = rasterize(
+            &skeleton,
+            &materials(|material| material.mosaic = Mosaic::new(held, 10)),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
+        let plain = rasterize(
+            &skeleton,
+            &materials(|_| {}),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
+
+        assert_ne!(
+            texel(&owned, size, 16, 26),
+            texel(&plain, size, 16, 26),
+            "the mosaic did not reach the picture"
+        );
+        assert_ne!(
+            texel(&owned, size, 16, 26),
+            texel(&owned, size, 16, 6),
+            "both contributors drew the same colour"
+        );
+    }
+
+    /// `F-SKEL-7` and `F-INSP-3`: a container reports what it holds. Half the nodes of a T3
+    /// tree are containers, so a container that drew as one flat colour would be half the
+    /// picture saying nothing.
+    #[test]
+    fn a_container_draws_its_inventory_along_its_length() {
+        let skeleton = skeleton_with([segment((16, 2), (16, 30), 8, 8)]);
+        let (region, size) = square(32);
+        let mut shares = [Fx::ZERO; MaterialFamily::ALL.len()];
+        shares[MaterialFamily::Parchment.position()] = Fx::from_ratio(1, 2);
+        shares[MaterialFamily::Ore.position()] = Fx::from_ratio(1, 2);
+        let layer = rasterize(
+            &skeleton,
+            &materials(|material| {
+                material.composition = Composition::Subordinate(FamilyMix::new(shares));
+            }),
+            &palette(),
+            &[0],
+            region,
+            size,
+        );
+
+        // The bands run base to tip in family order, so ore — dark and blue-grey — is the basal
+        // half and parchment — pale and warm — is the distal half. Row 26 is near the base of
+        // the limb and row 6 near its tip.
+        let (base, tip) = (texel(&layer, size, 16, 26), texel(&layer, size, 16, 6));
+        assert_ne!(base, tip, "the container drew one material");
+        assert!(
+            u32::from(tip[0]) + u32::from(tip[1]) > u32::from(base[0]) + u32::from(base[1]),
+            "the inventory bands are the wrong way round: {base:?} then {tip:?}"
+        );
+    }
+
+    /// `N7` over a node carrying every reading at once. The existing coverage test draws
+    /// geometry with no material; this one draws the case where the shading has the most to do,
+    /// which is where a transparent texel would come from if one could.
+    #[test]
+    fn a_fully_dressed_limb_is_still_completely_accounted_for() {
+        let skeleton = skeleton_with([
+            segment((16, 2), (16, 30), 8, 8),
+            segment((16, 20), (60, 24), 6, 3),
+        ]);
+        let (region, size) = square(32);
+        let mut held = OrderedMap::new();
+        held.insert(AuthorKey::from_email(b"one@example.invalid"), 3);
+        let layer = rasterize(
+            &skeleton,
+            &materials(|material| {
+                material.composition = Composition::Blended {
+                    secondary: MaterialFamily::Ore,
+                    weight: Fx::from_ratio(1, 4),
+                };
+                material.mosaic = Mosaic::new(held, 8);
+                material.gradient = Some(AgeGradient::new(Fx::ONE, Fx::ZERO));
+                material.stress = Stress::new([Some(Fx::ONE), Some(Fx::ONE), Some(Fx::ONE)]);
+            }),
+            &palette(),
+            &[0, 1],
+            region,
+            size,
+        );
+
+        let found = crate::id_buffer::coverage(&layer.color, &layer.ids);
+        assert!(found.accounted > 0, "the test drew nothing");
+        assert_eq!(found.unaccountable, 0, "a coloured texel carries no id");
+        assert_eq!(found.invisible, 0, "an id was written with no colour");
+    }
+
+    /// The encoding table stands in for `Srgba::from`, so it has to agree with it. One code of
+    /// slack, which is the rounding the table's own quantization can introduce and nothing more
+    /// — a wider tolerance would let a wrong curve pass.
+    #[test]
+    fn the_srgb_table_agrees_with_the_exact_conversion() {
+        let mut worst = 0i32;
+        for step in 0..2048 {
+            let linear = step as f32 / 2047.0;
+            let exact = Srgba::from(LinearRgba::new(linear, 0.0, 0.0, 1.0)).to_u8_array()[0];
+            let drift = i32::from(srgb_byte(&SRGB_TABLE, linear)) - i32::from(exact);
+            worst = worst.max(drift.abs());
+        }
+        assert!(worst <= 1, "the table drifts from sRGB by {worst} codes");
+    }
+
+    /// The dark end is where a linearly-indexed table would fail and where `F-MAT-4` puts its
+    /// oldest material, so it is checked separately from the sweep above.
+    #[test]
+    fn the_srgb_table_resolves_the_dark_end() {
+        let mut seen: Vec<u8> = Vec::new();
+        for step in 1..40 {
+            let byte = srgb_byte(&SRGB_TABLE, step as f32 / 4000.0);
+            if !seen.contains(&byte) {
+                seen.push(byte);
+            }
+        }
+        assert!(
+            seen.len() > 10,
+            "the darkest linear values collapsed to {} codes",
+            seen.len()
+        );
     }
 
     /// The scanline's job, stated as arithmetic: a horizontal line through the middle of a

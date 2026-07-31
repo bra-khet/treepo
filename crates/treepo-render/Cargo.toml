@@ -13,6 +13,12 @@ publish.workspace = true
 bevy = { workspace = true }
 treepo-model = { workspace = true }
 
+# The author palette, for the ownership mosaic (`F-MAT-2`). This is the allowed direction of
+# the D1 boundary — a render crate may depend on a generative one, and `dep-guard` asserts the
+# reverse. What it buys is that `AC-MAT-4`'s perceptual separation is guaranteed in the one
+# place contributors become pixels, rather than re-derived here from colours chosen by eye.
+treepo-id = { workspace = true }
+
 # Not for randomness or trig — this crate needs neither. It is here to name `Fx`, because
 # converting fixed-point world coordinates to the `f32` a vertex buffer wants is the one
 # thing the render boundary has to do, and doing it in a function with a type on it is

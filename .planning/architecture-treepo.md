@@ -556,6 +556,36 @@ chunk of, and that is the choice this records.)*
   band where it was asked.
 - **Files**: `crates/treepo-render/src/{chunk,bake,lod}.rs`.
 
+#### D5.2 — Material appearance is baked in limb space, not shaded in a fragment program
+*(Adopted 2026-07-30, Phase 5. The campaign's Phase 5 file list names `assets/shaders/**` and a
+herringbone tile atlas under `assets/textures/tiles/**`. Neither is built, and this is why.)*
+- **Chosen**: the six `F-MAT-1` families, the ownership mosaic, the age gradient, the
+  `F-MAT-1` vein and the `F-MAT-6` stresses are all evaluated **inside `bake::rasterize`**, per
+  texel, in coordinates measured in the limb's own half-width.
+  Three reasons, each independently sufficient:
+  1. **`N7` is a signature, not a rule.** `fill` writes a colour and an element ID at the same
+     index in the same iteration, so an unaccountable pixel has nowhere to come from. A
+     fragment program that recolours the baked texture makes `xtask id-coverage` scan something
+     that is no longer what the user sees, and the gate would keep passing.
+  2. **A chunk is baked once per LOD band at that band's density.** A pattern parameterized by
+     the texture's UVs is a *different* pattern in each band, so the bark visibly re-textures at
+     every band crossing — during the exact gesture `AC-NAV-2` measures. Limb coordinates are a
+     property of the tree, so crossing a band resamples the same surface more finely.
+  3. **`P10`.** A fragment program pays per screen pixel per frame; the bake pays per texel
+     once. The tree is still.
+- **Rejected**: *`tree_static.wgsl`* — for (1) and (2) above. The shader slot stays open for
+  what a shader is actually for: Thrive's `F-THR-2` heat and §8.8's glow, which are per-frame
+  and belong over the top of a baked surface rather than inside it.
+- **Rejected for now**: *the herringbone Wang-tile atlas.* A constraint-tile layout is a
+  *solved* layout, so the solver is a generative decision under `N3` and would live in
+  `treepo-gen`, which cannot name bevy (`N6`, D1). An atlas also has one texel size against
+  twelve bands. It refines a surface that has to exist first; this is that surface.
+- **Accepted cost, measured**: shading each texel rather than interpolating between two of them
+  costs **13.7 → 71 ns per texel** on the reference machine. The bake is on the main thread, so
+  that regressed `AC-NAV-2` on the T3 pin and no amount of budget tuning closes it — see the
+  campaign's Phase 5 entry, and D5's own note that the bake belongs on the async pool.
+- **Files**: `crates/treepo-render/src/{surface,bake,chunk}.rs`.
+
 ### D6 — Grow determinism boundary: the timeline is deterministic, pixels are not
 - **Chosen**: `treepo-grow` produces a `GrowTimeline` — every frame's element positions,
   material states, and particle seeds as data. *That* is what `AC-DET-1/2` and `AC-GROW-2` are

@@ -244,6 +244,7 @@ fn self_test() -> Result<(), String> {
     let baked = treepo_render::bake::rasterize(
         &skeleton,
         &materials,
+        &treepo_id::Palette::built_in(),
         &chunk.segments,
         piece.region,
         piece.size,
@@ -355,6 +356,10 @@ struct Scan {
 
 /// Bakes every piece of every chunk, at two bands, and scans both planes.
 fn scan(skeleton: &Skeleton, materials: &MaterialMap) -> Scan {
+    // The compiled-in palette, because `N7` is a property of the rasterizer rather than of any
+    // particular colouring: what the gate counts is whether a coloured texel carries an id, and
+    // the mosaic's contributor colours change which colour without changing whether.
+    let palette = treepo_id::Palette::built_in();
     let chunks = ChunkSet::build(skeleton);
     let mut found = Scan {
         counts: Coverage::default(),
@@ -375,6 +380,7 @@ fn scan(skeleton: &Skeleton, materials: &MaterialMap) -> Scan {
                 let layer = treepo_render::bake::rasterize(
                     skeleton,
                     materials,
+                    &palette,
                     &chunk.segments,
                     piece.region,
                     piece.size,

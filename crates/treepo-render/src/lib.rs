@@ -40,14 +40,18 @@ pub mod camera;
 pub mod chunk;
 pub mod id_buffer;
 pub mod lod;
+pub mod surface;
 
 use bevy::prelude::*;
 
-pub use bake::{Layer, family_color};
+pub use bake::{AuthorPalette, Layer};
 pub use camera::{CameraSystems, FrameTarget, PointerDrag, TreeCamera};
-pub use chunk::{Chunk, ChunkId, ChunkSet, Extent, Piece, ResidentChunk, TreePlan, pieces};
+pub use chunk::{
+    BakeLoad, Chunk, ChunkId, ChunkSet, Extent, Piece, ResidentChunk, TreePlan, pieces,
+};
 pub use id_buffer::{Coverage, ElementId, IdPlane, Painted, coverage, pick, unresolved};
 pub use lod::Band;
+pub use surface::{Surface, family_color};
 
 /// Spawns the camera, runs the navigation gestures, and keeps the baked layers resident.
 ///
@@ -64,6 +68,8 @@ impl Plugin for TreepoRenderPlugin {
         app.init_resource::<FrameTarget>()
             .init_resource::<PointerDrag>()
             .init_resource::<TreePlan>()
+            .init_resource::<AuthorPalette>()
+            .init_resource::<BakeLoad>()
             .add_systems(Startup, camera::spawn)
             .add_systems(
                 Update,

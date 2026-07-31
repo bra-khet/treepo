@@ -6,9 +6,10 @@
 **Last updated:** 2026-07-30 · **Phases 0–4 closed (M0 EXIT at Phase 3; Phase 4 complete —
 `F-MAT-1`…`F-MAT-6`, every `F-ID-*` in scope, `AC-MAT-3`, three-platform CI digests
 (`AC-DET-2` / `AC-ID-2`), and `AC-MAT-2` on the T2 pin). Phase 5 in progress — the Bevy shell
-(S19), D5's chunked static bake (S20), the element-ID plane (S21) and the T3 measurement (S22)
-are in. `NFR-3` is met and RISK-B is closed; `AC-NAV-2` is green on the dev machine and
-unmeasured at minimum spec. The consumer UI and materials-with-an-appearance are not started.**
+(S19), D5's chunked static bake (S20), the element-ID plane (S21), the T3 measurement (S22) and
+materials with an appearance (S23) are in. `NFR-3` is met and RISK-B is closed. `AC-NAV-2` is
+**regressed**: shading each texel costs five times what interpolating two colours did, the bake
+is on the main thread, and moving it off is the next sprint. The consumer UI is not started.**
 
 ---
 
@@ -29,7 +30,8 @@ Phase 0 — workspace and determinism foundation — is built and green.
 | `N7`/`P1` | `cargo xtask id-coverage` | green — 17 fixtures, 90.7 M texels, 0 unaccountable (S21) |
 | `N7` detector | `cargo xtask id-coverage --self-test` | green — 3 of 3 mutations caught |
 | `NFR-3` | T3 pin, release, far→near traversal | green — 676 MB peak working set, 17% of 4 GB (S22) |
-| `AC-NAV-2` | T3 pin, release, far→near traversal | green **on the dev machine** — worst frame 14.5 ms; minimum spec unmeasured (S22) |
+| `AC-NAV-2` | T3 pin, release, far→near traversal | **regressed by S23** — worst frame 30–53 ms, ~30 of ~2,500 frames over budget; was 14.5 ms / 0 before materials |
+| bake cost | `rasterize`, isolated, release | 13.7 ns/texel flat → **71 ns/texel** shaded (S23) |
 
 **Phase 0 is fully closed.** Every end condition in the campaign is met and verified.
 
@@ -2685,7 +2687,9 @@ A window that opens a repository, runs the existing pipeline off-thread, and dra
 | `crates/treepo-model/src/snapshot.rs` (`WorldSnapshot`, D4) | **done** — 2 tests |
 | `bake.rs`, `chunk.rs`, `lod.rs` | **not started at S19** — landed in S20 |
 | `id_buffer.rs`, `xtask id-coverage` | **not started at S19** — landed in S21 |
-| `assets/shaders/**`, `assets/textures/tiles/**`, `ui/{theme,onboarding,progress}.rs` | **not started** |
+| `crates/treepo-render/src/surface.rs` | **done** in S23 — the six families as surfaces, the mosaic, the vein, the gradient and the stresses. Not in the campaign's file list; it stands where `assets/shaders/**` did |
+| `assets/shaders/**`, `assets/textures/tiles/**` | **not built, and not pending** — architecture D5.2 records why the appearance is baked rather than shaded. The shader slot stays open for Phase 8's per-frame heat and glow |
+| `ui/{theme,onboarding,progress}.rs` | **not started** |
 
 **What is deliberately absent is the larger half of the phase.** Architecture D5 — chunked
 layer textures per LOD band plus a parallel element-ID buffer — is what `AC-NAV-2`, `NFR-2`
@@ -3088,22 +3092,100 @@ upper bound, not a measurement.
 early stepped run showed 5 over-budget frames that vanished when GPU sampling moved out of
 the window. Memory is read before the log is cleared, for the same reason.
 
+---
+
+### S23 — materials with an appearance, and the frame budget it spent (2026-07-30)
+
+`crates/treepo-render/src/surface.rs` is new: the six `F-MAT-1` families as *surfaces* rather
+than hex values, plus the ownership mosaic, the age gradient, the `F-MAT-1` vein and the three
+`F-MAT-6` stresses. Everything a `Material` carries now reaches a pixel. The tree is a tree.
+
+**No shader, no tile atlas** — architecture D5.2 records the argument in full. In short: `N7`
+holds because `fill` writes colour and element id from one loop, and a fragment program that
+recoloured the baked texture would make `id-coverage` scan something other than what the user
+sees; a chunk is baked once per LOD band, so a UV-parameterized pattern is a different pattern
+in every band and the bark re-textures during the exact gesture `AC-NAV-2` measures. Limb
+coordinates — everything in units of the limb's own half-width — are band-invariant by
+construction. The shader slot stays open for what a shader is for: Phase 8's per-frame heat and
+glow, over the top of a baked surface rather than inside it.
+
+#### What it cost, and the three constants that moved
+
+| | before | after |
+|---|---|---|
+| `bake::rasterize`, per texel | 13.7 ns | **71 ns** |
+| worst frame, T3 12-band traversal | 14.5 ms | 30–53 ms |
+| frames over 33.3 ms, same traversal | 0 | ~30 of ~2,500 |
+| peak working set | 676 MB | 685 MB |
+
+`AC-NAV-2` is **regressed and marked `[!]`** in the campaign rather than quietly re-scoped. The
+first build of it was far worse — 268 ms worst frame — and three findings took it to 53:
+
+- **`BAKES_PER_FRAME` → `BAKE_TEXELS_PER_FRAME`.** A *piece* count is the wrong unit: two pieces
+  of identical size differ by fifty times in how much of themselves they draw. Charged per
+  texel, a frame bakes many cheap pieces or one expensive one, and the far bands — where a
+  fresh viewport needs the most pieces — now fill *faster* than four-per-frame did.
+- **`MAX_PIECE_SIDE` 512 → 256.** A piece is atomic, so the real worst frame is the budget *plus
+  one whole piece*. At 512 a piece was observed writing 436 Ki texels — 31 ms in one indivisible
+  unit, with the budget powerless because it is only consulted between pieces.
+- **`MOSAIC_ACCENT` 0.55 → 0.28**, and this one was caught by looking. 0.55 passes every test in
+  the module and is plainly wrong on screen: the tree read as candy-striped contributor colours
+  with a material somewhere underneath, which is §8.5's sentence backwards. Nothing but a
+  screenshot could have caught it.
+
+**Further tuning is the wrong lever and the code says so.** The bake is CPU rasterization on the
+main thread; moving it to the async pool is what removes the trade, and that is Phase 7's
+`grow_task`, where a producer already publishes while Thrive reads.
+
+#### The instrument was wrong, and the materials measurement is what showed it
+
+S22's frame log inferred baking from the resident piece count *growing*. A band change bakes and
+evicts in the same frame, so the count often **falls** on a frame that baked hard — and every
+such frame was filed as quiet. It read `worst_quiet_ms` of 72 ms on a band the renderer was
+rasterizing flat out, which says "holding the picture costs 72 ms" when holding it cost nothing.
+
+`treepo_render::BakeLoad` replaces the inference with what the renderer actually did — texels
+drawn, pieces baked, pieces still owed, pieces released. Four integers a frame, in every build
+rather than behind a feature: `F-THR-8`'s overlay will want them, and a measurement surface that
+only exists in measurement builds is one that can quietly stop matching the build that ships.
+
+#### Two things worth finding again
+
+**`f32::floor` is a library call here.** `.cargo/config.toml` pins no `target-cpu` on purpose, so
+the baseline x86-64 has no SSE4.1 and `floor`/`round` lower to `floorf`/`roundf`. The first
+version of `surface.rs` made eight per texel — six in the noise, one in the ring wave, one
+rounding the facets — and `xtask id-coverage`, which bakes 90.7 M texels, went from 4.2 s to
+23.1 s. `floor_i` is a cast, a compare and a subtract.
+
+**One noise field, read four ways.** Grain, faceting, fissures and veining all come from a single
+`fbm` evaluation; sampling a second field for each is the natural way to write it and multiplies
+the per-texel cost of the whole bake by the number of effects. Anisotropy is what makes one
+field enough — the same call gives wood grain or stone mottle depending only on the aspect ratio
+of the period.
+
+**And the one thing this module must never do:** return coverage. `StressKind::Sparse` — "coarse,
+thin, few-grained material" — reads as an instruction to punch holes, and a transparent texel
+under an element id is the `invisible` case `Coverage::is_clean` refuses. It is drawn as coarser,
+higher-contrast grain instead, which is both the safe rendering and the more literal one.
+
 ## Next
 
 **Phase 4 is closed. Phase 5 has its shell, its bake, its ID plane and its T3 numbers.** What
 is left before M1 exit:
 
-1. **`AC-NAV-2` at minimum spec.** The gesture is measured and green on the dev machine with
-   2× headroom; what is unmeasured is §7's minimum spec. The cheapest honest version is a
-   throttled run rather than another machine — and note that headroom is 2×, not the 30× the
-   old `BAKES_PER_FRAME` comment implied, so a materials pass that makes `rasterize` do more
-   per texel spends it.
-2. **Materials with an appearance** — `assets/shaders/tree_static.wgsl` and the tile atlas.
-   Everything under "recorded rather than resolved" below has been waiting on this since
-   Phase 4, and so has `AC-NAV-1`'s user test, which cannot be run against six placeholder
-   colours honestly.
+1. **Move the bake off the main thread.** This is now the top item and `AC-NAV-2` is why: the
+   materials pass costs 71 ns a texel against 13.7, the budget has been re-cut around that as
+   far as it goes, and ~30 frames of a T3 traversal are still over 33.3 ms. The architecture
+   already says where it belongs — Phase 7's `grow_task`, where a producer publishes while
+   Thrive reads. Everything the bake needs is already a pure function of an `Arc<WorldSnapshot>`
+   and a `Piece`, so what has to move is the `Assets<Image>` write and the spawn, not the
+   rasterizer.
+2. **`AC-NAV-2` at minimum spec**, once (1) has made the dev machine green again. The cheapest
+   honest version is a throttled run rather than another machine.
 3. **`ui/{theme,onboarding,progress}.rs`** — D8's consumer surface, and `F-ASSOC-1`'s picker,
-   which is what makes the command-line argument stop being the only way in (`R1`).
+   which is what makes the command-line argument stop being the only way in (`R1`). `AC-NAV-1`'s
+   user test is now unblocked: it could not be run honestly against six placeholder colours,
+   and it can be run against this.
 
 Two smaller things the slice noticed and did not fix:
 
@@ -3115,7 +3197,8 @@ Two smaller things the slice noticed and did not fix:
   association → extraction → session". The session half needs the app to be drivable
   headlessly — BRP (D10) is the obvious lever, and it is now wired.
 
-Recorded rather than resolved, all waiting on materials having an appearance (not Phase 4 exit):
+Recorded rather than resolved. These were all waiting on materials having an appearance, which
+they now have — S23 is the sprint that unblocks them, not the one that answers them:
 
 - **The mosaic arrangement is contiguous runs in key order** (S12). A seeded per-node shuffle
   would make a bad colour pairing local instead of systemic across every limb two contributors

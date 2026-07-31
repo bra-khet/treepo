@@ -322,10 +322,28 @@ fn push_chunk(chunks: &mut Vec<Chunk>, skeleton: &Skeleton, anchor: NodeId, segm
 
 /// The largest texture side one piece may be baked at.
 ///
-/// 512 texels, so a piece is at most 1 MiB of RGBA8 — and, once `id_buffer.rs` lands, 2 MiB
-/// with its parallel `u32` plane. Small enough that a single bake fits comfortably in a frame's
-/// budget, large enough that the common chunk is one piece and the grid never appears.
-pub const MAX_PIECE_SIDE: u32 = 512;
+/// 256 texels — a piece is at most 256 KiB of RGBA8 plus 256 KiB of element-ID plane. Large
+/// enough that the common chunk is still one piece and the grid never appears; small enough
+/// that no single bake can spend a frame.
+///
+/// # This is the constant that bounds the worst frame, not the bake budget
+///
+/// [`BAKE_TEXELS_PER_FRAME`] bounds what a frame *plans* to draw, but a piece is atomic — half
+/// a baked piece is a hole, so the loop always finishes the one it started and the real worst
+/// frame is the budget **plus one whole piece**. This constant is what bounds that second term.
+///
+/// It was 512 until the materials pass, and the measurement is why it moved. At 512 a fully
+/// covered piece writes 262 Ki texels before overlap and was observed writing **436 Ki** with
+/// it — limbs cross, and [`Layer::texels_drawn`](crate::Layer::texels_drawn) charges each
+/// crossing because each is shaded. At the measured 71 ns a texel that is 31 ms in one
+/// indivisible unit: the whole frame, spent on one piece, with the budget powerless because it
+/// is only consulted between pieces. Quartering the area quarters that to about 8 ms.
+///
+/// The cost is four times as many pieces, which is four times as many sprites and four times as
+/// many per-piece setups. Neither is the expensive axis: memory is unchanged because
+/// [`RESIDENT_TEXEL_BUDGET`] is counted in texels rather than pieces, and the per-piece setup is
+/// one pass over a chunk's segment list, which is two dozen segments at T3.
+pub const MAX_PIECE_SIDE: u32 = 256;
 
 /// How many texels may be resident at once, across every chunk and band.
 ///
@@ -353,26 +371,66 @@ pub const RESIDENT_TEXEL_BUDGET: u64 = 64 * 1024 * 1024;
 /// user is moving away from.
 pub const RESIDENCY_MARGIN: f32 = 0.5;
 
-/// How many pieces may be baked in one frame.
+/// How much drawing one frame may do, in texels written.
 ///
 /// Baking is CPU rasterization on the main thread, so this is the direct lever on the hitch a
-/// zoom costs. Four fills a fresh viewport in a handful of frames while keeping the bake well
-/// inside a frame. Moving the bake onto the async pool is what removes the trade rather than
-/// tuning it, and it belongs with `grow_task` in Phase 7, where a producer already publishes
-/// while Thrive is reading.
+/// zoom costs. Moving the bake onto the async pool is what removes the trade rather than tuning
+/// it, and it belongs with `grow_task` in Phase 7, where a producer already publishes while
+/// Thrive is reading.
 ///
-/// Measured on the T3 pin (release, 2026-07-30), as the gap between the worst frame that baked
-/// and the worst frame that did not: **1.0 to 20.2 ms over eleven samples**, against the "under
-/// a millisecond" this comment claimed before anyone timed it. The instrument cannot do better
-/// — the frame loop is vsync-bound at 6.94 ms, so those gaps are one to three intervals — and
-/// it cannot say how many of the four a slow frame actually baked, so the honest per-piece
-/// figure is only "up to about 5 ms at [`MAX_PIECE_SIDE`]".
+/// # It counts texels because pieces are not comparable
 ///
-/// Four is still right: the worst frame in a full far-to-near traversal was 14.5 ms against a
-/// 33.3 ms budget. But the headroom is a factor of two, not the thirty the old figure implied,
-/// and a materials pass that makes [`bake::rasterize`] do more per texel spends it. Raising
-/// this constant is not the free win the old comment made it look like.
-pub const BAKES_PER_FRAME: usize = 4;
+/// This was `BAKES_PER_FRAME = 4` — a *piece* count — until the materials pass made the
+/// per-texel cost large enough for the difference to matter. Two pieces of identical size can
+/// differ by fifty times in how much of themselves they draw: a piece at the sharpest band is
+/// half-covered by one thick limb, and a piece at a far band holds a few hairlines crossing
+/// mostly-empty space. A budget in pieces therefore charges the same for both, which means it
+/// is set for the expensive one and starves the cheap one — the far bands, where a fresh
+/// viewport needs the most pieces, refill slowest.
+///
+/// Charged per texel the whole trade inverts the right way. A frame bakes as many cheap pieces
+/// as fit and one expensive one, and a far band now fills *faster* than four-per-frame did
+/// while a near band costs less.
+///
+/// # Where the number comes from
+///
+/// Measured on this machine (release, 2026-07-30): [`bake::rasterize`] costs **13.7 ns per
+/// texel with the shading bypassed and 71 ns with it**, so the materials pass is a little over
+/// five times the drawing cost it replaced. 128 Ki texels is about 9 ms of that, which leaves
+/// most of `AC-NAV-2`'s 33.3 ms for the frame the bake is sharing.
+///
+/// The overshoot is bounded by one piece, because a piece's cost is not known until it is drawn
+/// and stopping half way through one would leave a hole rather than a blur. [`MAX_PIECE_SIDE`]
+/// is what bounds that term, and it was lowered in the same measurement that set this one — see
+/// there for why the two constants have to be read together.
+///
+/// A frame always bakes at least one piece. Without that a piece larger than the budget would
+/// never be drawn at all, and the budget would express itself as a permanent hole instead of a
+/// slower fill.
+pub const BAKE_TEXELS_PER_FRAME: u64 = 96 * 1024;
+
+/// What the last frame's bake actually did.
+///
+/// Two integers written once per frame by [`stream`]. It exists because the render layer is the
+/// only thing that knows the difference between a frame that baked and a frame that merely drew,
+/// and because "how many texels did that cost" is the question every performance decision about
+/// the bake turns on — [`BAKE_TEXELS_PER_FRAME`] was set from it.
+///
+/// Maintained in every build rather than behind a feature. It is two stores a frame, `F-THR-8`'s
+/// debug overlay will want it, and a measurement surface that only exists in measurement builds
+/// is one that can quietly stop matching the build that ships.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BakeLoad {
+    /// Texels written by the bake, as [`Layer::texels_drawn`](crate::Layer::texels_drawn)
+    /// counts them.
+    pub texels: u64,
+    /// How many pieces were baked.
+    pub pieces: u32,
+    /// How many pieces the view wanted that were not resident — what is still owed.
+    pub missing: u32,
+    /// How many resident pieces were released.
+    pub released: u32,
+}
 
 /// The committed tree, cut into chunks and ready to bake from.
 ///
@@ -443,14 +501,23 @@ struct Wanted {
 /// The one system that makes `NFR-2` a structural property rather than a hope: what it spawns
 /// is bounded by the viewport and by [`RESIDENT_TEXEL_BUDGET`], and neither term mentions how
 /// many paths the repository has.
+// A Bevy system's parameters are dependency injection rather than an argument list: nobody
+// assembles them at a call site, so the readability this lint protects is not at stake, and the
+// alternative — bundling resources into a `SystemParam` struct — hides what the system touches
+// in order to satisfy a count. Same category of false positive as the crate-level
+// `elided_lifetimes_in_paths` allow, and allowed in the same narrow way.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     plan: Res<TreePlan>,
     mut images: ResMut<Assets<Image>>,
+    mut load: ResMut<BakeLoad>,
+    palette: Res<crate::bake::AuthorPalette>,
     window: Option<Single<&Window>>,
     camera: Option<Single<(&Transform, &Projection, &crate::camera::TreeCamera)>>,
     resident: Query<(Entity, &ResidentChunk, &IdPlane)>,
 ) {
+    *load = BakeLoad::default();
     let (Some(window), Some(camera), Some(snapshot)) = (window, camera, plan.snapshot.as_ref())
     else {
         return;
@@ -526,7 +593,7 @@ pub fn stream(
     // `present` is nearly empty, so the budget has room for the whole previous band and the
     // screen stays filled; as bakes land, `present` grows and the softest layers are dropped
     // to pay for them. Residency is bounded by the budget plus one frame of bakes, which is at
-    // most `BAKES_PER_FRAME * MAX_PIECE_SIDE^2` — 1 Mi texels, 8 MiB.
+    // most one frame's bake budget plus the piece that overshot it.
     let affordable = affordable(&mut superseded, held);
     let mut keep: Vec<Entity> = Vec::with_capacity(affordable);
     for (index, (entity, _, _)) in superseded.into_iter().enumerate() {
@@ -534,16 +601,21 @@ pub fn stream(
             keep.push(entity);
         } else {
             commands.entity(entity).despawn();
+            load.released += 1;
         }
     }
 
     let (mut missing, mut baked) = (0, 0);
+    let mut drawn: u64 = 0;
     for piece in &wanted {
         if present.binary_search(&(piece.id, band)).is_ok() {
             continue;
         }
         missing += 1;
-        if baked >= BAKES_PER_FRAME {
+        // `baked > 0` rather than an unconditional check, so the first piece of a frame is
+        // always drawn — see `BAKE_TEXELS_PER_FRAME` for why a budget that can refuse every
+        // piece is a hole rather than a slower fill.
+        if baked > 0 && drawn >= BAKE_TEXELS_PER_FRAME {
             continue;
         }
 
@@ -551,6 +623,7 @@ pub fn stream(
         let layer = bake::rasterize(
             &snapshot.skeleton,
             &snapshot.materials,
+            &palette.0,
             &chunk.segments,
             piece.region,
             piece.size,
@@ -558,6 +631,7 @@ pub fn stream(
         // The two planes part company here and never meet again: the colour is uploaded and
         // dropped from main memory, the ids ride on the entity so a click can read them. They
         // are despawned together, which is what keeps the plane from outliving its picture.
+        let layer_texels = layer.texels_drawn;
         let plane = IdPlane::new(layer.size, layer.ids);
         let image = images.add(bake::texture(piece.size, layer.color));
         commands.spawn((
@@ -584,12 +658,16 @@ pub fn stream(
             ),
         ));
         baked += 1;
+        drawn += layer_texels;
     }
+    load.texels = drawn;
+    load.pieces = baked;
+    load.missing = missing - baked;
 
     // A layer from the previous band is the wrong *resolution*, not the wrong picture. Held
     // until the new band is complete, a zoom across a boundary costs a moment of softness;
     // dropped on the frame the band changes, it costs a blank window for as many frames as
-    // `BAKES_PER_FRAME` needs to refill one — which is the difference between a zoom that feels
+    // the bake budget needs to refill one — which is the difference between a zoom that feels
     // continuous and one that flickers. `missing == baked` is "nothing is still owed".
     //
     // `keep` rather than every superseded piece: the ones the budget could not afford are
@@ -597,6 +675,7 @@ pub fn stream(
     if missing == baked {
         for entity in keep {
             commands.entity(entity).despawn();
+            load.released += 1;
         }
     }
 }
@@ -1040,7 +1119,7 @@ mod tests {
             max: Vec2::new(2000.0, 600.0),
         };
         let grid = piece_grid(extent, 1.0);
-        assert_eq!(grid, UVec2::new(4, 2));
+        assert_eq!(grid, UVec2::new(8, 3));
     }
 
     #[test]
@@ -1177,20 +1256,21 @@ mod tests {
     #[test]
     fn only_the_pieces_the_viewport_reaches_are_wanted() {
         let (skeleton, chunk) = subdivided();
-        // 16×16 pieces of 512 texels each, of which a 600-unit viewport reaches four at most.
+        // A 32×32 grid of `MAX_PIECE_SIDE` pieces, of which a 600-unit viewport reaches a
+        // handful.
         let viewport = Extent {
             min: Vec2::splat(100.0),
             max: Vec2::splat(700.0),
         };
-        assert_eq!(piece_grid(chunk.extent, 1.0), UVec2::splat(16));
+        assert_eq!(piece_grid(chunk.extent, 1.0), UVec2::splat(32));
 
         let (cols, rows) = cell_span(
             chunk.extent,
-            UVec2::splat(16),
-            chunk.extent.size() / 16.0,
+            UVec2::splat(32),
+            chunk.extent.size() / 32.0,
             &viewport,
         );
-        assert_eq!((cols.len(), rows.len()), (2, 2));
+        assert_eq!((cols.len(), rows.len()), (3, 3));
 
         let wanted = select(
             &skeleton,
@@ -1199,9 +1279,9 @@ mod tests {
             viewport.center(),
             1.0,
         );
-        // Of those four, only the two the limb runs through are baked — the limb lies along
-        // `y = 100`, which is the bottom row of the two.
-        assert_eq!(wanted.len(), 2);
+        // Of those nine, only the three the limb runs through are baked — the limb lies along
+        // `y = 100`, which is the bottom row of the three.
+        assert_eq!(wanted.len(), 3);
         assert!(wanted.iter().all(|piece| piece.region.min.y == 0.0));
     }
 
@@ -1220,10 +1300,10 @@ mod tests {
             1.0,
         );
 
-        // The limb spans every column of the 16×16 grid and exactly one row.
+        // The limb spans every column of the 32×32 grid and exactly one row.
         assert_eq!(
             wanted.len(),
-            16,
+            32,
             "{} pieces for one row of limb",
             wanted.len()
         );
